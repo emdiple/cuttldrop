@@ -10,7 +10,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "cuttl", version, about = "Cuttldrop optical file transfer — encode/decode pulse sequences")]
+#[command(
+    name = "cuttl",
+    version,
+    about = "Cuttldrop optical file transfer — encode/decode pulse sequences"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

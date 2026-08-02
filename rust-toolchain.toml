@@ -1,0 +1,10 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+
+# wasm32-unknown-unknown is NOT listed here on purpose: it is only needed from
+# M1, when cuttl-wasm arrives (DESIGN.md §5). Listing it would make every M0
+# contributor download a target they cannot yet use. At M1, either add it here
+# or run:
+#
+#   rustup target add wasm32-unknown-unknown
