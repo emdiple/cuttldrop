@@ -83,10 +83,12 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 
 ## Milestones (observables in DESIGN.md §5)
 
-- **M0 step 1** ✅ lossless `cuttl encode | decode` round-trip — 85 B/pulse goodput at 48×27 mono
-- **M0 step 2** synthetic channel (warp, blur, noise, crosstalk, tear, drops) + RaptorQ, so
-  `--distort heavy --loss 0.6` decodes. Both flags currently exit with an error rather
-  than pretending to work — the chunked carousel in `stream` needs every pulse.
+- **M0 step 1** ✅ lossless `cuttl encode | decode` round-trip
+- **M0 step 2** ✅ RaptorQ fountain + photometric channel. `--distort heavy --loss 0.6`
+  decodes byte-identical. Goodput 80 B/pulse at 48×27 mono, 1598 B/pulse at 96×54 colour.
+- **M0 step 3** geometric + temporal distortion (perspective warp, rolling-shutter tear,
+  exposure blend) — needs finder detection + homography so the eye *locates* the grid.
+  Plus the inner RS code, which `--distort brutal` exists to justify (see below).
 - **M1** air gap crossed: B/W 48×27, two devices, real file, ~0.8 KB/s
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
@@ -98,5 +100,16 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 - `reed-solomon-32` chosen for the inner code (error+erasure, GF(256), no_std;
   32-ECC-byte cap → interleave 2–4 blocks per band). Validate against real M0
   error rates before committing.
+- **Measured, M0 step 2** — the inner code is not optional. Blur is scale-invariant
+  when measured in cell widths; past ~0.45 of a cell (`Preset::Brutal`) essentially
+  every pulse holds at least one misread cell, one bad cell costs the whole symbol,
+  and rejection hits 100%. No amount of fountain overhead helps: the fountain repairs
+  *erasures*, and this is an *error* problem. `brutal_is_currently_unsurvivable` pins
+  it — **that test is meant to start failing when RS lands**, and its failure is the
+  measurement of what RS bought.
+- **Measured, M0 step 2** — photometric distortion barely touches mono. At `Heavy` the
+  cell error rate is ~3e-6 and zero pulses are lost; the same preset costs colour ~1.5%
+  of pulses. Mono's decision margin is simply enormous. The photometric channel earns
+  its keep at M3, not now — which is §1c's bottleneck ordering showing up as a number.
 - On-record prediction (§5 M3): measured colour gain lands near **1.7×**.
 - RS strength laddering across pulses: speculative, M4 at the earliest (§5 M4).

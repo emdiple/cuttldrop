@@ -35,6 +35,10 @@ lto = "thin"
 codegen-units = 1
 
 # The simulator is the M0 deliverable and runs thousands of frames per test.
-# Unoptimised dependencies make `cargo test` unusably slow.
+# Unoptimised code makes `cargo test` unusably slow — and that applies to our
+# own crates too, now that the channel does per-pixel blur and noise.
+[profile.test]
+opt-level = 2
+
 [profile.test.package."*"]
 opt-level = 2

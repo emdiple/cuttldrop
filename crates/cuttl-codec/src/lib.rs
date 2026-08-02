@@ -14,14 +14,22 @@
 //! - [`geometry`] — cell grid, regions, payload ordering (§3a) — **landed**
 //! - [`palette`] — Mono1 now; Color3 defined but unused until M3 (§3b) — **landed**
 //! - [`pulse`] — cell buffer, structure painting, bit packing (§3a) — **landed**
-//! - [`stream`] — framing + CRC gate; a chunked carousel, *not yet* a fountain (§3c)
-//! - `fec` — inner RS + outer RaptorQ (§1b, §3c) — M0 step 2
+//! - [`fountain`] — outer RaptorQ erasure code (§1a, §3c) — **landed**
+//! - [`stream`] — framing + CRC gate over the fountain (§3c) — **landed**
+//! - `fec` — *inner* Reed–Solomon, below the CRC gate (§1b) — M0 step 3
 //! - `beacon` — ECC-heavy header in the reserved strips (§3a) — M1
 //! - `manifest` — filename/size/mime/BLAKE3 as its own stream (§3c) — M2
+//!
+//! The two FEC layers are not interchangeable and the distinction is the one
+//! most worth keeping straight: the fountain repairs **erasures** (whole lost
+//! or rejected pulses), the inner code repairs **errors** (a few misread cells
+//! within an otherwise good pulse), and the CRC gate between them turns the
+//! second kind into the first.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod fountain;
 pub mod geometry;
 pub mod palette;
 pub mod pulse;
@@ -31,4 +39,4 @@ pub use error::{Error, Result};
 pub use geometry::{Grid, Region};
 pub use palette::Palette;
 pub use pulse::Pulse;
-pub use stream::{Ingest, Reassembler};
+pub use stream::{Ingest, Receiver};

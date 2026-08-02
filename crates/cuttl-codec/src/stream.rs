@@ -1,80 +1,99 @@
-//! Object → pulses → object.
+//! Object → pulses → object, over the fountain layer.
 //!
-//! **This is M0 scaffolding, not the shipping transport.** It splits an object
-//! into fixed chunks, one per pulse, and reassembles them by index. That is a
-//! carousel, not a fountain: it needs *every* pulse, so it cannot survive loss.
+//! Each pulse carries one fountain symbol plus the framing needed to interpret
+//! it standalone. There is no pulse index and no total: a rateless stream has
+//! neither. The eye absorbs symbols in any order, from any subset, and stops
+//! when the object falls out (`DESIGN.md` §3c).
 //!
-//! The outer RaptorQ layer (`DESIGN.md` §1a, §3c) replaces the chunking here,
-//! at which point loss stops mattering and `--loss 0.6` becomes decodable. The
-//! inner Reed–Solomon layer (§1b) then slots in below the CRC. What is already
-//! correct and will *not* change is the CRC gate: a pulse that fails its CRC is
-//! dropped rather than repaired, converting an error into an erasure, because
-//! feeding a corrupt symbol to a fountain decoder poisons the whole object.
+//! ## The CRC gate
+//!
+//! The single most important line in this module is the CRC check in
+//! [`PulseHeader::parse`]. A fountain decoder assumes every symbol it receives
+//! is correct or absent; one silently corrupt symbol propagates through the XOR
+//! graph and poisons the entire object. The gate converts an *error* into an
+//! *erasure*, which is the one thing the fountain layer can actually repair
+//! (§1b). A rejected pulse is never an `Err` — it is a normal, expected event.
+//!
+//! ## Still missing below this layer
+//!
+//! The inner Reed–Solomon code (§1b) sits *between* the cells and this header,
+//! mopping up sparse cell errors so that a handful of misread cells does not
+//! cost a whole symbol. Until it exists, one bad cell kills one pulse, and the
+//! fountain has to carry the whole burden.
 
 use crate::error::{Error, Result};
+use crate::fountain::{CONFIG_LEN, Fountain, RaptorQ, RaptorQSink, SYMBOL_ID_LEN, Sink};
 use crate::geometry::Grid;
 use crate::palette::Palette;
 use crate::pulse::Pulse;
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 const MAGIC: [u8; 2] = *b"CD";
-const VERSION: u8 = 0;
+const VERSION: u8 = 1;
 
 /// Framing header, prepended to every pulse's payload.
 ///
-/// Temporary home: per §3a this data belongs in the beacon strip, ECC-protected
-/// and duplicated top and bottom. Doing the arithmetic on the M1 grid shows the
-/// beacon holds only ~4 bytes, so the full header cannot live there — see the
-/// note in `DESIGN.md` §3a about what the beacon should actually carry.
+/// Temporary home: per §3a the stream id belongs in the beacon strip, duplicated
+/// top and bottom under heavy ECC. The M0 arithmetic showed the beacon holds
+/// only ~4 bytes, so the fountain config cannot live there and rides here
+/// instead — repeated every pulse, since the eye needs it before it can
+/// interpret anything at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PulseHeader {
     pub stream_id: u32,
-    pub pulse_index: u32,
-    pub total_pulses: u32,
-    pub object_len: u32,
+    /// Fountain configuration; RFC 6330 OTI for RaptorQ.
+    pub config: [u8; CONFIG_LEN],
+    /// CRC-32 of the whole object, checked after reconstruction. BLAKE3 replaces
+    /// this when the manifest stream lands at M2 (§3c).
     pub object_crc: u32,
-    pub payload_len: u16,
 }
 
 /// Header bytes, including the trailing CRC.
-pub const HEADER_LEN: usize = 29;
-const CRC_OFFSET: usize = 25;
+pub const HEADER_LEN: usize = 27;
+const CRC_OFFSET: usize = 23;
 
 impl PulseHeader {
-    fn write_into(&self, buf: &mut [u8], payload: &[u8]) {
+    fn write_into(&self, buf: &mut [u8], symbol: &[u8]) {
         buf[0..2].copy_from_slice(&MAGIC);
         buf[2] = VERSION;
         buf[3..7].copy_from_slice(&self.stream_id.to_le_bytes());
-        buf[7..11].copy_from_slice(&self.pulse_index.to_le_bytes());
-        buf[11..15].copy_from_slice(&self.total_pulses.to_le_bytes());
-        buf[15..19].copy_from_slice(&self.object_len.to_le_bytes());
+        buf[7..19].copy_from_slice(&self.config);
         buf[19..23].copy_from_slice(&self.object_crc.to_le_bytes());
-        buf[23..25].copy_from_slice(&self.payload_len.to_le_bytes());
-        let crc = crc(&buf[..CRC_OFFSET], payload);
+        let crc = crc(&buf[..CRC_OFFSET], symbol);
         buf[CRC_OFFSET..HEADER_LEN].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// Parse and verify. `None` means "not a valid pulse" — magic, version or
-    /// CRC failed — which the caller must treat as an erasure, never an error.
-    fn parse(bytes: &[u8]) -> Option<(Self, &[u8])> {
+    /// Parse and verify. `None` means "not a valid pulse" — bad magic, version
+    /// or CRC — which the caller must treat as an erasure, never an error.
+    ///
+    /// `symbol_len` comes from the fountain config, not from the header, because
+    /// RaptorQ picks a symbol size that may be smaller than the space offered.
+    fn parse(bytes: &[u8], symbol_len: Option<usize>) -> Option<(Self, &[u8])> {
         if bytes.len() < HEADER_LEN || bytes[0..2] != MAGIC || bytes[2] != VERSION {
             return None;
         }
         let header = Self {
             stream_id: u32::from_le_bytes(bytes[3..7].try_into().ok()?),
-            pulse_index: u32::from_le_bytes(bytes[7..11].try_into().ok()?),
-            total_pulses: u32::from_le_bytes(bytes[11..15].try_into().ok()?),
-            object_len: u32::from_le_bytes(bytes[15..19].try_into().ok()?),
+            config: bytes[7..19].try_into().ok()?,
             object_crc: u32::from_le_bytes(bytes[19..23].try_into().ok()?),
-            payload_len: u16::from_le_bytes(bytes[23..25].try_into().ok()?),
         };
-        let body = bytes.get(HEADER_LEN..)?;
-        let payload = body.get(..header.payload_len as usize)?;
+
+        // On the first pulse the eye does not yet know the symbol size, so it
+        // derives it from this pulse's own config — which the CRC has not
+        // vouched for yet. `probe` validates without building a decoder, so a
+        // corrupt config becomes an erasure instead of a panic.
+        let len = match symbol_len {
+            Some(len) => len,
+            None => RaptorQSink::probe(&header.config)?,
+        };
+        let want = if len == 0 { 0 } else { SYMBOL_ID_LEN + len };
+        let symbol = bytes.get(HEADER_LEN..HEADER_LEN + want)?;
+
         let expected = u32::from_le_bytes(bytes[CRC_OFFSET..HEADER_LEN].try_into().ok()?);
-        if crc(&bytes[..CRC_OFFSET], payload) != expected {
+        if crc(&bytes[..CRC_OFFSET], symbol) != expected {
             return None;
         }
-        Some((header, payload))
+        Some((header, symbol))
     }
 }
 
@@ -85,121 +104,168 @@ fn crc(header: &[u8], payload: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// Payload bytes per pulse once the header is subtracted.
-pub fn chunk_capacity(grid: Grid, palette: Palette) -> Result<usize> {
+/// Largest fountain symbol one pulse can carry.
+pub fn symbol_capacity(grid: Grid, palette: Palette) -> Result<u16> {
     let capacity = grid.payload_bytes(palette);
     capacity
-        .checked_sub(HEADER_LEN)
+        .checked_sub(HEADER_LEN + SYMBOL_ID_LEN)
         .filter(|&n| n > 0)
-        .ok_or(Error::NoRoomForHeader {
+        .map(|n| n.min(u16::MAX as usize) as u16)
+        .ok_or(Error::NoRoomForSymbol {
             capacity,
             header: HEADER_LEN,
+            symbol_id: SYMBOL_ID_LEN,
         })
 }
 
-/// Split an object into a full sequence of pulses.
-pub fn encode(object: &[u8], grid: Grid, palette: Palette, stream_id: u32) -> Result<Vec<Pulse>> {
+/// Encode an object as a batch of pulses.
+///
+/// `overhead` is the ratio of repair symbols to source symbols. It exists only
+/// because a directory of PNGs has to stand in for a skin that loops forever;
+/// at `0.0` the output is exactly the source symbols and survives no loss at
+/// all, which is why the CLI defaults it much higher.
+pub fn encode(
+    object: &[u8],
+    grid: Grid,
+    palette: Palette,
+    stream_id: u32,
+    overhead: f32,
+) -> Result<Vec<Pulse>> {
     grid.validate()?;
-    let chunk = chunk_capacity(grid, palette)?;
-    let total = object.len().div_ceil(chunk).max(1) as u32;
-    let object_crc = crc(&[], object);
+    let max_symbol = symbol_capacity(grid, palette)?;
+    let fountain = RaptorQ::new(object, max_symbol)?;
 
-    let mut buf = vec![0u8; HEADER_LEN + chunk];
-    let mut pulses = Vec::with_capacity(total as usize);
+    let header = PulseHeader {
+        stream_id,
+        config: fountain.config(),
+        object_crc: crc(&[], object),
+    };
 
-    for index in 0..total {
-        let start = index as usize * chunk;
-        let slice = &object[start.min(object.len())..((start + chunk).min(object.len()))];
+    let capacity = grid.payload_bytes(palette);
+    let mut buf = vec![0u8; capacity];
 
-        let header = PulseHeader {
-            stream_id,
-            pulse_index: index,
-            total_pulses: total,
-            object_len: object.len() as u32,
-            object_crc,
-            payload_len: slice.len() as u16,
-        };
+    fountain
+        .symbols(overhead)
+        .into_iter()
+        .map(|symbol| {
+            buf.iter_mut().for_each(|b| *b = 0);
+            buf[HEADER_LEN..HEADER_LEN + symbol.len()].copy_from_slice(&symbol);
+            header.write_into(&mut buf, &symbol);
 
-        buf.iter_mut().for_each(|b| *b = 0);
-        buf[HEADER_LEN..HEADER_LEN + slice.len()].copy_from_slice(slice);
-        header.write_into(&mut buf, slice);
-
-        let mut pulse = Pulse::new(grid, palette)?;
-        pulse.write_payload(&buf)?;
-        pulses.push(pulse);
-    }
-    Ok(pulses)
+            let mut pulse = Pulse::new(grid, palette)?;
+            pulse.write_payload(&buf)?;
+            Ok(pulse)
+        })
+        .collect()
 }
 
 /// What happened to an ingested pulse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ingest {
+    /// Absorbed; the object is not yet recoverable.
     Accepted,
-    /// Already had this chunk. Expected and harmless — the skin loops forever.
+    /// Absorbed, and the object came out. Further pulses are redundant.
+    Completed,
+    /// A symbol already held, or any pulse arriving after completion. Expected
+    /// and harmless — the skin loops forever.
     Duplicate,
-    /// Failed the CRC gate, or belongs to a different stream. Treated as an
-    /// erasure; never an error (§1b).
+    /// Failed the CRC gate, or belongs to another stream. An erasure, never an
+    /// error (§1b).
     Rejected,
 }
 
-/// Collects pulses until the object can be rebuilt.
-#[derive(Debug, Default)]
-pub struct Reassembler {
+/// Absorbs pulses until the object falls out.
+pub struct Receiver {
     stream_id: Option<u32>,
-    total: u32,
-    object_len: u32,
     object_crc: u32,
-    chunks: BTreeMap<u32, Vec<u8>>,
+    sink: Option<RaptorQSink>,
+    seen: HashSet<[u8; SYMBOL_ID_LEN]>,
+    accepted: u32,
     rejected: u32,
+    object: Option<Vec<u8>>,
 }
 
-impl Reassembler {
+impl Default for Receiver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Receiver {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            stream_id: None,
+            object_crc: 0,
+            sink: None,
+            seen: HashSet::new(),
+            accepted: 0,
+            rejected: 0,
+            object: None,
+        }
     }
 
     pub fn ingest(&mut self, pulse: &Pulse) -> Ingest {
+        if self.object.is_some() {
+            return Ingest::Duplicate;
+        }
         let bytes = pulse.read_payload();
-        let Some((header, payload)) = PulseHeader::parse(&bytes) else {
+        let symbol_len = self.sink.as_ref().map(|s| s.symbol_len());
+        let Some((header, symbol)) = PulseHeader::parse(&bytes, symbol_len) else {
             self.rejected += 1;
             return Ingest::Rejected;
         };
 
         match self.stream_id {
-            // Lock onto the first stream we see and ignore any other in view.
+            // Lock onto the first stream seen; ignore any other in view.
             Some(id) if id != header.stream_id => {
                 self.rejected += 1;
                 return Ingest::Rejected;
             }
             Some(_) => {}
             None => {
+                let Ok(sink) = RaptorQSink::new(&header.config) else {
+                    self.rejected += 1;
+                    return Ingest::Rejected;
+                };
                 self.stream_id = Some(header.stream_id);
-                self.total = header.total_pulses;
-                self.object_len = header.object_len;
                 self.object_crc = header.object_crc;
+                self.sink = Some(sink);
             }
         }
 
-        if header.total_pulses != self.total
-            || header.object_len != self.object_len
-            || header.object_crc != self.object_crc
-            || header.pulse_index >= self.total
-        {
+        // A pulse that agrees on the stream but not on its contents is a
+        // corrupt header that happened to pass CRC, or a restarted transfer.
+        if header.object_crc != self.object_crc {
             self.rejected += 1;
             return Ingest::Rejected;
         }
 
-        if self.chunks.contains_key(&header.pulse_index) {
-            return Ingest::Duplicate;
+        if symbol.len() >= SYMBOL_ID_LEN {
+            let id: [u8; SYMBOL_ID_LEN] = symbol[..SYMBOL_ID_LEN].try_into().expect("checked len");
+            if !self.seen.insert(id) {
+                return Ingest::Duplicate;
+            }
         }
-        self.chunks.insert(header.pulse_index, payload.to_vec());
-        Ingest::Accepted
+
+        self.accepted += 1;
+        let sink = self.sink.as_mut().expect("sink set above");
+        match sink.absorb(symbol) {
+            Some(object) => {
+                self.object = Some(object);
+                Ingest::Completed
+            }
+            None => Ingest::Accepted,
+        }
     }
 
-    /// Chunks held versus chunks needed. This is the honest progress number —
-    /// monotonic, and not a fabricated "percent decoded" (§3c).
+    /// Symbols absorbed versus the minimum needed. Honest and monotonic — not a
+    /// fabricated "percent decoded" (§3c). The numerator can exceed the
+    /// denominator: RaptorQ needs a small overhead above K.
     pub fn progress(&self) -> (u32, u32) {
-        (self.chunks.len() as u32, self.total)
+        (
+            self.accepted,
+            self.sink.as_ref().map_or(0, |s| s.source_symbols()),
+        )
     }
 
     pub fn rejected(&self) -> u32 {
@@ -207,35 +273,27 @@ impl Reassembler {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.stream_id.is_some() && self.chunks.len() as u32 == self.total
+        self.object.is_some()
     }
 
-    /// Rebuild the object, verifying its CRC. Fails loudly rather than
+    /// The reconstructed object, CRC-verified. Fails loudly rather than
     /// returning unverified bytes (§3f).
     pub fn finish(&self) -> Result<Vec<u8>> {
         if self.stream_id.is_none() {
             return Err(Error::Empty);
         }
-        if !self.is_complete() {
-            return Err(Error::Incomplete {
-                missing: self.total - self.chunks.len() as u32,
-                total: self.total,
-            });
-        }
-        let mut object = Vec::with_capacity(self.object_len as usize);
-        for chunk in self.chunks.values() {
-            object.extend_from_slice(chunk);
-        }
-        object.truncate(self.object_len as usize);
-
-        let got = crc(&[], &object);
+        let Some(object) = &self.object else {
+            let (have, need) = self.progress();
+            return Err(Error::NotConverged { have, need });
+        };
+        let got = crc(&[], object);
         if got != self.object_crc {
             return Err(Error::ObjectCrc {
                 expected: self.object_crc,
                 got,
             });
         }
-        Ok(object)
+        Ok(object.clone())
     }
 }
 
@@ -244,76 +302,116 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn roundtrip(object: &[u8], grid: Grid, palette: Palette) -> Result<Vec<u8>> {
-        let pulses = encode(object, grid, palette, 0x5EED)?;
-        let mut rx = Reassembler::new();
-        for pulse in &pulses {
+    const M1: (Grid, Palette) = (Grid::M1_MONO, Palette::Mono1);
+
+    fn absorb_all(pulses: &[Pulse]) -> Receiver {
+        let mut rx = Receiver::new();
+        for pulse in pulses {
             rx.ingest(pulse);
         }
-        rx.finish()
+        rx
     }
 
     #[test]
     fn empty_object_roundtrips() {
-        assert_eq!(
-            roundtrip(&[], Grid::M1_MONO, Palette::Mono1).unwrap(),
-            Vec::<u8>::new()
-        );
+        let pulses = encode(&[], M1.0, M1.1, 1, 0.0).unwrap();
+        assert_eq!(absorb_all(&pulses).finish().unwrap(), Vec::<u8>::new());
     }
 
+    /// The point of the whole fountain layer: an arbitrary subset suffices.
     #[test]
-    fn incomplete_stream_refuses_to_produce_bytes() {
-        let pulses = encode(&[7u8; 400], Grid::M1_MONO, Palette::Mono1, 1).unwrap();
-        let mut rx = Reassembler::new();
-        for pulse in pulses.iter().skip(1) {
-            rx.ingest(pulse);
-        }
-        assert!(matches!(rx.finish(), Err(Error::Incomplete { .. })));
+    fn decodes_after_sixty_percent_loss() {
+        let object: Vec<u8> = (0..8192u32).map(|i| (i ^ (i >> 3)) as u8).collect();
+        let pulses = encode(&object, M1.0, M1.1, 7, 2.0).unwrap();
+
+        // Deterministic, unbiased-enough decimation: keep 2 of every 5.
+        let kept: Vec<_> = pulses
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 5 < 2)
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert!(kept.len() * 5 <= pulses.len() * 2 + 5);
+
+        let rx = absorb_all(&kept);
+        assert_eq!(rx.finish().unwrap(), object);
+    }
+
+    /// With no repair symbols, losing one pulse must fail cleanly rather than
+    /// return wrong bytes.
+    #[test]
+    fn zero_overhead_plus_loss_fails_loudly() {
+        let object = vec![3u8; 2048];
+        let pulses = encode(&object, M1.0, M1.1, 1, 0.0).unwrap();
+        let rx = absorb_all(&pulses[1..]);
+        assert!(matches!(rx.finish(), Err(Error::NotConverged { .. })));
     }
 
     #[test]
     fn duplicates_are_recognised_not_double_counted() {
-        let pulses = encode(&[3u8; 300], Grid::M1_MONO, Palette::Mono1, 1).unwrap();
-        let mut rx = Reassembler::new();
+        let pulses = encode(&[3u8; 300], M1.0, M1.1, 1, 0.0).unwrap();
+        let mut rx = Receiver::new();
         assert_eq!(rx.ingest(&pulses[0]), Ingest::Accepted);
         assert_eq!(rx.ingest(&pulses[0]), Ingest::Duplicate);
         assert_eq!(rx.progress().0, 1);
     }
 
-    /// The CRC gate: a single flipped payload cell must cause the pulse to be
-    /// dropped, never silently accepted (§1b).
+    /// The CRC gate: a single flipped payload cell must drop the pulse rather
+    /// than feed a corrupt symbol to the fountain decoder (§1b).
     #[test]
     fn corrupted_pulse_is_rejected_by_the_crc_gate() {
-        let pulses = encode(&[9u8; 200], Grid::M1_MONO, Palette::Mono1, 1).unwrap();
+        let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
         let mut corrupt = pulses[0].clone();
-        let (x, y) = Grid::M1_MONO.payload_coords().nth(64).unwrap();
+        let (x, y) = M1.0.payload_coords().nth(300).unwrap();
         let flipped = corrupt.cell(x, y).unwrap() ^ 1;
         corrupt.set_cell(x, y, flipped).unwrap();
 
-        let mut rx = Reassembler::new();
+        let mut rx = Receiver::new();
         assert_eq!(rx.ingest(&corrupt), Ingest::Rejected);
         assert_eq!(rx.rejected(), 1);
     }
 
+    /// Corruption must never reach the object. Flip one cell in every pulse and
+    /// the transfer must fail to converge, not converge onto garbage.
+    #[test]
+    fn corruption_never_reaches_the_object() {
+        let object = vec![0x5Au8; 4096];
+        let pulses = encode(&object, M1.0, M1.1, 1, 1.0).unwrap();
+        let mangled: Vec<Pulse> = pulses
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                let (x, y) = M1.0.payload_coords().nth(400).unwrap();
+                let v = p.cell(x, y).unwrap() ^ 1;
+                p.set_cell(x, y, v).unwrap();
+                p
+            })
+            .collect();
+        let rx = absorb_all(&mangled);
+        assert!(!rx.is_complete());
+        assert!(rx.finish().is_err());
+    }
+
     #[test]
     fn a_foreign_stream_in_view_is_ignored() {
-        let ours = encode(&[1u8; 200], Grid::M1_MONO, Palette::Mono1, 111).unwrap();
-        let theirs = encode(&[2u8; 200], Grid::M1_MONO, Palette::Mono1, 222).unwrap();
-        let mut rx = Reassembler::new();
+        let ours = encode(&[1u8; 2000], M1.0, M1.1, 111, 0.0).unwrap();
+        let theirs = encode(&[2u8; 2000], M1.0, M1.1, 222, 0.0).unwrap();
+        let mut rx = Receiver::new();
         assert_eq!(rx.ingest(&ours[0]), Ingest::Accepted);
         assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
     }
 
     proptest! {
-        /// The M0 observable, in miniature: any object, byte-identical back.
         #[test]
         fn object_roundtrips(data in prop::collection::vec(any::<u8>(), 0..4096)) {
-            prop_assert_eq!(roundtrip(&data, Grid::M1_MONO, Palette::Mono1).unwrap(), data);
+            let pulses = encode(&data, M1.0, M1.1, 1, 0.2).unwrap();
+            prop_assert_eq!(absorb_all(&pulses).finish().unwrap(), data);
         }
 
         #[test]
         fn object_roundtrips_in_colour(data in prop::collection::vec(any::<u8>(), 0..8192)) {
-            prop_assert_eq!(roundtrip(&data, Grid::M3_COLOR, Palette::Color3).unwrap(), data);
+            let pulses = encode(&data, Grid::M3_COLOR, Palette::Color3, 1, 0.2).unwrap();
+            prop_assert_eq!(absorb_all(&pulses).finish().unwrap(), data);
         }
     }
 }

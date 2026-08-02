@@ -1,17 +1,19 @@
-//! `cuttl` — Cuttldrop CLI. The M0 observable is:
+//! `cuttl` — Cuttldrop CLI. The M0 observable:
 //!
 //! ```sh
 //! cuttl encode f.bin -o pulses/ && cuttl decode pulses/ -o out.bin && cmp f.bin out.bin
 //! cuttl decode pulses/ --distort heavy --loss 0.6 -o out.bin   # still identical
 //! ```
 //!
-//! The first line works today. The second needs the synthetic channel and the
-//! fountain layer, which are M0 step 2 — until then it exits with an error
-//! rather than silently ignoring the flags.
+//! Both lines work. `--distort` is photometric only for now — perspective warp
+//! and rolling-shutter tear arrive in M0 step 3, once the eye can locate the
+//! grid instead of being told where it is.
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use cuttl_codec::{Grid, Palette, Reassembler, stream};
+use cuttl_codec::{Grid, Palette, Receiver, stream};
+use cuttl_sim::{Channel, Preset};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -45,6 +47,28 @@ impl Profile {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum Distort {
+    #[default]
+    None,
+    Light,
+    Heavy,
+    /// Past what the stack survives without the inner RS code — see
+    /// `cuttl_sim::Preset::Brutal`. Expected to fail; that is what it is for.
+    Brutal,
+}
+
+impl From<Distort> for Preset {
+    fn from(distort: Distort) -> Self {
+        match distort {
+            Distort::None => Preset::None,
+            Distort::Light => Preset::Light,
+            Distort::Heavy => Preset::Heavy,
+            Distort::Brutal => Preset::Brutal,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Encode a file into a directory of pulse PNGs (the skin, offline)
@@ -63,6 +87,11 @@ enum Command {
         /// Stream id, so the eye can ignore a foreign transfer in view
         #[arg(long, default_value_t = 1)]
         stream_id: u32,
+        /// Repair symbols as a ratio of source symbols. A real skin is rateless
+        /// and loops forever; a finite directory has to stand in for that, so
+        /// this is what decides how much loss the output can survive.
+        #[arg(long, default_value_t = 2.0)]
+        overhead: f32,
     },
     /// Decode a directory of pulse PNGs back into a file (the eye, offline)
     Decode {
@@ -74,12 +103,15 @@ enum Command {
         /// Grid and palette profile
         #[arg(long, value_enum, default_value_t = Profile::M1)]
         profile: Profile,
-        /// Apply the synthetic optical channel before decoding: none|light|heavy
-        #[arg(long, default_value = "none")]
-        distort: String,
+        /// Photometric distortion to apply before decoding
+        #[arg(long, value_enum, default_value_t = Distort::None)]
+        distort: Distort,
         /// Fraction of pulses to drop, 0.0–1.0
         #[arg(long, default_value_t = 0.0)]
         loss: f64,
+        /// Seed for distortion and loss, so runs are reproducible
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
 }
 
@@ -91,23 +123,16 @@ fn main() -> Result<()> {
             profile,
             cell_px,
             stream_id,
-        } => encode(&input, &output, profile, cell_px, stream_id),
+            overhead,
+        } => encode(&input, &output, profile, cell_px, stream_id, overhead),
         Command::Decode {
             input,
             output,
             profile,
             distort,
             loss,
-        } => {
-            if distort != "none" || loss != 0.0 {
-                bail!(
-                    "--distort/--loss need the synthetic channel and the fountain layer \
-                     (M0 step 2). The carousel in cuttl-codec::stream requires every \
-                     pulse, so any loss is fatal by construction — see DESIGN.md §3c."
-                );
-            }
-            decode(&input, &output, profile)
-        }
+            seed,
+        } => decode(&input, &output, profile, distort, loss, seed),
     }
 }
 
@@ -117,14 +142,18 @@ fn encode(
     profile: Profile,
     cell_px: u32,
     stream_id: u32,
+    overhead: f32,
 ) -> Result<()> {
     if cell_px == 0 {
         bail!("--cell-px must be at least 1");
     }
+    if !overhead.is_finite() || overhead < 0.0 {
+        bail!("--overhead must be a non-negative number");
+    }
     let (grid, palette) = profile.parts();
     let object = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
 
-    let pulses = stream::encode(&object, grid, palette, stream_id)?;
+    let pulses = stream::encode(&object, grid, palette, stream_id, overhead)?;
     std::fs::create_dir_all(output).with_context(|| format!("creating {}", output.display()))?;
 
     for (i, pulse) in pulses.iter().enumerate() {
@@ -134,10 +163,9 @@ fn encode(
             .with_context(|| format!("writing {}", path.display()))?;
     }
 
-    let chunk = stream::chunk_capacity(grid, palette)?;
-    let payload = grid.payload_bytes(palette);
+    let symbol = stream::symbol_capacity(grid, palette)?;
     println!(
-        "skin: {} B -> {} pulses  [{}×{} {:?}, {} px/cell]",
+        "skin: {} B -> {} pulses  [{}×{} {:?}, {} px/cell, overhead {overhead:.1}×]",
         object.len(),
         pulses.len(),
         grid.cols,
@@ -146,15 +174,27 @@ fn encode(
         cell_px
     );
     println!(
-        "      {payload} B/pulse payload, {} B header, {chunk} B/pulse goodput",
+        "      {} B/pulse payload, {} B header, <= {symbol} B/pulse symbol",
+        grid.payload_bytes(palette),
         stream::HEADER_LEN
     );
     println!("      {}", output.display());
     Ok(())
 }
 
-fn decode(input: &Path, output: &Path, profile: Profile) -> Result<()> {
+fn decode(
+    input: &Path,
+    output: &Path,
+    profile: Profile,
+    distort: Distort,
+    loss: f64,
+    seed: u64,
+) -> Result<()> {
+    if !(0.0..1.0).contains(&loss) {
+        bail!("--loss must be in [0.0, 1.0)");
+    }
     let (grid, palette) = profile.parts();
+    let channel = Channel::preset(distort.into());
 
     let mut paths: Vec<PathBuf> = std::fs::read_dir(input)
         .with_context(|| format!("reading {}", input.display()))?
@@ -167,28 +207,45 @@ fn decode(input: &Path, output: &Path, profile: Profile) -> Result<()> {
         bail!("no PNG pulses found in {}", input.display());
     }
 
-    let mut rx = Reassembler::new();
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut rx = Receiver::new();
+    let mut dropped = 0u32;
     let mut unreadable = 0u32;
+
     for path in &paths {
+        if rng.random::<f64>() < loss {
+            dropped += 1;
+            continue;
+        }
         let image = image::open(path)
             .with_context(|| format!("opening {}", path.display()))?
             .to_rgb8();
+
+        // Cell size is inferred from the rendered image, so the channel's blur
+        // is scaled the same way the eye will see it.
+        let cell_px = image.width() / grid.cols as u32;
+        let image = cuttl_sim::channel::apply(&image, &channel, cell_px.max(1), &mut rng);
+
         match cuttl_sim::sample(&image, grid, palette) {
             Ok(pulse) => {
                 rx.ingest(&pulse);
             }
-            // A frame the eye cannot even geometrically resolve is an erasure,
-            // not a failure — the same treatment a CRC reject gets (§1b).
+            // A frame the eye cannot geometrically resolve is an erasure, not a
+            // failure — the same treatment a CRC reject gets (§1b).
             Err(_) => unreadable += 1,
+        }
+        if rx.is_complete() {
+            break;
         }
     }
 
     let (have, need) = rx.progress();
     println!(
-        "eye:  {} pulses seen, {have}/{need} chunks held, {} rejected, {unreadable} unreadable",
+        "eye:  {} pulses on disk, {dropped} dropped, {} rejected, {unreadable} unreadable",
         paths.len(),
         rx.rejected()
     );
+    println!("      {have}/{need} symbols absorbed  [distort {distort:?}, loss {loss:.2}]");
 
     let object = rx.finish()?;
     std::fs::write(output, &object).with_context(|| format!("writing {}", output.display()))?;
