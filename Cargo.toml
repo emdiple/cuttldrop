@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/cuttl-codec", "crates/cuttl-sim", "crates/cuttl-cli"]
+
+# cuttl-wasm arrives at M1, when there is a browser to bind to.
+# See DESIGN.md §4 for the full intended layout.
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+cuttl-codec = { path = "crates/cuttl-codec" }
+cuttl-sim = { path = "crates/cuttl-sim" }
+
+raptorq = "2.0"    # outer fountain layer, RFC 6330 (DESIGN.md §1a)
+blake3 = "1.8"     # whole-object integrity (DESIGN.md §3c)
+crc32fast = "1.5"  # per-symbol error->erasure gate (DESIGN.md §1b)
+thiserror = "2"
+
+# Inner RS layer (DESIGN.md §1b). PROVISIONAL: chosen for error+erasure
+# correction over GF(256) and no_std support. Capped at 32 ECC bytes, so a
+# band needs 2-4 interleaved blocks -- which also spreads burst errors, so the
+# cap is not purely a cost. Validate against real M0 error rates before
+# committing. Not yet wired into cuttl-codec.
+reed-solomon-32 = "2.0"
+
+image = { version = "0.25", default-features = false, features = ["png"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The simulator is the M0 deliverable and runs thousands of frames per test.
+# Unoptimised dependencies make `cargo test` unusably slow.
+[profile.test.package."*"]
+opt-level = 2
