@@ -11,3 +11,6 @@ blake3 = { workspace = true }
 crc32fast = { workspace = true }
 reed-solomon-32 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.11.0"

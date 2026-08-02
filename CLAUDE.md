@@ -74,12 +74,19 @@ web/                  (M1) Vite + vanilla TS — no framework
 ```sh
 cargo check --workspace     # fast validity check
 cargo test --workspace      # sim-driven tests are the primary test surface
-cargo run -p cuttl-cli --   # the `cuttl` binary (encode/decode land in M0)
+cargo fmt --all && cargo clippy --workspace --all-targets   # CI runs both with -D warnings
+
+# The M0 observable, working today:
+cargo run --release -p cuttl-cli -- encode FILE -o pulses/
+cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 ```
 
 ## Milestones (observables in DESIGN.md §5)
 
-- **M0** simulator: `cuttl encode | decode` round-trip, then survive `--distort heavy --loss 0.6`
+- **M0 step 1** ✅ lossless `cuttl encode | decode` round-trip — 85 B/pulse goodput at 48×27 mono
+- **M0 step 2** synthetic channel (warp, blur, noise, crosstalk, tear, drops) + RaptorQ, so
+  `--distort heavy --loss 0.6` decodes. Both flags currently exit with an error rather
+  than pretending to work — the chunked carousel in `stream` needs every pulse.
 - **M1** air gap crossed: B/W 48×27, two devices, real file, ~0.8 KB/s
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number

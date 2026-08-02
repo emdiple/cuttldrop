@@ -213,6 +213,27 @@ decision in the format, which is why it belongs in from M2 rather than retrofitt
 
 Suggested: 4–8 bands per pulse, ~200–400 payload bytes each.
 
+**Correction from M0, measured not estimated: the beacon cannot carry ~16 bytes.** §1d
+assumed a beacon holding stream ID, RaptorQ OTI, pulse counter *and* grid geometry. On
+the M1 profile the geometry says otherwise. Each beacon strip is 3 rows × 48 cells minus
+the two finders, so 114 cells — 114 bits at 1 bit/cell. Apply the 3× repetition that
+"heavy ECC" implies and the strip holds **≈4 bytes**, not 16.
+
+So the beacon carries only what tear detection and stream discrimination actually need:
+
+| Field | Bytes |
+|---|---|
+| stream id | 1 |
+| pulse counter | 3 |
+
+Everything else §1d put in the beacon — OTI, object length, grid geometry — moves into
+the payload, repeated every pulse. That is affordable (a few percent) and it is *not*
+a regression: those fields need to survive loss, not to be readable before the grid has
+been located, which is the only thing the beacon is uniquely good for.
+
+This does not weaken the tear detector. Duplicating a 3-byte counter top and bottom is
+exactly as effective as duplicating 16 bytes — the mismatch is what carries the signal.
+
 ### 3b. Colour scheme — and why per-pulse calibration is non-negotiable
 
 **Palette: 8 colours, treating R/G/B as three independent binary subchannels** (each cell
