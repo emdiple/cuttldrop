@@ -1,0 +1,17 @@
+[package]
+name = "cuttl-cli"
+description = "Cuttldrop CLI: encode a file to a pulse PNG sequence and decode it back, optionally through the synthetic channel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cuttl"
+path = "src/main.rs"
+
+[dependencies]
+cuttl-codec = { workspace = true }
+cuttl-sim = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+image = { workspace = true }

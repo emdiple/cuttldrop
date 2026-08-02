@@ -1,0 +1,13 @@
+[package]
+name = "cuttl-sim"
+description = "Synthetic optical channel for Cuttldrop: warp, blur, noise, colour mixing, frame drops. Native only — the M0 test harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cuttl-codec = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
