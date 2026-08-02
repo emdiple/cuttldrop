@@ -15,3 +15,4 @@ cuttl-sim = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 image = { workspace = true }
+rand = "0.10.2"

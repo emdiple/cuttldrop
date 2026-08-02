@@ -9,21 +9,30 @@
 //! "does the simulator reproduce it?" before touching a camera.
 //!
 //! ## Status
-//! - [`render`] / [`sample`] — the identity path, no distortion — **landed**
-//! - distortion — perspective warp → defocus/motion blur → sensor noise →
-//!   colour crosstalk (3×3 mixing + offset) → exposure blend of adjacent
-//!   pulses → rolling-shutter tear → frame drops — **M0 step 2**
+//! - [`render`] / [`sample`] — the identity path — **landed**
+//! - [`channel`] — photometric distortion: crosstalk, gain/offset, vignette,
+//!   blur, noise — **landed**
+//! - geometric and temporal distortion — perspective warp, rolling-shutter
+//!   tear, exposure blend between consecutive pulses — **M0 step 3**
 //!
-//! Note the ordering: [`sample`] currently assumes the grid is axis-aligned and
-//! exactly fills the image, so it reads cell centres directly. Once warp exists,
-//! this is where finder detection and the homography go — the eye will locate
-//! the grid rather than being told where it is.
+//! The split is not arbitrary. Photometric distortion leaves the grid where it
+//! was, so the eye can keep reading cell centres. Everything in step 3 moves
+//! the grid, which means the eye has to *locate* it — finder detection and a
+//! homography — and that is a large enough change to be worth isolating from
+//! the fountain layer landing at the same time.
+//!
+//! [`sample`] therefore still assumes an axis-aligned grid that exactly fills
+//! the image. That assumption is where the homography will go.
 //!
 //! From M2 this is joined by the **capture corpus** (`DESIGN.md` §5, M2):
 //! recorded real camera frames replayed through the decoder in CI. The
 //! simulator tests what we thought of; the corpus tests what we didn't.
 
 #![forbid(unsafe_code)]
+
+pub mod channel;
+
+pub use channel::{Channel, Preset};
 
 use cuttl_codec::{Error, Grid, Palette, Pulse, Result};
 use image::{Rgb, RgbImage};
@@ -89,8 +98,45 @@ pub fn sample(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuttl_codec::stream::{self, Reassembler};
+    use cuttl_codec::Receiver;
+    use cuttl_codec::stream;
     use proptest::prelude::*;
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+    const M1: (Grid, Palette) = (Grid::M1_MONO, Palette::Mono1);
+    /// 3 px/cell — the realistic lower bound for a camera that can still
+    /// resolve cells (§2), and 7× less blur work per frame than the render
+    /// default. Tests should run at the hard end of the envelope anyway.
+    const CELL_PX: u32 = 3;
+
+    /// Run an object through the full path with a given channel and frame loss,
+    /// returning the reconstruction attempt plus how many pulses were rejected.
+    fn transfer(
+        data: &[u8],
+        overhead: f32,
+        preset: Preset,
+        loss: f64,
+        seed: u64,
+    ) -> (cuttl_codec::Result<Vec<u8>>, u32, usize) {
+        let (grid, palette) = M1;
+        let channel = Channel::preset(preset);
+        let pulses = stream::encode(data, grid, palette, 42, overhead).unwrap();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rx = Receiver::new();
+        let mut delivered = 0;
+
+        for pulse in &pulses {
+            if rng.random::<f64>() < loss {
+                continue;
+            }
+            delivered += 1;
+            let image = channel::apply(&render(pulse, CELL_PX), &channel, CELL_PX, &mut rng);
+            if let Ok(sampled) = sample(&image, grid, palette) {
+                rx.ingest(&sampled);
+            }
+        }
+        (rx.finish(), rx.rejected(), delivered)
+    }
 
     #[test]
     fn odd_image_dimensions_are_rejected() {
@@ -101,9 +147,113 @@ mod tests {
         ));
     }
 
+    /// The M0 headline: 60% of pulses thrown away, object still exact.
+    #[test]
+    fn survives_sixty_percent_frame_loss() {
+        let data: Vec<u8> = (0..16384u32).map(|i| (i ^ (i >> 5)) as u8).collect();
+        let (out, _, delivered) = transfer(&data, 2.0, Preset::None, 0.6, 1);
+        assert_eq!(out.unwrap(), data);
+        assert!(delivered < 1500, "loss was not actually applied");
+    }
+
+    /// Heavy photometric distortion *and* loss together.
+    ///
+    /// Note this is not a hard test for mono: at 1 bit/cell the decision margin
+    /// is enormous, and heavy costs zero pulses. It bites in colour — see
+    /// `colour_is_more_fragile_than_mono`. The work here is done by the loss.
+    #[test]
+    fn survives_heavy_distortion_with_loss() {
+        let data: Vec<u8> = (0..8192u32).map(|i| (i * 31) as u8).collect();
+        let (out, _, _) = transfer(&data, 2.0, Preset::Heavy, 0.3, 2);
+        assert_eq!(out.unwrap(), data);
+    }
+
+    /// Fraction of cells misread after a round trip through the channel.
+    fn cell_error_rate(palette: Palette, preset: Preset, seed: u64) -> f64 {
+        // Same grid for both palettes, so only the bit depth differs.
+        let grid = Grid::M3_COLOR;
+        let mut pulse = Pulse::new(grid, palette).unwrap();
+        let data: Vec<u8> = (0..pulse.capacity())
+            .map(|i| (i * i * 7 + i * 13) as u8)
+            .collect();
+        pulse.write_payload(&data).unwrap();
+
+        let image = channel::apply(
+            &render(&pulse, CELL_PX),
+            &Channel::preset(preset),
+            CELL_PX,
+            &mut StdRng::seed_from_u64(seed),
+        );
+        let got = sample(&image, grid, palette).unwrap();
+        let wrong = pulse
+            .cells()
+            .iter()
+            .zip(got.cells())
+            .filter(|(a, b)| a != b)
+            .count();
+        wrong as f64 / pulse.cells().len() as f64
+    }
+
+    /// §1c as a measurement: 3 bits/cell is meaningfully more fragile than 1,
+    /// because the decision margin between palette entries is smaller. This is
+    /// why colour is the *third* lever and why M3 gates it behind an A/B
+    /// toggle rather than assuming a 3× win.
+    ///
+    /// Measured at `Brutal`, not `Heavy`, for a mundane reason: at `Heavy` the
+    /// cell error rate is around 3e-6, so a single pulse of ~5k cells sees zero
+    /// errors and the comparison is pure noise. `Brutal` puts both palettes
+    /// somewhere the difference is real.
+    #[test]
+    fn colour_is_more_fragile_than_mono() {
+        let mean = |palette| {
+            (0..4)
+                .map(|seed| cell_error_rate(palette, Preset::Brutal, seed))
+                .sum::<f64>()
+                / 4.0
+        };
+        let (mono, colour) = (mean(Palette::Mono1), mean(Palette::Color3));
+        assert!(
+            colour > mono,
+            "colour {colour:.4} was not worse than mono {mono:.4}"
+        );
+    }
+
+    /// Without repair symbols, loss must fail cleanly — never return wrong
+    /// bytes. This is the test that would catch the fountain silently doing
+    /// nothing.
+    #[test]
+    fn zero_overhead_with_loss_fails_rather_than_lying() {
+        let data = vec![0xC3u8; 8192];
+        let (out, _, _) = transfer(&data, 0.0, Preset::None, 0.3, 3);
+        assert!(out.is_err());
+    }
+
+    /// Measured motivation for the inner Reed–Solomon code (§1b).
+    ///
+    /// Past roughly 0.45 cell widths of blur, nearly every pulse contains at
+    /// least one misread cell. With no inner code one bad cell costs the whole
+    /// symbol, so rejection goes to ~100% and no amount of fountain overhead
+    /// helps — the fountain repairs erasures, and this is an *error* problem.
+    ///
+    /// **When the inner code lands, this test should start failing.** That is
+    /// the point: the failure is the measurement of what RS bought us.
+    #[test]
+    fn brutal_is_currently_unsurvivable() {
+        let data = vec![0x77u8; 8192];
+        let (out, rejected, delivered) = transfer(&data, 2.0, Preset::Brutal, 0.0, 4);
+        assert!(
+            out.is_err(),
+            "brutal now survives — has the inner code landed?"
+        );
+        assert!(
+            rejected as f64 > delivered as f64 * 0.9,
+            "expected near-total rejection, got {rejected}/{delivered}"
+        );
+    }
+
     proptest! {
-        /// Render → sample must be the identity while the channel is lossless.
-        /// Everything M0 step 2 adds is measured as a departure from this.
+        /// Render → sample is the identity when the channel is clean. Every
+        /// distortion stage is measured as a departure from this.
         #[test]
         fn render_sample_is_lossless(
             data in prop::collection::vec(any::<u8>(), 0..80),
@@ -116,21 +266,21 @@ mod tests {
             let sampled = sample(&render(&pulse, cell_px), Grid::M1_MONO, Palette::Mono1).unwrap();
             prop_assert_eq!(sampled.cells(), pulse.cells());
         }
+    }
 
-        /// The full M0 step 1 path: object → pulses → images → cells → object.
+    proptest! {
+        // Each case pushes dozens of frames through blur and noise, so this
+        // runs far fewer cases than the default. Breadth here comes from the
+        // fixed-seed tests above, not from case count.
+        #![proptest_config(ProptestConfig::with_cases(12))]
+
+        /// Object → pulses → images → channel → cells → object.
         #[test]
         fn object_survives_the_optical_path(
             data in prop::collection::vec(any::<u8>(), 0..2048),
         ) {
-            let (grid, palette) = (Grid::M1_MONO, Palette::Mono1);
-            let pulses = stream::encode(&data, grid, palette, 42).unwrap();
-
-            let mut rx = Reassembler::new();
-            for pulse in &pulses {
-                let image = render(pulse, 3);
-                rx.ingest(&sample(&image, grid, palette).unwrap());
-            }
-            prop_assert_eq!(rx.finish().unwrap(), data);
+            let (out, _, _) = transfer(&data, 2.0, Preset::Light, 0.2, 99);
+            prop_assert_eq!(out.unwrap(), data);
         }
     }
 }

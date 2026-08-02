@@ -36,13 +36,22 @@ pub enum Error {
         rows: u16,
     },
 
-    #[error("pulse capacity of {capacity} B cannot hold the {header} B header")]
-    NoRoomForHeader { capacity: usize, header: usize },
+    #[error(
+        "pulse capacity of {capacity} B cannot hold a {header} B header, a {symbol_id} B symbol id and a symbol"
+    )]
+    NoRoomForSymbol {
+        capacity: usize,
+        header: usize,
+        symbol_id: usize,
+    },
 
-    #[error("stream incomplete: {missing} of {total} pulses still missing")]
-    Incomplete { missing: u32, total: u32 },
+    #[error("malformed fountain configuration in pulse header")]
+    BadConfig,
 
-    #[error("no pulses ingested")]
+    #[error("fountain has not converged: {have} symbols absorbed, at least {need} needed")]
+    NotConverged { have: u32, need: u32 },
+
+    #[error("no pulse passed the CRC gate")]
     Empty,
 
     #[error("object CRC mismatch after reassembly (expected {expected:#010x}, got {got:#010x})")]
