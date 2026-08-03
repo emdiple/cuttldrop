@@ -102,6 +102,10 @@ failure *legible*, which is what lets the receiver tell a human to slow down.
 eye displays `FILL THE FRAME` / `SLOW THE SENDER DOWN` / `HOLD STILL`, and a person acts
 on it. That is a real, if low-bandwidth, control loop.
 
+**No network also means no confidentiality.** Whatever the skin shows, any camera with
+line of sight can read. What this design buys is the absence of a network path — not
+privacy. Optional passphrase encryption is on the roadmap (`COMPARISON-decimen.md`, R2).
+
 ## Numbers
 
 Measured, not estimated. Goodput is payload bytes per pulse after every layer of
