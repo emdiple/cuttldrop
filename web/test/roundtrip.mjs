@@ -40,7 +40,10 @@ assert.ok(
 // Wraps, because the skin loops forever.
 assert.deepEqual(skin.pulseRgba(skin.pulseCount), first, "pulse indexing should wrap");
 
-const eye = new Eye(PROFILE);
+// "auto", exactly as the browser eye constructs it: no profile is agreed
+// out of band, so the eye has to work the grid out from the frames alone.
+const eye = new Eye("auto");
+assert.equal(eye.profile, undefined, "eye should not claim a profile before seeing one");
 assert.equal(eye.symbols, 0);
 assert.equal(eye.isComplete, false);
 assert.equal(eye.fileName, undefined, "no manifest should mean no name");
@@ -55,6 +58,8 @@ for (let i = 0; i < skin.pulseCount; i += 1) {
     assert.equal(eye.fileMime, MIME, "manifest mime should arrive with the first pulse");
     assert.equal(eye.expectedBytes, object.length, "size should be known from the OTI");
     assert.equal(eye.isComplete, false, "one pulse must not complete a transfer");
+    assert.equal(eye.profile, PROFILE, "eye should have locked onto the skin's profile");
+    assert.ok(eye.symbolBytes > 0, "goodput needs a symbol size to multiply by");
   }
   if (outcome === Outcome.Completed) break;
   assert.notEqual(outcome, Outcome.Unlocatable, `frame ${i} could not be located`);
@@ -76,6 +81,18 @@ assert.equal(
 
 // A bad profile must reject rather than produce a broken object.
 assert.throws(() => new Eye("nonsense"), "unknown profiles should throw");
+
+// Auto-detection must reach the dense profiles too, not just the default —
+// that is the whole reason the skin can offer a density menu on one device.
+for (const profile of ["m2", "m3", "m4"]) {
+  const dense = new Skin(object, NAME, MIME, profile, 0x5eed, 0.5);
+  const watcher = new Eye("auto");
+  for (let i = 0; i < dense.pulseCount; i += 1) {
+    if (watcher.ingest(dense.pulseRgba(i), dense.cols, dense.rows) === Outcome.Completed) break;
+  }
+  assert.equal(watcher.profile, profile, `auto-detect settled on the wrong grid for ${profile}`);
+  assert.deepEqual(watcher.takeObject(), object, `${profile} round trip differs`);
+}
 
 console.log(
   `ok — ${object.length} B through the JS boundary in ${frames} of ${skin.pulseCount} pulses`,

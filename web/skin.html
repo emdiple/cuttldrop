@@ -14,6 +14,19 @@
         <span>Choose a file to send</span>
       </label>
       <p id="detail" class="detail"></p>
+      <!--
+        Ordered by bitrate, which is also the order of risk. The eye works the
+        choice out for itself, so this menu exists on one device only.
+      -->
+      <label class="slider">
+        Density
+        <select id="profile">
+          <option value="m1" selected>Safe &mdash; 64&times;36 mono, 160 B/pulse</option>
+          <option value="m2">Dense &mdash; 192&times;108 mono, 2.3 KB/pulse</option>
+          <option value="m3">Colour &mdash; 96&times;54, 1.4 KB/pulse</option>
+          <option value="m4">Dense colour &mdash; 192&times;108, 7.1 KB/pulse</option>
+        </select>
+      </label>
       <label class="slider">
         Pulse rate <output id="rate-value">20</output> Hz
         <input type="range" id="rate" min="1" max="30" value="20" />
