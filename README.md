@@ -149,6 +149,7 @@ crates/cuttl-cli/     `cuttl` — encode and decode PNG pulse directories.
 crates/cuttl-wasm/    wasm-bindgen shim: Skin and Eye.
 web/                  Vite + TypeScript. No framework, no server, no build-time magic.
 DESIGN.md             the architecture document, and the reasoning behind every choice.
+ROADMAP.md            the ordered work list, and the measurements behind the order.
 ```
 
 `DESIGN.md` is worth reading before changing anything. It records not just what was

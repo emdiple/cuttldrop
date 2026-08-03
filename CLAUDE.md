@@ -6,6 +6,8 @@ network path of any kind — no wifi, bluetooth, server, or pairing.
 
 **`DESIGN.md` is the authoritative architecture document.** This file is the working
 summary; when they disagree, DESIGN.md wins and this file has rotted — fix it.
+**`ROADMAP.md` is the ordered work list** — what to do next and the evidence for the
+order. DESIGN.md §5 still owns what the milestones *mean*.
 
 ## ⚠️ Path quirk
 
