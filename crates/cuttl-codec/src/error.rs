@@ -14,6 +14,9 @@ pub enum Error {
     #[error("grid {cols}×{rows} leaves no payload cells after structural regions")]
     GridTooSmall { cols: u16, rows: u16 },
 
+    #[error("finder size {finder} must be odd and at least 7 for the 1:1:3:1:1 scan")]
+    BadFinder { finder: u16 },
+
     #[error("pilot period must be non-zero")]
     ZeroPilotPeriod,
 
@@ -47,6 +50,9 @@ pub enum Error {
 
     #[error("inner code cannot fit {ecc_len} B of ECC into a {capacity} B pulse")]
     NoRoomForEcc { capacity: usize, ecc_len: usize },
+
+    #[error("could not locate the pulse: fewer than four finders found")]
+    NotLocated,
 
     #[error("malformed fountain configuration in pulse header")]
     BadConfig,

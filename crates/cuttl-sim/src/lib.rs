@@ -9,20 +9,20 @@
 //! "does the simulator reproduce it?" before touching a camera.
 //!
 //! ## Status
-//! - [`render`] / [`sample`] — the identity path — **landed**
-//! - [`channel`] — photometric distortion: crosstalk, gain/offset, vignette,
+//! - [`render`] — paint a pulse — **landed**
+//! - [`channel`] — perspective warp, then crosstalk, gain/offset, vignette,
 //!   blur, noise — **landed**
-//! - geometric and temporal distortion — perspective warp, rolling-shutter
-//!   tear, exposure blend between consecutive pulses — **M0 step 3**
+//! - [`geom`] / [`locate`] — finder detection and the homography, so the eye
+//!   *locates* the grid instead of being told where it is — **landed**
+//! - temporal distortion — rolling-shutter tear, exposure blend between
+//!   consecutive pulses — **next**, and both need the beacon first
 //!
-//! The split is not arbitrary. Photometric distortion leaves the grid where it
-//! was, so the eye can keep reading cell centres. Everything in step 3 moves
-//! the grid, which means the eye has to *locate* it — finder detection and a
-//! homography — and that is a large enough change to be worth isolating from
-//! the fountain layer landing at the same time.
+//! ## Two ways to read a frame
 //!
-//! [`sample`] therefore still assumes an axis-aligned grid that exactly fills
-//! the image. That assumption is where the homography will go.
+//! [`read`] is the real one: find the finders, solve the homography, sample
+//! through it. [`sample`] is the axis-aligned shortcut, valid only when the
+//! grid exactly fills the image — useful for testing the codec without the
+//! optics in the way, and wrong the moment there is any perspective.
 //!
 //! From M2 this is joined by the **capture corpus** (`DESIGN.md` §5, M2):
 //! recorded real camera frames replayed through the decoder in CI. The
@@ -31,8 +31,12 @@
 #![forbid(unsafe_code)]
 
 pub mod channel;
+pub mod geom;
+pub mod locate;
 
 pub use channel::{Channel, Preset};
+pub use geom::Homography;
+pub use locate::locate;
 
 use cuttl_codec::{Error, Grid, Palette, Pulse, Result};
 use image::{Rgb, RgbImage};
@@ -95,6 +99,38 @@ pub fn sample(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
     Ok(pulse)
 }
 
+/// Sample every cell centre through a known cell-space → image-space transform.
+///
+/// Bilinear rather than nearest-neighbour: cell centres land on fractional
+/// pixels under any real perspective, and rounding them throws away the
+/// sub-pixel accuracy the homography just worked out.
+pub fn sample_with(
+    image: &RgbImage,
+    grid: Grid,
+    palette: Palette,
+    transform: &Homography,
+) -> Result<Pulse> {
+    let mut pulse = Pulse::new(grid, palette)?;
+    for y in 0..grid.rows {
+        for x in 0..grid.cols {
+            let (ix, iy) = transform.apply(x as f64 + 0.5, y as f64 + 0.5);
+            let rgb = channel::bilinear(image, ix, iy);
+            pulse.set_cell(x, y, palette.from_rgb(rgb))?;
+        }
+    }
+    Ok(pulse)
+}
+
+/// The eye's real entry point: locate the pulse, then read it.
+///
+/// A frame whose finders cannot be found is an *erasure* — the caller should
+/// count it and move on, exactly as it would for a CRC reject (§1b). The skin
+/// is looping; there will be another frame.
+pub fn read(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
+    let transform = locate(image, grid).ok_or(Error::NotLocated)?;
+    sample_with(image, grid, palette, &transform)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,26 +140,40 @@ mod tests {
     use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     const M1: (Grid, Palette) = (Grid::M1_MONO, Palette::Mono1);
-    /// 3 px/cell — the realistic lower bound for a camera that can still
-    /// resolve cells (§2), and 7× less blur work per frame than the render
-    /// default. Tests should run at the hard end of the envelope anyway.
-    const CELL_PX: u32 = 3;
+    /// 4 px/cell — near the realistic lower bound for a camera that can still
+    /// resolve cells (§2), and far less blur work per frame than the render
+    /// default. Detection needs a little more than the codec does: a finder's
+    /// runs are only `cell_px` wide, and the ratio test has to measure them
+    /// through blur.
+    const CELL_PX: u32 = 4;
 
-    /// Run an object through the full path with a given channel and frame loss,
-    /// returning the reconstruction attempt plus how many pulses were rejected.
-    fn transfer(
-        data: &[u8],
-        overhead: f32,
-        preset: Preset,
-        loss: f64,
-        seed: u64,
-    ) -> (cuttl_codec::Result<Vec<u8>>, u32, usize) {
+    /// Outcome of pushing an object through the whole path.
+    struct Transfer {
+        object: cuttl_codec::Result<Vec<u8>>,
+        /// Frames the eye could not find four finders in.
+        unlocatable: usize,
+        /// Frames it read but the CRC gate dropped.
+        rejected: u32,
+        /// Frames that survived the loss stage and were handed to the eye.
+        delivered: usize,
+    }
+
+    impl Transfer {
+        /// Frames that produced nothing usable, however they failed.
+        fn wasted(&self) -> f64 {
+            (self.unlocatable as f64 + self.rejected as f64) / self.delivered.max(1) as f64
+        }
+    }
+
+    /// Run an object through the full path with a given channel and frame loss.
+    fn transfer(data: &[u8], overhead: f32, preset: Preset, loss: f64, seed: u64) -> Transfer {
         let (grid, palette) = M1;
         let channel = Channel::preset(preset);
         let pulses = stream::encode(data, grid, palette, 42, overhead).unwrap();
         let mut rng = StdRng::seed_from_u64(seed);
         let mut rx = Receiver::new();
         let mut delivered = 0;
+        let mut unlocatable = 0;
 
         for pulse in &pulses {
             if rng.random::<f64>() < loss {
@@ -131,11 +181,21 @@ mod tests {
             }
             delivered += 1;
             let image = channel::apply(&render(pulse, CELL_PX), &channel, CELL_PX, &mut rng);
-            if let Ok(sampled) = sample(&image, grid, palette) {
-                rx.ingest(&sampled);
+            // `read`, not `sample`: the presets warp now, so the eye has to
+            // find the grid. A frame it cannot locate is just an erasure.
+            match read(&image, grid, palette) {
+                Ok(sampled) => {
+                    rx.ingest(&sampled);
+                }
+                Err(_) => unlocatable += 1,
             }
         }
-        (rx.finish(), rx.rejected(), delivered)
+        Transfer {
+            object: rx.finish(),
+            unlocatable,
+            rejected: rx.rejected(),
+            delivered,
+        }
     }
 
     #[test]
@@ -151,9 +211,9 @@ mod tests {
     #[test]
     fn survives_sixty_percent_frame_loss() {
         let data: Vec<u8> = (0..16384u32).map(|i| (i ^ (i >> 5)) as u8).collect();
-        let (out, _, delivered) = transfer(&data, 2.0, Preset::None, 0.6, 1);
-        assert_eq!(out.unwrap(), data);
-        assert!(delivered < 1500, "loss was not actually applied");
+        let run = transfer(&data, 2.0, Preset::None, 0.6, 1);
+        assert_eq!(run.object.unwrap(), data);
+        assert!(run.delivered < 700, "loss was not actually applied");
     }
 
     /// Heavy photometric distortion *and* loss together.
@@ -164,8 +224,17 @@ mod tests {
     #[test]
     fn survives_heavy_distortion_with_loss() {
         let data: Vec<u8> = (0..8192u32).map(|i| (i * 31) as u8).collect();
-        let (out, _, _) = transfer(&data, 2.0, Preset::Heavy, 0.3, 2);
-        assert_eq!(out.unwrap(), data);
+        let run = transfer(&data, 2.0, Preset::Heavy, 0.3, 2);
+        assert_eq!(run.object.unwrap(), data);
+    }
+
+    /// The preset with warp removed, so a measurement can isolate photometric
+    /// damage from registration error.
+    fn photometric_only(preset: Preset) -> Channel {
+        Channel {
+            warp: 0.0,
+            ..Channel::preset(preset)
+        }
     }
 
     /// Fraction of cells misread after a round trip through the channel.
@@ -180,7 +249,7 @@ mod tests {
 
         let image = channel::apply(
             &render(&pulse, CELL_PX),
-            &Channel::preset(preset),
+            &photometric_only(preset),
             CELL_PX,
             &mut StdRng::seed_from_u64(seed),
         );
@@ -224,8 +293,7 @@ mod tests {
     #[test]
     fn zero_overhead_with_loss_fails_rather_than_lying() {
         let data = vec![0xC3u8; 8192];
-        let (out, _, _) = transfer(&data, 0.0, Preset::None, 0.3, 3);
-        assert!(out.is_err());
+        assert!(transfer(&data, 0.0, Preset::None, 0.3, 3).object.is_err());
     }
 
     /// Mean cells misread per pulse, over `runs` seeds.
@@ -239,7 +307,7 @@ mod tests {
                 pulse.write_payload(&data).unwrap();
                 let image = channel::apply(
                     &render(&pulse, CELL_PX),
-                    &Channel::preset(preset),
+                    &photometric_only(preset),
                     CELL_PX,
                     &mut StdRng::seed_from_u64(seed),
                 );
@@ -261,23 +329,29 @@ mod tests {
     /// | preset | m1 mono | m3 colour |
     /// |--------|---------|-----------|
     /// | Light  | 0.0     | 0.0       |
-    /// | Heavy  | 0.0     | 0.0       |
-    /// | Brutal | 33.1    | 638.7     |
+    /// | Heavy  | 0.0     | 0.375     |
+    /// | Brutal | 107.9   | 888.6     |
     ///
-    /// There is no middle ground here: below the cliff, photometric distortion
-    /// costs mono *nothing*; above it, the error count is far past what any
-    /// affordable ECC could absorb. The regime the inner code actually protects
-    /// — sparse errors from mis-registration and real optics — is not yet
-    /// simulated. It arrives with geometric distortion in M0 step 3b.
+    /// Measured with warp removed, so this isolates *photometric* damage from
+    /// registration error — the two fail in different ways and mixing them
+    /// would make the number meaningless.
+    ///
+    /// There is still no middle ground: below the cliff, photometric distortion
+    /// costs mono nothing and colour a third of a cell; above it, the count is
+    /// far past what any affordable ECC could absorb. So the inner code is
+    /// still not earning its keep against *this* axis. Where it does earn it is
+    /// sub-cell sampling error under perspective — which now exists, and is
+    /// what `survives_heavy_distortion_with_loss` exercises.
     #[test]
     fn channel_error_budget_is_what_ecc_was_sized_against() {
         for (grid, palette) in [M1, (Grid::M3_COLOR, Palette::Color3)] {
             for preset in [Preset::Light, Preset::Heavy] {
                 let errors = mean_cell_errors(grid, palette, preset, 8);
-                assert_eq!(errors, 0.0, "{palette:?} at {preset:?} was {errors}");
+                assert!(errors < 1.0, "{palette:?} at {preset:?} was {errors}");
             }
+            let brutal = mean_cell_errors(grid, palette, Preset::Brutal, 8);
+            assert!(brutal > 20.0, "{palette:?} at Brutal was only {brutal}");
         }
-        assert!(mean_cell_errors(M1.0, M1.1, Preset::Brutal, 8) > 20.0);
     }
 
     /// Brutal is past the cliff, and the inner code does **not** rescue it.
@@ -285,17 +359,22 @@ mod tests {
     /// This corrects an earlier prediction of mine. When `Preset::Brutal` was
     /// added, this test was written expecting it to start failing once
     /// Reed–Solomon landed. RS has landed and it still passes. Measurement
-    /// says why: brutal produces ~33 misread cells per mono pulse, so
-    /// correcting it would need roughly 66 of a pulse's 114 bytes as ECC —
-    /// leaving less room for payload than the header already takes.
+    /// says why: brutal produces ~108 misread cells per mono pulse, so
+    /// correcting it would need more ECC than the pulse has bytes. Warp makes
+    /// it worse still — most brutal frames now fail to locate at all, which is
+    /// why this asserts on total waste rather than on CRC rejections alone.
     #[test]
     fn brutal_stays_unsurvivable_even_with_rs() {
         let data = vec![0x77u8; 8192];
-        let (out, rejected, delivered) = transfer(&data, 2.0, Preset::Brutal, 0.0, 4);
-        assert!(out.is_err(), "brutal now survives — what changed?");
+        let run = transfer(&data, 2.0, Preset::Brutal, 0.0, 4);
+        assert!(run.object.is_err(), "brutal now survives — what changed?");
         assert!(
-            rejected as f64 > delivered as f64 * 0.9,
-            "expected near-total rejection, got {rejected}/{delivered}"
+            run.wasted() > 0.9,
+            "expected near-total waste, got {:.2} ({} unlocatable + {} rejected of {})",
+            run.wasted(),
+            run.unlocatable,
+            run.rejected,
+            run.delivered
         );
     }
 
@@ -327,8 +406,7 @@ mod tests {
         fn object_survives_the_optical_path(
             data in prop::collection::vec(any::<u8>(), 0..2048),
         ) {
-            let (out, _, _) = transfer(&data, 2.0, Preset::Light, 0.2, 99);
-            prop_assert_eq!(out.unwrap(), data);
+            prop_assert_eq!(transfer(&data, 2.0, Preset::Light, 0.2, 99).object.unwrap(), data);
         }
     }
 }
