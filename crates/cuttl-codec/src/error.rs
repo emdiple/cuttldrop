@@ -66,8 +66,11 @@ pub enum Error {
     #[error("no pulse passed the CRC gate")]
     Empty,
 
-    #[error("object CRC mismatch after reassembly (expected {expected:#010x}, got {got:#010x})")]
-    ObjectCrc { expected: u32, got: u32 },
+    #[error("object reconstructed but no manifest pulse has arrived yet, so it cannot be verified")]
+    NoManifest,
+
+    #[error("BLAKE3 mismatch after reassembly — the reconstruction is not the file that was sent")]
+    ObjectHash,
 
     #[error("pulses disagree about the object: {field}")]
     Inconsistent { field: &'static str },

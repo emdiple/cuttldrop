@@ -33,7 +33,9 @@ pub const SYMBOL_ID_LEN: usize = 4;
 
 /// RFC 6330 symbol alignment: symbol sizes must be a multiple of this, which is
 /// why the chosen symbol is usually smaller than the space a pulse offers.
-const ALIGNMENT: u8 = 8;
+/// Public so goodput can be reported as the symbol the fountain will actually
+/// pick, not the space it was offered.
+pub const ALIGNMENT: u8 = 8;
 
 /// RFC 6330 §4.4.1.2 / errata 5548 bounds, used to reject implausible configs.
 const MAX_TRANSFER_LENGTH: u64 = 942_574_504_275;
@@ -143,6 +145,14 @@ impl Fountain for RaptorQ {
 impl RaptorQ {
     pub fn is_empty(&self) -> bool {
         self.empty
+    }
+}
+
+impl RaptorQSink {
+    /// Exact object length, straight from the OTI. This is why neither the
+    /// manifest nor the stream header carries a size field of its own.
+    pub fn transfer_length(&self) -> u64 {
+        self.config.transfer_length()
     }
 }
 
