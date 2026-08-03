@@ -124,7 +124,15 @@ cd web && npm test        # JS boundary round trip, no browser needed
   `requestVideoFrameCallback` and shows `MOVE CLOSER` / `SLOW DOWN` hints (§1e).
   Builds and typechecks; the JS boundary is tested. **Not yet run against a real
   camera** — that is the remaining M1 observable and needs two physical devices.
-- **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
+- **M1 observable** ⬜ **the only thing blocking M1**: a real file across a real air
+  gap, two physical devices. Cannot be done from a terminal — needs a camera.
+- **M2** robustness. Three of the original six landed early and are struck out:
+  ~~tear detect~~ (3c), ~~RS + CRC~~ (3a), ~~feedback overlay~~ (M1c). Left:
+  **per-band symbols** (a torn or glare-hit frame should cost one band, not the whole
+  pulse), **manifest stream** (filename/size/mime so the eye can name the file and
+  show it early), **BLAKE3** replacing the placeholder CRC-32 object check, **capture
+  corpus** (recorded real camera frames replayed in CI), and **decode in a worker**
+  (currently on the main thread — fine for M1, janky beyond it).
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
 - **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder experiments
 - **M5** product: multi-file, PWA, native eye shell only if iOS forces it
