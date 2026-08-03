@@ -18,10 +18,11 @@ it.
 
 | | |
 |---|---|
-| Codec, fountain layer, FEC stack | done, 81 tests |
+| Codec, fountain layer, FEC stack | done, 89 tests |
+| Manifest + mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
 | CLI (`cuttl encode` / `cuttl decode`) | done |
-| Browser skin + eye | built and typechecked; JS boundary tested |
+| Browser skin + eye | built and typechecked; decode runs in a worker; JS boundary tested |
 | **A real file across a real air gap** | **not done** — needs two physical devices |
 
 That last row is the honest headline. Everything upstream of the camera is verified;
@@ -43,7 +44,10 @@ cmp myfile.pdf out.pdf
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.pdf --distort heavy --loss 0.5
 ```
 
-Both come back byte-identical. `--distort brutal` is deliberately past what the stack
+Both come back byte-identical, and the eye announces *"receiving myfile.pdf
+(application/pdf) — N B expected"* within the first few frames: every 8th pulse carries
+a manifest with the name, type, and BLAKE3 hash. Leave `-o` off and the output names
+itself from the manifest. `--distort brutal` is deliberately past what the stack
 survives, and fails loudly rather than returning a corrupt file.
 
 ### In a browser
@@ -72,12 +76,16 @@ the whole file. So the stack is concatenated:
 
 ```
 skin:  file → fountain → framing → inner Reed-Solomon → cells → screen
-eye:   camera → locate → sample → RS correct → CRC gate → fountain → file
+eye:   camera → locate → sample → RS correct → CRC gate → fountain → BLAKE3 → file
 ```
 
 The **CRC gate** in the middle is the load-bearing piece: it converts errors into
 erasures, which is the one thing the fountain layer can actually repair. Nothing
-unverified ever reaches the decoder, and nothing unverified is ever handed back.
+unverified ever reaches the decoder — and the **BLAKE3 check** at the very end is the
+only statement about the *file*: the eye holds the expected hash (it rides in the
+manifest, every 8th pulse, along with the filename and mime type) and refuses to hand
+anything back until the reconstruction matches. The same manifest is why the eye can
+say *"receiving cuttlefish.pdf — 2.4 MB"* a second after it starts looking.
 
 **The eye locates the grid rather than being told where it is.** Four QR-style
 concentric-square finders, found by scanning for the 1:1:3:1:1 run-length ratio, then
@@ -101,12 +109,14 @@ overhead.
 
 | Profile | Grid | Bits/cell | Bands | Goodput |
 |---|---|---|---|---|
-| M1 (mono) | 64 × 36 | 1 | 1 | **164 B/pulse** |
-| M3 (colour) | 96 × 54 | 3 | 2 | **1418 B/pulse** |
+| M1 (mono) | 64 × 36 | 1 | 1 | **160 B/pulse** |
+| M3 (colour) | 96 × 54 | 3 | 2 | **1408 B/pulse** |
 
-At a realistic 10 pulses/second that is roughly 1.6 KB/s mono and 14 KB/s colour. The
-colour path is built and tested but its calibration machinery is not finished, so treat
-the second row as a ceiling rather than a promise.
+At a realistic 10 pulses/second that is roughly 1.6 KB/s mono and 14 KB/s colour —
+minus the manifest's slot every 8th pulse (12.5% for mono, 6.25% for colour), which is
+the price of files that arrive named and verified. The colour path is built and tested
+but its calibration machinery is not finished, so treat the second row as a ceiling
+rather than a promise.
 
 ## Layout
 
