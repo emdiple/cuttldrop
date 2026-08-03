@@ -241,6 +241,13 @@ been located, which is the only thing the beacon is uniquely good for.
 This does not weaken the tear detector. Duplicating a 3-byte counter top and bottom is
 exactly as effective as duplicating 16 bytes — the mismatch is what carries the signal.
 
+**Implemented at M0 step 3c**, with one addition the design did not anticipate: the
+beacon is written **one bit per cell**, not in the pulse's palette. It has to be
+readable before the pilots have been fitted, so it cannot depend on colour
+classification at all. In colour mode that makes each beacon cell a majority vote over
+three subchannels — free redundancy, and it falls straight out of refusing to use the
+full alphabet.
+
 ### 3b. Colour scheme — and why per-pulse calibration is non-negotiable
 
 **Palette: 8 colours, treating R/G/B as three independent binary subchannels** (each cell

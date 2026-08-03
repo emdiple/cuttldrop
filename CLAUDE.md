@@ -94,10 +94,12 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
   detection needs QR's 1:1:3:1:1 and that needs 7 cells. Registration is a fixed
   ~256-cell cost, so the grid grew to amortise it — and more than paid for itself:
   goodput went 64 → 160 B/pulse at M1.
-- **M0 step 3c** temporal distortion: rolling-shutter tear and the exposure blend
-  between consecutive pulses. Both need two pulses in flight, and tear needs the
-  beacon (pulse counter, duplicated top and bottom) to tell a torn frame from a
-  clean one — so the beacon comes first.
+- **M0 step 3c** ✅ beacon + temporal distortion. `cuttl_sim::channel::capture` takes
+  two consecutive pulses; tear stitches them at a sensor row, blend integrates both.
+  The beacon (4 B: stream id + 24-bit counter, repetition-coded, duplicated top and
+  bottom) makes tear *detected* rather than merely survived — `Ingest::Torn`.
+  Measured at `heavy`: 80 torn, 18 CRC-rejected, transfer still byte-exact.
+  **M0 is complete.**
 - **M1** air gap crossed: B/W 64×36, two devices, real file
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
@@ -116,6 +118,12 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
   Measured mean cells misread per pulse (photometric only, 4 px/cell): mono 107.9,
   colour 888.6. Correcting that needs more ECC than a pulse has bytes.
   **The inner code protects the sparse-error regime, not this one.**
+- **Beacon is a diagnostic, not a guarantee** — a stitched frame fails the CRC gate
+  anyway. The beacon earns its place by being cheap and *early* (skips RS + fountain
+  work) and by being legible: "frames are tearing" is actionable by the human back
+  channel (§1e); "CRC failed" is not. Tear detection is also incomplete by design —
+  a tear line landing inside a beacon strip or in the dark surround leaves both
+  strips agreeing, and the CRC catches those instead.
 - **Open, M0 step 3b** — photometric distortion still shows no middle ground: mono
   gets 0 errors/pulse below the cliff and ~108 above it. The sparse-error regime RS
   protects comes from *sub-cell sampling error under perspective*, which now exists.

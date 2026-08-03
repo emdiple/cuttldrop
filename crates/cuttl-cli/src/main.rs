@@ -207,26 +207,35 @@ fn decode(
         bail!("no PNG pulses found in {}", input.display());
     }
 
+    let load = |path: &Path| -> Result<image::RgbImage> {
+        Ok(image::open(path)
+            .with_context(|| format!("opening {}", path.display()))?
+            .to_rgb8())
+    };
+
     let mut rng = StdRng::seed_from_u64(seed);
     let mut rx = Receiver::new();
     let mut dropped = 0u32;
     let mut unreadable = 0u32;
 
-    for path in &paths {
+    // Every capture sees two pulses: the skin loops forever, so the frame after
+    // the last is the first again. Without a pair there is no tear and no
+    // exposure straddle to simulate.
+    let mut current = load(&paths[0])?;
+    for index in 0..paths.len() {
+        let next = load(&paths[(index + 1) % paths.len()])?;
         if rng.random::<f64>() < loss {
             dropped += 1;
+            current = next;
             continue;
         }
-        let image = image::open(path)
-            .with_context(|| format!("opening {}", path.display()))?
-            .to_rgb8();
 
         // Cell size is inferred from the rendered image, so the channel's blur
         // is scaled the same way the eye will see it.
-        let cell_px = image.width() / grid.cols as u32;
-        let image = cuttl_sim::channel::apply(&image, &channel, cell_px.max(1), &mut rng);
+        let cell_px = (current.width() / grid.cols as u32).max(1);
+        let frame = cuttl_sim::channel::capture(&current, &next, &channel, cell_px, &mut rng);
 
-        match cuttl_sim::read(&image, grid, palette) {
+        match cuttl_sim::read(&frame, grid, palette) {
             Ok(pulse) => {
                 rx.ingest(&pulse);
             }
@@ -234,6 +243,7 @@ fn decode(
             // failure — the same treatment a CRC reject gets (§1b).
             Err(_) => unreadable += 1,
         }
+        current = next;
         if rx.is_complete() {
             break;
         }
@@ -241,8 +251,9 @@ fn decode(
 
     let (have, need) = rx.progress();
     println!(
-        "eye:  {} pulses on disk, {dropped} dropped, {} rejected, {unreadable} unreadable",
+        "eye:  {} pulses on disk, {dropped} dropped, {} torn, {} rejected, {unreadable} unreadable",
         paths.len(),
+        rx.torn(),
         rx.rejected()
     );
     println!("      {have}/{need} symbols absorbed  [distort {distort:?}, loss {loss:.2}]");

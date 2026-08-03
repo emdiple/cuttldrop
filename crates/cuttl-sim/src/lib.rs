@@ -154,6 +154,8 @@ mod tests {
         unlocatable: usize,
         /// Frames it read but the CRC gate dropped.
         rejected: u32,
+        /// Frames whose beacon strips disagreed — rolling-shutter tear.
+        torn: u32,
         /// Frames that survived the loss stage and were handed to the eye.
         delivered: usize,
     }
@@ -161,7 +163,8 @@ mod tests {
     impl Transfer {
         /// Frames that produced nothing usable, however they failed.
         fn wasted(&self) -> f64 {
-            (self.unlocatable as f64 + self.rejected as f64) / self.delivered.max(1) as f64
+            (self.unlocatable as f64 + self.rejected as f64 + self.torn as f64)
+                / self.delivered.max(1) as f64
         }
     }
 
@@ -175,12 +178,21 @@ mod tests {
         let mut delivered = 0;
         let mut unlocatable = 0;
 
-        for pulse in &pulses {
+        for (index, pulse) in pulses.iter().enumerate() {
             if rng.random::<f64>() < loss {
                 continue;
             }
             delivered += 1;
-            let image = channel::apply(&render(pulse, CELL_PX), &channel, CELL_PX, &mut rng);
+            // Every capture straddles two pulses in flight: the skin loops, so
+            // the frame after the last is the first again.
+            let next = &pulses[(index + 1) % pulses.len()];
+            let image = channel::capture(
+                &render(pulse, CELL_PX),
+                &render(next, CELL_PX),
+                &channel,
+                CELL_PX,
+                &mut rng,
+            );
             // `read`, not `sample`: the presets warp now, so the eye has to
             // find the grid. A frame it cannot locate is just an erasure.
             match read(&image, grid, palette) {
@@ -194,6 +206,7 @@ mod tests {
             object: rx.finish(),
             unlocatable,
             rejected: rx.rejected(),
+            torn: rx.torn(),
             delivered,
         }
     }
@@ -224,7 +237,7 @@ mod tests {
     #[test]
     fn survives_heavy_distortion_with_loss() {
         let data: Vec<u8> = (0..8192u32).map(|i| (i * 31) as u8).collect();
-        let run = transfer(&data, 2.0, Preset::Heavy, 0.3, 2);
+        let run = transfer(&data, 3.0, Preset::Heavy, 0.3, 2);
         assert_eq!(run.object.unwrap(), data);
     }
 
@@ -284,6 +297,63 @@ mod tests {
         assert!(
             colour > mono,
             "colour {colour:.4} was not worse than mono {mono:.4}"
+        );
+    }
+
+    /// Tear is *detected*, not merely survived.
+    ///
+    /// A stitched frame would fail the CRC gate regardless, so this is not what
+    /// makes the transfer correct. What the beacon adds is knowing *why* a frame
+    /// was dropped — which is the difference between a mystery and a `SLOW DOWN`
+    /// hint the human can act on (§1e, §3a).
+    #[test]
+    fn tearing_is_detected_by_the_beacon_and_survived() {
+        let data = vec![0x11u8; 4096];
+        let run = transfer(&data, 3.0, Preset::Heavy, 0.0, 12);
+        assert!(run.torn > 0, "no tears detected at Heavy");
+        assert_eq!(run.object.unwrap(), data, "tears should be survivable");
+        // Deliberately no assertion on the *rate*: the receiver short-circuits
+        // to `Duplicate` once the object is complete, so it stops inspecting
+        // beacons long before the pulse list runs out. The rate is pinned by
+        // `a_stitched_frame_reads_as_torn` instead, which does not depend on
+        // when decoding happens to finish.
+    }
+
+    /// The tear detector on its own, with no other distortion in the way.
+    ///
+    /// Not every stitch is detectable: if the tear line lands inside a beacon
+    /// strip, or in the dark surround outside the pulse, both strips still come
+    /// from one pulse and the frame reads as intact. Those are caught by the CRC
+    /// gate instead — the beacon is the cheap early-out, not the guarantee.
+    #[test]
+    fn a_stitched_frame_reads_as_torn() {
+        let (grid, palette) = M1;
+        let torn_only = Channel {
+            tear: 1.0,
+            ..Channel::preset(Preset::None)
+        };
+        let pulses = stream::encode(&vec![0x42u8; 4096], grid, palette, 9, 0.0).unwrap();
+
+        let mut detected = 0;
+        let trials = 20;
+        for seed in 0..trials {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let image = channel::capture(
+                &render(&pulses[3], CELL_PX),
+                &render(&pulses[4], CELL_PX),
+                &torn_only,
+                CELL_PX,
+                &mut rng,
+            );
+            let sampled =
+                read(&image, grid, palette).expect("finders are identical in every pulse");
+            if cuttl_codec::Receiver::new().ingest(&sampled) == cuttl_codec::Ingest::Torn {
+                detected += 1;
+            }
+        }
+        assert!(
+            detected >= trials * 3 / 4,
+            "only {detected} of {trials} stitched frames read as torn"
         );
     }
 

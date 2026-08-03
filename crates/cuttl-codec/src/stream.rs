@@ -29,6 +29,7 @@
 //! and only then does anything reach the fountain — which repairs erasures and
 //! nothing else.
 
+use crate::beacon::{self, Beacon};
 use crate::error::{Error, Result};
 use crate::fec;
 use crate::fountain::{CONFIG_LEN, Fountain, RaptorQ, RaptorQSink, SYMBOL_ID_LEN, Sink};
@@ -164,13 +165,24 @@ pub fn encode(
     fountain
         .symbols(overhead)
         .into_iter()
-        .map(|symbol| {
+        .enumerate()
+        .map(|(index, symbol)| {
             buf.iter_mut().for_each(|b| *b = 0);
             buf[HEADER_LEN..HEADER_LEN + symbol.len()].copy_from_slice(&symbol);
             header.write_into(&mut buf, &symbol);
 
             let mut pulse = Pulse::new(grid, palette)?;
             pulse.write_payload(&fec::encode(&buf, layout)?)?;
+            // The counter only has to *differ* between adjacent pulses for tear
+            // detection to work; the beacon's stream id is the low byte of the
+            // real one, which is enough to shrug off a foreign transfer early.
+            beacon::write(
+                &mut pulse,
+                Beacon {
+                    stream_id: stream_id as u8,
+                    counter: index as u32,
+                },
+            )?;
             Ok(pulse)
         })
         .collect()
@@ -189,6 +201,10 @@ pub enum Ingest {
     /// Failed the CRC gate, or belongs to another stream. An erasure, never an
     /// error (§1b).
     Rejected,
+    /// The two beacon strips disagree: this frame was stitched from two pulses
+    /// by a rolling shutter. Also an erasure — but a *diagnosable* one, which
+    /// `Rejected` is not (§3a).
+    Torn,
 }
 
 /// Absorbs pulses until the object falls out.
@@ -199,6 +215,7 @@ pub struct Receiver {
     seen: HashSet<[u8; SYMBOL_ID_LEN]>,
     accepted: u32,
     rejected: u32,
+    torn: u32,
     object: Option<Vec<u8>>,
 }
 
@@ -217,6 +234,7 @@ impl Receiver {
             seen: HashSet::new(),
             accepted: 0,
             rejected: 0,
+            torn: 0,
             object: None,
         }
     }
@@ -225,6 +243,14 @@ impl Receiver {
         if self.object.is_some() {
             return Ingest::Duplicate;
         }
+        // Cheapest check first. A torn frame would fail the CRC anyway, so this
+        // is not what makes the transfer correct — it makes the failure *legible*
+        // and skips the Reed–Solomon and fountain work (§3a).
+        if beacon::is_intact(pulse) == Some(false) {
+            self.torn += 1;
+            return Ingest::Torn;
+        }
+
         // Inner code first: repair what can be repaired, so the CRC gate above
         // only ever sees pulses that are genuinely fine or genuinely beyond
         // help. A block past its correction budget is an erasure like any other.
@@ -298,6 +324,12 @@ impl Receiver {
 
     pub fn rejected(&self) -> u32 {
         self.rejected
+    }
+
+    /// Frames dropped because their beacon strips disagreed. A rising count is
+    /// the signal behind a `SLOW DOWN` hint to the human (§1e).
+    pub fn torn(&self) -> u32 {
+        self.torn
     }
 
     pub fn is_complete(&self) -> bool {

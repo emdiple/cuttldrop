@@ -37,6 +37,29 @@ impl Palette {
         self.levels() - 1
     }
 
+    /// The cell value carrying a single bit.
+    ///
+    /// The beacon uses this rather than the full palette because it has to be
+    /// readable *before* colour calibration is possible — the eye needs the
+    /// stream id and pulse counter to interpret anything, and it has not fitted
+    /// the pilots yet. One bit per cell is the only thing that works with no
+    /// calibration at all (§3b).
+    pub const fn bit_value(self, bit: bool) -> u8 {
+        if bit { self.max_value() } else { 0 }
+    }
+
+    /// Read a cell back as a single bit.
+    ///
+    /// In colour mode this is a majority vote across the three subchannels, so
+    /// a beacon cell survives one channel being misread entirely — free
+    /// redundancy that falls out of not using the palette's full alphabet.
+    pub const fn to_bit(self, value: u8) -> bool {
+        match self {
+            Palette::Mono1 => value != 0,
+            Palette::Color3 => value.count_ones() >= 2,
+        }
+    }
+
     /// Cell value → sRGB. Fully saturated corners only; see module docs.
     pub const fn to_rgb(self, value: u8) -> [u8; 3] {
         match self {
@@ -85,6 +108,35 @@ mod tests {
         assert_eq!(Palette::Color3.levels(), 8);
         assert_eq!(Palette::Mono1.max_value(), 1);
         assert_eq!(Palette::Color3.max_value(), 7);
+    }
+
+    #[test]
+    fn bits_roundtrip_through_cell_values() {
+        for palette in [Palette::Mono1, Palette::Color3] {
+            for bit in [false, true] {
+                assert_eq!(
+                    palette.to_bit(palette.bit_value(bit)),
+                    bit,
+                    "{palette:?} {bit}"
+                );
+            }
+        }
+    }
+
+    /// A beacon cell must survive one colour subchannel being misread.
+    #[test]
+    fn colour_beacon_bits_tolerate_one_bad_channel() {
+        for bit in [false, true] {
+            let value = Palette::Color3.bit_value(bit);
+            for channel in 0..3 {
+                let damaged = value ^ (1 << channel);
+                assert_eq!(
+                    Palette::Color3.to_bit(damaged),
+                    bit,
+                    "bit {bit}, channel {channel}"
+                );
+            }
+        }
     }
 
     #[test]
