@@ -903,3 +903,295 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod alignment {
+    use super::*;
+    use cuttl_codec::{Profile, geometry::Region, stream};
+    use rand::{SeedableRng, rngs::StdRng};
+
+    /// 8 px/cell. Non-projective distortion is measured as a fraction of the
+    /// *frame*, so it only becomes visible relative to a cell once cells are a
+    /// realistic size on a real display; at 4 px/cell the whole frame is 768 px
+    /// wide and a 0.6% skew is under a pixel.
+    const CELL_PX: u32 = 8;
+
+    /// Cells the eye read differently from what the skin painted.
+    fn misread(truth: &Pulse, got: &Pulse) -> usize {
+        truth
+            .cells()
+            .iter()
+            .zip(got.cells())
+            .filter(|(a, b)| a != b)
+            .count()
+    }
+
+    /// How each arm samples a located frame.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        /// One homography from the four corners. What the eye did before.
+        Global,
+        /// Corner homography plus interpolated alignment residuals.
+        Corrected,
+    }
+
+    /// Mean misread cells per frame over a handful of pulses.
+    fn misreads_per_frame(grid: Grid, mode: Mode, channel: &Channel, seed: u64) -> f64 {
+        let palette = Palette::Mono1;
+        let data: Vec<u8> = (0..6000u32)
+            .map(|i| (i.wrapping_mul(2654435761)) as u8)
+            .collect();
+        let pulses = stream::encode(&data, grid, palette, 7, 0.0).unwrap();
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let (mut total, mut frames) = (0usize, 0usize);
+        for pulse in pulses.iter().take(8) {
+            let image = channel::apply(&render(pulse, CELL_PX), channel, CELL_PX, &mut rng);
+            let raster = Raster::new(image.width(), image.height(), image.as_raw()).unwrap();
+            let Some(transform) = eye::locate(&raster, grid) else {
+                continue;
+            };
+            let sampled = match mode {
+                Mode::Global => eye::sample_with(&raster, grid, palette, &transform),
+                Mode::Corrected => {
+                    let anchors = eye::find_anchors(&raster, grid, &transform);
+                    eye::sample_corrected(&raster, grid, palette, &transform, &anchors)
+                }
+            };
+            let Ok(sampled) = sampled else { continue };
+            total += misread(pulse, &sampled);
+            frames += 1;
+        }
+        if frames == 0 {
+            return f64::INFINITY;
+        }
+        total as f64 / frames as f64
+    }
+
+    /// The whole justification for spending 2.2% of a dense grid on interior
+    /// patterns, as a number.
+    ///
+    /// Three arms, so the *cost* of the cells and the *benefit* of using them
+    /// are not confounded:
+    ///
+    /// - **bare** — no patterns at all, one global homography. The old eye.
+    /// - **ignored** — patterns painted but not used. Isolates what they cost.
+    /// - **corrected** — patterns found and interpolated. The new eye.
+    ///
+    /// The distortion is skew plus barrel, neither of which a homography can
+    /// absorb; under plain `Preset::Light` (pure perspective) all three arms
+    /// are identical by construction, which the last assertion pins.
+    /// The whole justification for spending 2.2% of a dense grid on interior
+    /// patterns, as a number.
+    ///
+    /// Three arms, so the *cost* of the cells and the *benefit* of using them
+    /// are never confounded:
+    ///
+    /// - **bare** — no patterns, one global homography. What the eye did before.
+    /// - **ignored** — patterns painted but not used. Isolates what they cost.
+    /// - **corrected** — patterns found and interpolated. What it does now.
+    ///
+    /// `barrel = 0.02` is chosen because it is where a four-corner fit stops
+    /// working: 0.015 costs it 12 cells a frame, 0.020 costs it two thousand.
+    /// Non-projective error saturates like that because once it exceeds half a
+    /// cell every sample lands in the wrong cell, and there is nothing in
+    /// between.
+    #[test]
+    fn alignment_patterns_earn_their_cells() {
+        let dense = Profile::M2.parts().0;
+        let bare = Grid {
+            align_period: 0,
+            ..dense
+        };
+        let bent = Channel {
+            barrel: 0.02,
+            ..Channel::preset(Preset::Light)
+        };
+
+        let bare_mean = misreads_per_frame(bare, Mode::Global, &bent, 11);
+        let ignored_mean = misreads_per_frame(dense, Mode::Global, &bent, 11);
+        let corrected_mean = misreads_per_frame(dense, Mode::Corrected, &bent, 11);
+        println!(
+            "barrel 0.02: bare {bare_mean:.1}, ignored {ignored_mean:.1}, \
+             corrected {corrected_mean:.1} misread cells/frame"
+        );
+
+        // Guards against the test passing vacuously if the distortion stage
+        // ever stops distorting.
+        assert!(
+            bare_mean > 500.0,
+            "a global homography should be failing here, but read {bare_mean:.1} bad cells"
+        );
+        // Painting patterns must not itself make reading harder: they displace
+        // payload, and payload is noise to the sampler either way.
+        assert!(
+            ignored_mean < bare_mean * 1.25,
+            "patterns cost accuracy before they were even used: \
+             {bare_mean:.1} -> {ignored_mean:.1}"
+        );
+        // ~10 misread cells a frame is what the dense profile already runs at
+        // and comfortably inside the inner code; this arm must land there.
+        assert!(
+            corrected_mean < 50.0,
+            "correction left {corrected_mean:.1} bad cells/frame, past what RS absorbs"
+        );
+    }
+
+    /// The lattice spacing, and the evidence for it. Re-run with
+    /// `cargo test -p cuttl-sim --release -- --ignored --nocapture`.
+    ///
+    /// Measured misread cells/frame on 192×108 mono, by `align_period` across
+    /// rising barrel distortion. Period 0 is the four-corner fit:
+    ///
+    /// | barrel | 0 | 40 | **32** | 24 | 20 | 16 |
+    /// |---|---|---|---|---|---|---|
+    /// | 0.020 | 2208 | 279 | **2** | 1 | 1 | 0 |
+    /// | 0.025 | 4440 | 691 | **33** | 12 | 11 | 3 |
+    /// | 0.030 | 5392 | 976 | **182** | 103 | 45 | 58 |
+    /// | 0.040 | 6382 | 1722 | **743** | 527 | 344 | 440 |
+    ///
+    /// Reading it as the distortion each arm tolerates before crossing ~20
+    /// misread cells a frame: 0.016 bare, 0.024 at period 32, 0.026 at 24,
+    /// 0.027 at 20. So **32 buys a 1.5× wider tolerance for 2.2% of the
+    /// grid**, and halving the spacing again buys under 10% more for another
+    /// 3.3%. That knee is why the dense profiles use 32 rather than QR's
+    /// slightly tighter equivalent — and note 16 is not reliably better than
+    /// 20, which is the interpolation running out of signal, not out of points.
+    #[test]
+    #[ignore = "sweep, not an assertion"]
+    fn alignment_lattice_density_sweep() {
+        let dense = Profile::M2.parts().0;
+        let periods = [0u16, 40, 32, 24, 20, 16];
+        print!("{:>7} |", "barrel");
+        for period in periods {
+            print!(" {period:>7}");
+        }
+        println!();
+        for step in 0..8 {
+            let barrel = 0.015 + 0.005 * step as f32;
+            let bent = Channel {
+                barrel,
+                ..Channel::preset(Preset::Light)
+            };
+            print!("{barrel:>7.3} |");
+            for period in periods {
+                let grid = Grid {
+                    align_period: period,
+                    ..dense
+                };
+                let mode = if period == 0 {
+                    Mode::Global
+                } else {
+                    Mode::Corrected
+                };
+                print!(" {:>7.1}", misreads_per_frame(grid, mode, &bent, 11));
+            }
+            println!();
+        }
+    }
+
+    /// Under pure perspective the homography is already exact, so the anchors
+    /// must find residuals near zero and change nothing. A correction that
+    /// "helps" here would mean it is fitting noise.
+    #[test]
+    fn correction_is_inert_when_the_homography_is_already_right() {
+        let dense = Profile::M2.parts().0;
+        let clean = Channel::preset(Preset::Light);
+        let global = misreads_per_frame(dense, Mode::Global, &clean, 3);
+        let corrected = misreads_per_frame(dense, Mode::Corrected, &clean, 3);
+        println!("perspective only: global {global:.1}, corrected {corrected:.1}");
+        assert!(
+            corrected <= global + 1.0,
+            "correction hurt a frame it should have left alone: {global:.1} -> {corrected:.1}"
+        );
+    }
+
+    /// What the correction costs per frame, and how much of the frame budget
+    /// that is. Re-run with `--ignored --nocapture`.
+    ///
+    /// Measured, Apple silicon, release, 8 px/cell:
+    ///
+    /// | profile | locate | sample | find_anchors | corrected sample | total |
+    /// |---|---|---|---|---|---|
+    /// | m2 | 7.29 | 0.36 | 0.57 (18/18 found) | 0.62 | 7.66 → **8.48 ms** |
+    /// | m4 | 7.63 | 0.37 | 0.59 (18/18 found) | 0.63 | 8.00 → **8.85 ms** |
+    ///
+    /// **+11%**, and the shape of it matters more than the size: `locate`
+    /// already dominates a frame at 7–8 ms, so the interior work is small
+    /// against the corner scan it depends on. A 30 fps camera gives 33 ms.
+    #[test]
+    #[ignore = "benchmark, not an assertion"]
+    fn correction_cost_per_frame() {
+        use std::time::Instant;
+        const REPS: u32 = 20;
+
+        let time = |f: &mut dyn FnMut()| -> f64 {
+            let start = Instant::now();
+            for _ in 0..REPS {
+                f();
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / f64::from(REPS)
+        };
+
+        for profile in Profile::ALL {
+            let (grid, palette) = profile.parts();
+            let data: Vec<u8> = (0..8000u32)
+                .map(|i| i.wrapping_mul(2654435761) as u8)
+                .collect();
+            let pulses = stream::encode(&data, grid, palette, 7, 0.0).unwrap();
+            let mut rng = StdRng::seed_from_u64(5);
+            let channel = Channel::preset(Preset::Light);
+            let image = channel::apply(&render(&pulses[0], CELL_PX), &channel, CELL_PX, &mut rng);
+            let raster = Raster::new(image.width(), image.height(), image.as_raw()).unwrap();
+
+            let start = Instant::now();
+            let transform = eye::locate(&raster, grid).unwrap();
+            let locate = start.elapsed().as_secs_f64() * 1000.0;
+
+            let plain = time(&mut || {
+                let _ = eye::sample_with(&raster, grid, palette, &transform);
+            });
+            let finding = time(&mut || {
+                let _ = eye::find_anchors(&raster, grid, &transform);
+            });
+            let anchors = eye::find_anchors(&raster, grid, &transform);
+            let corrected = time(&mut || {
+                let _ = eye::sample_corrected(&raster, grid, palette, &transform, &anchors);
+            });
+
+            println!(
+                "{}: locate {locate:.2} | sample {plain:.2} | find_anchors {finding:.2} \
+                 ({}/{} found) | corrected {corrected:.2} | total {:.2} -> {:.2} ms",
+                profile.name(),
+                anchors.len(),
+                grid.alignment_centres().len(),
+                locate + plain,
+                locate + finding + corrected,
+            );
+        }
+    }
+
+    /// An alignment pattern must never displace a finder, a beacon or a timing
+    /// track — those are what the eye needs *before* it can predict where an
+    /// alignment pattern is. Circular dependency if this ever regresses.
+    #[test]
+    fn patterns_only_ever_displace_data_cells() {
+        for profile in Profile::ALL {
+            let grid = profile.parts().0;
+            let bare = Grid {
+                align_period: 0,
+                ..grid
+            };
+            for (x, y) in (0..grid.rows).flat_map(|y| (0..grid.cols).map(move |x| (x, y))) {
+                if grid.region(x, y) == Region::Alignment {
+                    assert!(
+                        matches!(bare.region(x, y), Region::Payload | Region::Pilot),
+                        "{} pattern cell ({x}, {y}) displaced {:?}",
+                        profile.name(),
+                        bare.region(x, y)
+                    );
+                }
+            }
+        }
+    }
+}

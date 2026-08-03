@@ -145,10 +145,11 @@ cd web && npm test        # JS boundary round trip, no browser needed
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
 - **M4** density — **the grid half landed early**: `Profile` is now a four-rung ladder
   (m1 64×36 mono → m2 192×108 mono → m3 96×54 colour → m4 192×108 colour, 160 B →
-  6560 B/pulse), the skin has a density menu, and the eye auto-detects by trial decode
+  6336 B/pulse), the skin has a density menu, and the eye auto-detects by trial decode
   so only one device is ever set. All four deliver byte-exact through the full optical
-  path in sim. Left: glare masking, QDA + RS-ladder experiments, adaptive compression +
-  measured file-size ceiling (`COMPARISON-decimen.md` R3–R4)
+  path in sim. **Interior alignment patterns landed** (see below) — the radial-term plan
+  in §3a is superseded. Left: glare masking, QDA + RS-ladder experiments, adaptive
+  compression + measured file-size ceiling (`COMPARISON-decimen.md` R3–R4)
 - **M5** product: multi-file, PWA, native eye shell only if iOS forces it; optional
   passphrase encryption, standalone single-file builds (`COMPARISON-decimen.md` R2, R8)
 
@@ -238,6 +239,45 @@ cd web && npm test        # JS boundary round trip, no browser needed
   every frame: video visible, grid non-square, every frame failing the CRC gate. The
   work canvas is now sized lazily from the first frame that has real dimensions.
   Only (1) blocks bring-up; (4) is the one that would have wasted an afternoon.
+- **Measured, interior alignment patterns — a homography is not enough, and "small
+  radial distortion" was wrong by a lot.** Four corner finders give an *exact* fit for a
+  planar target under a pinhole camera, so everything projective is free. Everything that
+  is not projective is not: barrel distortion, and the pose drift of a handheld camera
+  across a rolling shutter's readout. There is no gentle degradation — on 192×108 mono,
+  barrel 0.015 costs 12 misread cells/frame and 0.020 costs **2208**, because past half a
+  cell every sample lands in the neighbour. Tolerance was ~1.6% of the half-diagonal,
+  i.e. *one cell*, and dense grids have small cells.
+  The fix is QR's: a lattice of 5×5 alignment patterns (`align_period` 32 on m2/m4, 28 on
+  m3, **0 on m1** — its 62×30 data region fits too few to interpolate between). **5, not
+  the finder's 7, is a correctness point**: a 5-wide concentric square scans as
+  1:1:1:1:1, exactly what finder detection rejects, so an alignment pattern can never be
+  mistaken for a finder and wreck the corner fit. It needs no distinctive ratio because
+  it is only ever searched for *locally*, near a position the homography already predicts.
+  The eye interpolates the residuals with inverse-distance weighting rather than fitting a
+  global term — the same interpolate-don't-fit argument §3b makes for colour.
+  Measured: tolerance 0.016 → 0.024, and at barrel 0.02 misreads go **2208 → 2/frame**.
+  Costs 2.2% of the grid (m2 goodput 2128 → 2064 B/pulse) and **+11% decode time**
+  (7.66 → 8.48 ms; `locate` still dominates at 7.3). Lattice density has a knee: 24 and 20
+  buy under 10% more tolerance for another 1.7–3.3% of the grid, and 16 measures *worse*
+  than 20 in places — interpolation running out of signal, not points. Pinned by
+  `alignment_patterns_earn_their_cells`, `correction_is_inert_when_the_homography_is_already_right`
+  (it must change nothing under pure perspective, or it is fitting noise), and
+  `patterns_only_ever_displace_data_cells` (a pattern may never overwrite a finder, beacon
+  or timing track — those are what locates it in the first place).
+  The channel gained `skew` and `barrel` to measure this. **Both are 0 in every preset on
+  purpose**: folding a new distortion into `heavy` would silently move numbers cited as
+  evidence elsewhere.
+- **The skin's display size is adjustable while strobing**, counted in whole pixels per
+  cell rather than a percentage — the canvas must be an integer multiple of the grid or
+  nearest-neighbour upscaling gives some cells an extra pixel and the 1:1:3:1:1 ratios
+  stop being clean. A percentage slider would spend most of its travel rounding to the
+  same scale.
+- **The grid is 16:9 and that is load-bearing.** Square was asked for and costs real
+  throughput: at equal cell count a square grid inside a 16:9 frame is limited by height
+  and yields **1.33× fewer px/cell**; at equal px/cell it carries **1.78× fewer cells**.
+  Since the binding constraint is px/cell at the sensor, square pays twice. The genuine
+  shape mismatch is a *portrait* phone giving a 9:16 frame — the answer is to hold the
+  eye landscape, not to reshape the format.
 - **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
   hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
   when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;

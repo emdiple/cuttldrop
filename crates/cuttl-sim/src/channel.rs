@@ -61,6 +61,28 @@ pub struct Channel {
     /// Unlike every other field here it changes where cells are, not what
     /// colour they read as.
     pub warp: f32,
+    /// Rolling-shutter **motion skew**: peak sideways displacement, as a
+    /// fraction of frame width, of the middle rows relative to the edges.
+    ///
+    /// The sensor reads row by row over 10–33 ms, so a handheld camera holds a
+    /// slightly different pose for each row. Constant velocity would produce a
+    /// shear, which is affine and therefore absorbed by the homography for
+    /// free — so this models the part that is *not*: a smooth bulge, standing
+    /// in for the acceleration and rotation any real hand supplies.
+    ///
+    /// This is a distinct failure from [`Channel::tear`]. Tear is two pulses
+    /// stitched with the grid in the same place — a content problem the beacon
+    /// detects. Skew moves the grid itself, happens on every handheld frame
+    /// rather than only on straddled ones, and nothing detects it at all: it
+    /// simply shows up as misread cells.
+    pub skew: f32,
+    /// Radial lens distortion, as a fraction of the half-diagonal displaced at
+    /// the frame corners. Positive is barrel.
+    ///
+    /// Not projective, so no homography can absorb any of it. Worst close in
+    /// and at the edges, which is where a phone is held to fill its frame with
+    /// a dense grid.
+    pub barrel: f32,
     /// Probability that a capture is stitched from two pulses by the rolling
     /// shutter. Only meaningful through [`capture`].
     pub tear: f32,
@@ -100,6 +122,12 @@ impl Channel {
                 blur_cells: 0.0,
                 noise: 0.0,
                 warp: 0.0,
+                // Presets leave these at zero on purpose: every measurement in the
+                // repo predates them, and folding a new distortion into "heavy" would
+                // silently move numbers that are cited as evidence elsewhere. Set them
+                // explicitly, as `alignment_patterns_earn_their_cells` does.
+                skew: 0.0,
+                barrel: 0.0,
                 tear: 0.0,
                 blend: 0.0,
             },
@@ -112,6 +140,8 @@ impl Channel {
                 blur_cells: 0.12,
                 noise: 0.015,
                 warp: 0.03,
+                skew: 0.0,
+                barrel: 0.0,
                 tear: 0.10,
                 blend: 0.05,
             },
@@ -131,6 +161,8 @@ impl Channel {
                 blur_cells: 0.25,
                 noise: 0.035,
                 warp: 0.08,
+                skew: 0.0,
+                barrel: 0.0,
                 tear: 0.30,
                 blend: 0.15,
             },
@@ -144,6 +176,8 @@ impl Channel {
                 blur_cells: 0.45,
                 noise: 0.06,
                 warp: 0.12,
+                skew: 0.0,
+                barrel: 0.0,
                 tear: 0.55,
                 blend: 0.35,
             },
@@ -165,7 +199,7 @@ pub fn apply(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl R
         return image.clone();
     }
     let transform = warp_transform(image.dimensions(), channel.warp, rng);
-    let warped = warp_with(image, transform.as_ref());
+    let warped = warp_with(image, transform.as_ref(), Lens::of(channel));
     photometric(&warped, channel, cell_px, rng)
 }
 
@@ -197,8 +231,8 @@ pub fn capture(
         return current.clone();
     }
     let transform = warp_transform(current.dimensions(), channel.warp, rng);
-    let a = warp_with(current, transform.as_ref());
-    let b = warp_with(next, transform.as_ref());
+    let a = warp_with(current, transform.as_ref(), Lens::of(channel));
+    let b = warp_with(next, transform.as_ref(), Lens::of(channel));
     photometric(&composite(&a, &b, channel, rng), channel, cell_px, rng)
 }
 
@@ -281,7 +315,7 @@ pub fn capture_timed(
         }
         for &(i, _) in &weights {
             if warped[i].is_none() {
-                warped[i] = Some(warp_with(pulses[i], transform.as_ref()));
+                warped[i] = Some(warp_with(pulses[i], transform.as_ref(), Lens::of(channel)));
             }
         }
 
@@ -418,10 +452,10 @@ fn warp_transform((w, h): (u32, u32), amount: f32, rng: &mut impl Rng) -> Option
 }
 
 /// Resample a frame through an inverse transform, leaving a dark surround.
-fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
-    let Some(inverse) = inverse else {
+fn warp_with(image: &RgbImage, inverse: Option<&Homography>, lens: Lens) -> RgbImage {
+    if inverse.is_none() && lens.is_identity() {
         return image.clone();
-    };
+    }
     let (w, h) = image.dimensions();
     let (fw, fh) = (w as f64, h as f64);
     let Ok(source) = Raster::new(w, h, image.as_raw()) else {
@@ -430,7 +464,14 @@ fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
     let mut out = RgbImage::new(w, h);
     for y in 0..h {
         for x in 0..w {
-            let (sx, sy) = inverse.apply(x as f64 + 0.5, y as f64 + 0.5);
+            // Composed into one resample rather than two passes: resampling
+            // twice would blur the frame more than either stage models, and
+            // blur is the variable half this file's measurements turn on.
+            let (dx, dy) = lens.unbend(x as f64 + 0.5, y as f64 + 0.5, fw, fh);
+            let (sx, sy) = match inverse {
+                Some(inverse) => inverse.apply(dx, dy),
+                None => (dx, dy),
+            };
             if sx < 0.0 || sy < 0.0 || sx >= fw || sy >= fh {
                 continue; // dark surround
             }
@@ -438,6 +479,53 @@ fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
         }
     }
     out
+}
+
+/// The non-projective part of the geometry: everything a homography cannot
+/// absorb. See [`Channel::skew`] and [`Channel::barrel`].
+#[derive(Debug, Clone, Copy)]
+struct Lens {
+    skew: f64,
+    barrel: f64,
+}
+
+impl Lens {
+    fn of(channel: &Channel) -> Self {
+        Self {
+            skew: channel.skew as f64,
+            barrel: channel.barrel as f64,
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        self.skew == 0.0 && self.barrel == 0.0
+    }
+
+    /// Map an output pixel back to where the undistorted image had it.
+    fn unbend(&self, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
+        if self.is_identity() {
+            return (x, y);
+        }
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let (mut px, mut py) = (x, y);
+
+        if self.barrel != 0.0 {
+            // r' = r(1 + k·(r/rmax)²) about the frame centre.
+            let (ux, uy) = (px - cx, py - cy);
+            let rmax = cx.hypot(cy);
+            let r = ux.hypot(uy) / rmax;
+            let k = 1.0 + self.barrel * r * r;
+            px = cx + ux * k;
+            py = cy + uy * k;
+        }
+        if self.skew != 0.0 {
+            // A half-period sine down the frame: zero at the first and last
+            // sensor row, peak in the middle. Quadratic-or-higher in `y`, so
+            // unlike a shear it survives being fitted by four corners.
+            px += self.skew * w * (core::f64::consts::PI * (py / h)).sin();
+        }
+        (px, py)
+    }
 }
 
 /// Separable Gaussian, edges clamped.

@@ -243,14 +243,187 @@ pub fn sample_with(
     palette: Palette,
     transform: &Homography,
 ) -> Result<Pulse> {
+    sample_corrected(raster, grid, palette, transform, &[])
+}
+
+/// One interior reference point: where an alignment pattern should be in cell
+/// space, and where the frame says it actually is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    /// Cell-space centre. Fixed by the grid; the skin and eye agree on it.
+    pub cell: (f64, f64),
+    /// Image-space centre as measured. The difference between this and
+    /// `transform.apply(cell)` is the residual the homography could not model.
+    pub image: (f64, f64),
+}
+
+/// Minimum separation, in luma, between the cells an alignment pattern says
+/// should be light and the ones it says should be dark. Below this the window
+/// holds no pattern worth trusting — glare, blur, or the prediction was simply
+/// too far out — and the anchor is dropped rather than guessed at.
+const ANCHOR_CONTRAST: f64 = 18.0;
+
+/// Locate the interior alignment patterns, starting from the corner homography.
+///
+/// This is a *local* search around a position the homography already predicts,
+/// which is why an alignment pattern needs no distinctive run-length ratio and
+/// why this cannot suffer the candidate explosion a global scan can. Patterns
+/// that cannot be found confidently are simply absent from the result; the
+/// correction interpolates across them.
+pub fn find_anchors(raster: &Raster, grid: Grid, transform: &Homography) -> Vec<Anchor> {
+    let half = crate::geometry::ALIGN_SIDE as i32 / 2;
+    let mut anchors = Vec::new();
+
+    for (cx, cy) in grid.alignment_centres() {
+        let (fx, fy) = (cx as f64 + 0.5, cy as f64 + 0.5);
+        let predicted = transform.apply(fx, fy);
+        // Local basis: what one cell step looks like in image space *here*.
+        // Taken per pattern rather than globally because under perspective a
+        // cell is a different size at each end of the frame.
+        let right = transform.apply(fx + 1.0, fy);
+        let down = transform.apply(fx, fy + 1.0);
+        let ex = (right.0 - predicted.0, right.1 - predicted.1);
+        let ey = (down.0 - predicted.0, down.1 - predicted.1);
+        let cell_px = (ex.0.hypot(ex.1) + ey.0.hypot(ey.1)) / 2.0;
+        // Below ~2 px/cell the pattern is not resolvable and any peak found
+        // would be noise. That is also where the payload has already failed.
+        if !cell_px.is_finite() || cell_px < 2.0 {
+            continue;
+        }
+
+        // Score a candidate centre by how cleanly the 25 cells split into the
+        // light ring plus core and the dark gap. A contrast score needs no
+        // threshold, so vignette and ambient lift cannot bias it.
+        let score = |ox: f64, oy: f64| -> f64 {
+            let (mut on, mut off, mut on_n, mut off_n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for j in -half..=half {
+                for i in -half..=half {
+                    let px = ox + ex.0 * i as f64 + ey.0 * j as f64;
+                    let py = oy + ex.1 * i as f64 + ey.1 * j as f64;
+                    let ring = i.abs().max(j.abs());
+                    let luma = f64::from(luma_at(raster, px, py));
+                    // Same concentric rule the skin paints with: outer ring and
+                    // core light, the gap between them dark.
+                    if ring == half || ring + 2 <= half {
+                        on += luma;
+                        on_n += 1.0;
+                    } else {
+                        off += luma;
+                        off_n += 1.0;
+                    }
+                }
+            }
+            on / on_n.max(1.0) - off / off_n.max(1.0)
+        };
+
+        // Coarse pass on whole pixels, then a sub-pixel pass around the winner.
+        // The radius is under a cell: the corner fit is wrong by residuals, not
+        // by whole cells, and a wider search would only invite a false peak.
+        let radius = (cell_px * 0.75).round().clamp(2.0, 10.0) as i32;
+        let mut best = (score(predicted.0, predicted.1), predicted);
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let candidate = (predicted.0 + dx as f64, predicted.1 + dy as f64);
+                let s = score(candidate.0, candidate.1);
+                if s > best.0 {
+                    best = (s, candidate);
+                }
+            }
+        }
+        for step in 1..=4 {
+            let d = 0.5f64.powi(step);
+            let mut improved = best;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let candidate = (best.1.0 + dx as f64 * d, best.1.1 + dy as f64 * d);
+                    let s = score(candidate.0, candidate.1);
+                    if s > improved.0 {
+                        improved = (s, candidate);
+                    }
+                }
+            }
+            best = improved;
+        }
+
+        if best.0 >= ANCHOR_CONTRAST {
+            anchors.push(Anchor {
+                cell: (fx, fy),
+                image: best.1,
+            });
+        }
+    }
+    anchors
+}
+
+fn luma_at(raster: &Raster, x: f64, y: f64) -> u8 {
+    let [r, g, b] = raster.bilinear(x, y);
+    // Same weights as Raster::luma, applied to an interpolated sample.
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+}
+
+/// Sample every cell, correcting the homography by the measured anchors.
+///
+/// The correction is an inverse-distance-weighted interpolation of the anchor
+/// residuals, evaluated in *cell* space. That is the same choice §3b makes for
+/// colour and for the same reason: the error being corrected is spatially
+/// varying, so a single global fit is the wrong shape for it. With no anchors
+/// this is exactly [`sample_with`].
+pub fn sample_corrected(
+    raster: &Raster,
+    grid: Grid,
+    palette: Palette,
+    transform: &Homography,
+    anchors: &[Anchor],
+) -> Result<Pulse> {
     let mut pulse = Pulse::new(grid, palette)?;
+
+    // Precompute each anchor's residual once: measured minus predicted.
+    let residuals: Vec<Residual> = anchors
+        .iter()
+        .map(|a| {
+            let p = transform.apply(a.cell.0, a.cell.1);
+            (a.cell, (a.image.0 - p.0, a.image.1 - p.1))
+        })
+        .collect();
+
     for y in 0..grid.rows {
         for x in 0..grid.cols {
-            let (ix, iy) = transform.apply(x as f64 + 0.5, y as f64 + 0.5);
+            let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+            let (mut ix, mut iy) = transform.apply(fx, fy);
+            let (dx, dy) = residual_at(&residuals, fx, fy);
+            ix += dx;
+            iy += dy;
             pulse.set_cell(x, y, palette.from_rgb(raster.bilinear(ix, iy)))?;
         }
     }
     Ok(pulse)
+}
+
+/// An anchor's cell-space position paired with the image-space error the
+/// homography made there.
+type Residual = ((f64, f64), (f64, f64));
+
+/// Inverse-distance-weighted residual at a point in cell space.
+///
+/// Weight is `1/d²`, which makes the interpolant reproduce each anchor exactly
+/// at its own centre and decay quickly enough that a distant anchor on the far
+/// side of the frame cannot drag a local correction around.
+fn residual_at(residuals: &[Residual], x: f64, y: f64) -> (f64, f64) {
+    if residuals.is_empty() {
+        return (0.0, 0.0);
+    }
+    let (mut sx, mut sy, mut sw) = (0.0f64, 0.0f64, 0.0f64);
+    for &((ax, ay), (rx, ry)) in residuals {
+        let d2 = (x - ax).powi(2) + (y - ay).powi(2);
+        if d2 < 1e-6 {
+            return (rx, ry);
+        }
+        let w = 1.0 / d2;
+        sx += rx * w;
+        sy += ry * w;
+        sw += w;
+    }
+    (sx / sw, sy / sw)
 }
 
 /// The eye's real entry point: locate the pulse, then read it.
@@ -260,7 +433,8 @@ pub fn sample_with(
 /// another frame.
 pub fn read(raster: &Raster, grid: Grid, palette: Palette) -> Result<Pulse> {
     let transform = locate(raster, grid).ok_or(Error::NotLocated)?;
-    sample_with(raster, grid, palette, &transform)
+    let anchors = find_anchors(raster, grid, &transform);
+    sample_corrected(raster, grid, palette, &transform, &anchors)
 }
 
 /// Read a frame that is known to be axis-aligned and to fill the raster exactly.

@@ -135,9 +135,9 @@ this project gives you is **no network**, not privacy.
 |---|---|---|
 | 11 | Decode worker pool | **Downgraded 2026-08-04.** A verified 8 ms/frame means one worker keeps up with a 30 fps camera. The earlier "several-fold multiplier" claim came from a native benchmark that was timing a *failing* decode. Revisit if a phone disagrees. |
 | 12 | Capture-loop generation counter (R7) | Not live: the current "Try again" path cannot double-pump, because every failure returns before `pump()`. Required before any real stream-restart UI. |
-| 13 | Finder-geometry dimension estimate | `cols ≈ 7 × grid_px / finder_px` breaks the header/grid circularity properly and retires trial decode (`DESIGN.md` §3d). Also removes most of item 3's cost. QR gets this free from its format info; we chose to owe it. |
+| 13 | Finder-geometry dimension estimate | `cols ≈ 7 × grid_px / finder_px` breaks the header/grid circularity properly and retires trial decode (`DESIGN.md` §3d). Also removes most of item 3's cost. QR gets this free from its format info; we chose to owe it. **Now cheaper than it was**: the interior alignment lattice gives a second, denser scale reference, so the estimate has more than four points to work from. |
 | 14 | Worker count + capture width as bring-up knobs | Diagnostics, not configuration — deliberately unlike the density slider we refused. Only worth it if item 11 or the first session says so. |
-| 15 | Display-size slider + restart button | From the UI list approved at the telemetry step; only the profile selector shipped. Blocked on item 12. |
+| 15 | ~~Display-size slider~~ + restart button | **Slider done 2026-08-04** — in the strobing overlay, counted in whole px/cell because the canvas must stay an integer multiple of the grid. The restart button is still blocked on item 12. |
 
 ---
 
@@ -160,13 +160,30 @@ Recorded real camera frames replayed in CI — M2's last outstanding item. Needs
 20. PWA
 21. Multi-file transfer
 22. Glare masking — **then** revisit `Grid::bands`. Bands measured *worse* than none at
-    7, and their remaining justification is glare, which is not yet simulated.
+    7, and their remaining justification is glare, which is not yet simulated. The
+    channel now has non-projective distortion (`skew`, `barrel`) but still no glare.
 23. Re-check `ECC_LEN = 16` against warp-driven error rates now that sub-cell sampling
-    error under perspective exists
+    error under perspective exists — and now that alignment correction has changed the
+    residual error distribution it was last sized against
 24. QDA and RS-strength laddering across pulses
 25. Revisit `MANIFEST_PERIOD = 8` if sustained mono goodput ever outranks naming latency
 
 ---
+
+## Landed since this list was written
+
+27. **Interior alignment patterns** — 5×5 QR-style patterns on a lattice through the data
+    region, with the eye interpolating their residuals over the corner homography. Closes
+    a failure nothing in the stack detected: non-projective distortion (lens barrel,
+    rolling-shutter pose drift) which a four-corner fit cannot represent at all. Measured
+    2208 → 2 misread cells/frame at barrel 0.02, for 2.2% of the grid and +11% decode
+    time. Full numbers in `DESIGN.md` §3a; sweeps re-runnable with
+    `cargo test -p cuttl-sim --release -- --ignored --nocapture`.
+
+    Two follow-ons this opens rather than closes: it makes item 13 cheaper (a denser scale
+    reference than four corners), and the residual field it measures is exactly what a
+    glare detector would want, since glare shows up as anchors that fail their contrast
+    gate in a region.
 
 ## Housekeeping
 

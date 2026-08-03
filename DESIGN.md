@@ -189,10 +189,10 @@ Don't solve it now; do design so the capture layer is swappable.
 ┌────────────────────────────────────────────────────┐
 │ ◰        [ BEACON: id·OTI·pulse#·geom ]         ◱  │  ← finder + beacon strip
 ├────────────────────────────────────────────────────┤
-│ ▓ ░ ▓ ░  band 0   sym ESI·payload·RS·CRC   ░ ▓ ░ ▓ │  ← timing track both edges
-│ ▓ ░ ▓ ░  band 1   sym ESI·payload·RS·CRC   ░ ▓ ░ ▓ │
-│ ▓ ░ ▓ ░  band 2   ...          · pilots ·  ░ ▓ ░ ▓ │
-│ ▓ ░ ▓ ░  band 3                            ░ ▓ ░ ▓ │
+│ ▓ ░ ▓ ░  band 0  ▣  sym ESI·payload·RS·CRC ▣ ░ ▓ ░ │  ← timing track both edges
+│ ▓ ░ ▓ ░  band 1     sym ESI·payload·RS·CRC   ░ ▓ ░ │  ← ▣ = alignment lattice
+│ ▓ ░ ▓ ░  band 2  ▣  ...          · pilots ·▣ ░ ▓ ░ │
+│ ▓ ░ ▓ ░  band 3                              ░ ▓ ░ │
 ├────────────────────────────────────────────────────┤
 │ ◲        [ BEACON: id·OTI·pulse#·geom ]         ◳  │  ← repeated, for tear detect
 └────────────────────────────────────────────────────┘
@@ -214,6 +214,64 @@ strips: these validate the homography and let us detect scale/skew drift cheaply
 for a planar target under a pinhole model, so perspective is a solved problem, not a hard
 one. Radial lens distortion is small for a centred target at moderate FOV — ignore it in
 M1, add a single radial term in M4 if corner cells show systematic error.
+
+**Corrected, M4: "small" was the wrong word, and the fix is not a radial term.** Two
+distortions the four-corner homography cannot represent, measured on 192×108 mono:
+
+| barrel | misread cells/frame, four corners only |
+|---|---|
+| 0.010 | 0 |
+| 0.015 | 12 |
+| **0.020** | **2208** |
+| 0.030 | 5392 |
+
+There is no gentle degradation. Non-projective error is harmless until it exceeds half a
+cell and total immediately after, because past that point every sample lands in the
+neighbouring cell. The tolerance is ~1.6% of the half-diagonal — which is not "small",
+it is *one cell*, and a dense grid has small cells by definition.
+
+A single global radial term was the plan and it is the wrong shape twice over. It cannot
+model **rolling-shutter skew**, where the camera pose differs per sensor row: constant
+velocity gives a shear the homography already absorbs, but real hand motion has
+acceleration and rotation, and the residual is a bulge down the frame. And a global fit
+is exactly what §3b argues against for colour — the error is spatially varying, so the
+correction has to be interpolated, not fitted.
+
+So: **QR's interior alignment patterns**, 5×5 concentric squares on a lattice through the
+data region (32 cells apart on the dense profiles, 28 on M3, none on M1 — see below). The
+eye predicts each one through the corner homography, searches locally for where it
+actually landed, and interpolates the residuals with inverse-distance weighting. Measured
+tolerance goes 0.016 → 0.024, and at barrel 0.02 the misread rate goes **2208 → 2 cells
+per frame** — from dead to inside the inner code.
+
+They are **5** cells, not the finder's 7, and that is a correctness point rather than a
+saving: a 5-wide concentric square scans as 1:1:1:1:1, which is precisely the pattern
+finder detection rejects. An alignment pattern therefore cannot be mistaken for a finder
+and corrupt the corner fit. It does not need the distinctive ratio because it is never
+searched for globally — only near a position already predicted.
+
+Costs and the knee, measured (`alignment_lattice_density_sweep`):
+
+| period | patterns | grid cost | tolerance |
+|---|---|---|---|
+| none | 0 | 0% | 0.016 |
+| 40 | 10 | 1.2% | 0.017 |
+| **32** | **18 (6×3)** | **2.2%** | **0.024** |
+| 24 | 32 | 3.9% | 0.026 |
+| 20 | 45 | 5.4% | 0.027 |
+
+32 buys nearly all of it; halving the spacing again buys under 10% more for another 3.3%
+of the grid. Note 16 measures *worse* than 20 in places — that is the interpolation
+running out of signal rather than out of points, the same shape as the banding result.
+
+**M1 gets none.** Its data region is 62×30, so a lattice fits one or two patterns — too
+few to interpolate between — while 25 cells is 1.1% of a grid already spending 27% of
+itself on registration. M1 buys its distortion budget by having large cells, which is the
+same thing alignment patterns would have bought it.
+
+Per-frame cost is **+11%** (m2: 7.66 → 8.48 ms), and the shape matters more than the
+size: `locate` already dominates at 7–8 ms, so the interior work is small against the
+corner scan it depends on.
 
 **Rolling-shutter skew — the key trick.** Put the beacon (including the pulse counter) at
 *both* top and bottom. Then:
