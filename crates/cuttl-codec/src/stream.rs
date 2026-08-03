@@ -520,6 +520,14 @@ impl Receiver {
         self.sink.as_ref().map(|sink| sink.transfer_length())
     }
 
+    /// Bytes of the object each accepted symbol stands for, once the config is
+    /// known. Multiplied by [`Receiver::progress`]'s numerator this is the only
+    /// honest way to state a *rate* mid-transfer: symbols are not bytes of the
+    /// file until the fountain converges, but each one is worth this many.
+    pub fn symbol_len(&self) -> Option<usize> {
+        self.sink.as_ref().map(|sink| sink.symbol_len())
+    }
+
     /// Bands dropped by the CRC gate. Counts *bands*, not pulses.
     pub fn rejected(&self) -> u32 {
         self.rejected

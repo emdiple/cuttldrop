@@ -57,24 +57,40 @@ pub enum Profile {
     /// 64×36 mono — the M1 air-gap profile.
     #[default]
     M1,
+    /// 192×108 mono — density without colour.
+    M2,
     /// 96×54 eight-colour — the M3 profile.
     M3,
+    /// 192×108 eight-colour — both levers at once.
+    M4,
 }
 
 impl Profile {
+    /// Every profile, in ascending order of both bitrate and risk. The order is
+    /// the ladder a bring-up should climb, and the order the eye tries them in.
+    pub const ALL: [Profile; 4] = [Profile::M1, Profile::M2, Profile::M3, Profile::M4];
+
     pub const fn parts(self) -> (Grid, Palette) {
         match self {
             Profile::M1 => (Grid::M1_MONO, Palette::Mono1),
+            Profile::M2 => (Grid::DENSE_MONO, Palette::Mono1),
             Profile::M3 => (Grid::M3_COLOR, Palette::Color3),
+            Profile::M4 => (Grid::DENSE_COLOR, Palette::Color3),
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Profile::M1 => "m1",
+            Profile::M2 => "m2",
+            Profile::M3 => "m3",
+            Profile::M4 => "m4",
         }
     }
 
     pub fn parse(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "m1" => Some(Profile::M1),
-            "m3" => Some(Profile::M3),
-            _ => None,
-        }
+        let name = name.to_ascii_lowercase();
+        Profile::ALL.into_iter().find(|p| p.name() == name)
     }
 }
 
@@ -169,6 +185,51 @@ impl Grid {
         timing_cols: 1,
         pilot_period: 8,
         // Two. Measured, not chosen: see `bands`.
+        bands: 2,
+    };
+
+    /// 192×108, mono. The density lever pulled on its own.
+    ///
+    /// Registration is a *fixed* cost — four 7×7 finders and their separators
+    /// are 256 cells whatever the grid is — so the payload fraction climbs with
+    /// size: 73% at 64×36, 83% at 96×54, **91% here**. That is why a 9× cell
+    /// count buys 15× the bytes. Small grids do not merely carry less, they
+    /// spend proportionally more of themselves on saying where they are.
+    ///
+    /// The ceiling is not cells, it is **pixels per cell at the sensor**. The
+    /// density sweep put the cliff between 3 and 2 px/cell — sampling error,
+    /// not detection — and measured this grid at 4 px/cell locating 100% of
+    /// frames with ~10 misread cells, comfortably inside the inner code. At
+    /// 4 px/cell this is 768×432 on the sending screen, and the eye decodes at
+    /// 960 px wide, so the budget closes. It has never been tried on glass.
+    pub const DENSE_MONO: Self = Self {
+        cols: 192,
+        rows: 108,
+        beacon_rows: 3,
+        finder: 7,
+        separator: 1,
+        timing_cols: 1,
+        pilot_period: 8,
+        // Affordable here in a way it is not at 211 B/pulse: two copies of the
+        // inner code cost under 2% of this payload. See `bands`.
+        bands: 2,
+    };
+
+    /// 192×108, eight colours — the M4 profile, both levers at once.
+    ///
+    /// ~7.1 KB per pulse, which at the measured 20 Hz optimum is the only
+    /// configuration in this file that reaches three figures in KB/s. It also
+    /// stacks the two least-proven things the project has: the density above
+    /// and a colour palette that has never met a real camera's white balance.
+    /// Climb the ladder, do not jump to it.
+    pub const DENSE_COLOR: Self = Self {
+        cols: 192,
+        rows: 108,
+        beacon_rows: 3,
+        finder: 7,
+        separator: 1,
+        timing_cols: 1,
+        pilot_period: 8,
         bands: 2,
     };
 
@@ -338,7 +399,7 @@ mod tests {
     /// If this fails, payload accounting is silently wrong somewhere.
     #[test]
     fn regions_partition_the_grid() {
-        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+        for grid in Profile::ALL.map(|p| p.parts().0) {
             let mut counted = 0u32;
             for region in [
                 Region::Finder,
@@ -359,7 +420,7 @@ mod tests {
 
     #[test]
     fn four_finders_of_the_declared_size() {
-        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+        for grid in Profile::ALL.map(|p| p.parts().0) {
             let finders = (0..grid.rows)
                 .flat_map(|y| (0..grid.cols).map(move |x| (x, y)))
                 .filter(|&(x, y)| grid.region(x, y) == Region::Finder)
@@ -370,7 +431,7 @@ mod tests {
 
     #[test]
     fn payload_coords_agree_with_the_count() {
-        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+        for grid in Profile::ALL.map(|p| p.parts().0) {
             assert_eq!(grid.payload_coords().count() as u32, grid.payload_cells());
         }
     }
@@ -396,7 +457,7 @@ mod tests {
     /// none in two. If this drifts, symbols silently overlap or lose bytes.
     #[test]
     fn bands_tile_the_payload_exactly() {
-        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+        for grid in Profile::ALL.map(|p| p.parts().0) {
             let mut seen: Vec<(u16, u16)> = (0..grid.bands)
                 .flat_map(|band| grid.band_payload_coords(band))
                 .collect();
@@ -414,7 +475,7 @@ mod tests {
 
     #[test]
     fn band_rows_are_contiguous_and_cover_the_data_region() {
-        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+        for grid in Profile::ALL.map(|p| p.parts().0) {
             let mut next = grid.beacon_rows;
             for band in 0..grid.bands {
                 let rows = grid.band_rows(band);

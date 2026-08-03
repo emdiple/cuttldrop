@@ -80,7 +80,7 @@ pub fn sample(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuttl_codec::{Error, Receiver, stream};
+    use cuttl_codec::{Error, Profile, Receiver, stream};
     use proptest::prelude::*;
     use rand::{RngExt, SeedableRng, rngs::StdRng};
 
@@ -154,6 +154,145 @@ mod tests {
             torn: rx.torn(),
             delivered,
         }
+    }
+
+    /// Run an object through the full path on an arbitrary profile.
+    ///
+    /// [`transfer`] is hardwired to M1 and pins M0's findings; this is the same
+    /// path with the grid as a parameter, so the density ladder can be measured
+    /// rather than assumed.
+    fn transfer_profile(
+        data: &[u8],
+        profile: Profile,
+        preset: Preset,
+        loss: f64,
+        passes: u32,
+        seed: u64,
+    ) -> (cuttl_codec::Result<Vec<u8>>, usize) {
+        let (grid, palette) = profile.parts();
+        let channel = Channel::preset(preset);
+        let pulses = stream::encode_named(data, "ladder.bin", "", grid, palette, 42, 2.0).unwrap();
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rx = Receiver::new();
+
+        'skin: for _ in 0..passes {
+            for (index, pulse) in pulses.iter().enumerate() {
+                if rx.is_complete() {
+                    break 'skin;
+                }
+                if rng.random::<f64>() < loss {
+                    continue;
+                }
+                let next = &pulses[(index + 1) % pulses.len()];
+                let image = channel::capture(
+                    &render(pulse, CELL_PX),
+                    &render(next, CELL_PX),
+                    &channel,
+                    CELL_PX,
+                    &mut rng,
+                );
+                if let Ok(sampled) = read(&image, grid, palette) {
+                    rx.ingest(&sampled);
+                }
+            }
+        }
+        (rx.finish(), pulses.len())
+    }
+
+    /// The density ladder delivers, end to end, at 4 px/cell.
+    ///
+    /// The point of the dense profiles is bytes per pulse, and bytes per pulse
+    /// is worthless if the frames cannot be read. This walks every profile
+    /// through the full optical path — warp, blur, tear, 20% frame loss, and a
+    /// skin that loops — and insists the object comes back byte-identical.
+    ///
+    /// Pulses needed for the same 24 KB, which is the whole argument in one
+    /// column:
+    ///
+    /// | profile | m1 | m2 | m3 | m4 |
+    /// |---|---|---|---|---|
+    /// | pulses | 528 | **39** | 56 | **13** |
+    ///
+    /// Note m2 beating m3: **density outruns colour**, 39 pulses against 56,
+    /// which is §2's bottleneck ordering (spatial before colour) turning up as
+    /// a number. A denser mono grid is both faster *and* the safer bet, since
+    /// nothing about it depends on a camera's white balance.
+    /// A dense profile on a small file makes a *short* loop, and a short loop
+    /// is where a fountain is weakest.
+    ///
+    /// 24 KB on M4 is only 13 pulses even with 2× repair overhead, because the
+    /// grid carries 7.1 KB each. One pass at 20% loss therefore turns on the
+    /// luck of a handful of coin flips, and two seeds in six come up short —
+    /// nothing to do with colour, everything to do with there being too few
+    /// symbols in flight to average over. The threshold measured across sizes
+    /// is around **32 pulses**; below it, single-pass delivery is a lottery.
+    ///
+    /// The mitigation already exists and is not new code: the skin loops
+    /// forever (§3d), so the eye simply sees the loop again. That is the same
+    /// reason `cuttl decode` replays a pulse directory up to ten times. This
+    /// test pins both halves — the hazard, and that replay answers it.
+    #[test]
+    fn a_short_loop_needs_the_skin_to_repeat_itself() {
+        let data: Vec<u8> = (0..24576u32).map(|i| (i ^ (i >> 3)) as u8).collect();
+        let seeds = [7u64, 8, 9, 10, 11, 12];
+
+        let once = seeds
+            .iter()
+            .filter(|&&seed| {
+                let (object, _) = transfer_profile(&data, Profile::M4, Preset::Heavy, 0.2, 1, seed);
+                object.as_deref().ok() == Some(data.as_slice())
+            })
+            .count();
+        assert!(
+            once < seeds.len(),
+            "a 13-pulse loop now survives every seed in one pass — \
+             re-measure the threshold before trusting single-pass delivery"
+        );
+
+        for seed in seeds {
+            let (object, _) = transfer_profile(&data, Profile::M4, Preset::Heavy, 0.2, 3, seed);
+            assert_eq!(
+                object.as_deref().ok(),
+                Some(data.as_slice()),
+                "m4 seed {seed} failed even with the skin repeating"
+            );
+        }
+    }
+
+    #[test]
+    fn the_density_ladder_delivers_end_to_end() {
+        let data: Vec<u8> = (0..24576u32).map(|i| (i ^ (i >> 3)) as u8).collect();
+        for profile in Profile::ALL {
+            // One seed each: robustness across draws is the short-loop test's
+            // job, and m1 needs 528 pulses per run.
+            let (object, pulses) = transfer_profile(&data, profile, Preset::Heavy, 0.2, 3, 7);
+            assert_eq!(
+                object.as_deref().ok(),
+                Some(data.as_slice()),
+                "{} failed to deliver",
+                profile.name()
+            );
+            println!("{}: 24 KB in {pulses} pulses", profile.name());
+        }
+    }
+
+    /// Density pays *more* than its cell count, because registration is fixed.
+    ///
+    /// 192×108 is 9× the cells of 64×36 but carries far more than 9× the bytes:
+    /// the four finders, their separators and the two beacon strips cost the
+    /// same 27% of a small grid and 9% of a large one. This is the whole
+    /// argument for the dense profiles, so it is pinned rather than believed.
+    #[test]
+    fn density_amortises_the_registration_tax() {
+        let small = Grid::M1_MONO.payload_bytes(Palette::Mono1) as f64;
+        let large = Grid::DENSE_MONO.payload_bytes(Palette::Mono1) as f64;
+        let cells = Grid::DENSE_MONO.cell_count() as f64 / Grid::M1_MONO.cell_count() as f64;
+        assert!(
+            large / small > cells,
+            "dense mono carries {:.1}× the bytes on {cells:.1}× the cells — \
+             the registration tax is no longer amortising",
+            large / small
+        );
     }
 
     #[test]
