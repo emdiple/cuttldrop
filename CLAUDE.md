@@ -14,6 +14,13 @@ directory name. **Always quote paths** in shell commands:
 `'/Users/paullaidlaw/Workbench/Projects/*mine/cuttldrop'`. An unquoted path is a
 glob and will expand to the wrong thing or nothing.
 
+This also bites tools that glob internally. **esbuild expands the asterisk when
+it bundles a Vite config**, failing with `Must use "outdir" when there are
+multiple input files` — which looks nothing like a path problem. Hence
+`--configLoader runner` in every `web` script: it evaluates the config directly
+and never invokes esbuild. Verified: the identical tree builds fine from a path
+without an asterisk.
+
 ## Vocabulary (canonical — use consistently in code, comments, and docs)
 
 | Term | Meaning |
@@ -83,6 +90,11 @@ cargo fmt --all && cargo clippy --workspace --all-targets   # CI runs both with 
 # The M0 observable, working today:
 cargo run --release -p cuttl-cli -- encode FILE -o pulses/
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
+
+# The browser. `dev` serves it; open /skin.html on one device, /eye.html on the
+# other. Camera access needs https or localhost.
+cd web && npm install && npm run dev
+cd web && npm test        # JS boundary round trip, no browser needed
 ```
 
 ## Milestones (observables in DESIGN.md §5)
@@ -104,7 +116,14 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
   bottom) makes tear *detected* rather than merely survived — `Ingest::Torn`.
   Measured at `heavy`: 80 torn, 18 CRC-rejected, transfer still byte-exact.
   **M0 is complete.**
-- **M1** air gap crossed: B/W 64×36, two devices, real file
+- **M1a** ✅ eye pipeline moved into `cuttl-codec` behind a borrowed `Raster`, so the
+  browser runs the same detection/homography/sampling code as the simulator.
+- **M1b** ✅ `cuttl-wasm`: `Skin` (file → pulses as RGBA) and `Eye` (frames → file).
+  334 KB wasm. CI builds the codec for wasm32 to keep native-only deps out.
+- **M1c** ✅ browser app: skin paints via Canvas2D at integer scale, eye captures via
+  `requestVideoFrameCallback` and shows `MOVE CLOSER` / `SLOW DOWN` hints (§1e).
+  Builds and typechecks; the JS boundary is tested. **Not yet run against a real
+  camera** — that is the remaining M1 observable and needs two physical devices.
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
 - **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder experiments

@@ -38,3 +38,33 @@ jobs:
       # crate here is far cheaper than discovering it during a browser build.
       - name: Codec builds for the browser
         run: cargo build -p cuttl-codec -p cuttl-wasm --target wasm32-unknown-unknown
+
+  web:
+    name: web build + JS boundary test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+
+      # Exercises the wasm-bindgen glue with no browser: that `pulseRgba` is
+      # RGBA at grid size, that `ingest` takes what `ImageData.data` gives it,
+      # and that a file survives the round trip through the JS API.
+      - run: npm test
+        working-directory: web
+
+      - run: npm run build
+        working-directory: web

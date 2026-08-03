@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Cuttldrop &mdash; skin</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body class="skin">
+    <div id="setup" class="panel">
+      <h1>Skin</h1>
+      <label class="file">
+        <input type="file" id="file" />
+        <span>Choose a file to send</span>
+      </label>
+      <p id="detail" class="detail"></p>
+      <label class="slider">
+        Pulse rate <output id="rate-value">6</output> Hz
+        <input type="range" id="rate" min="1" max="20" value="6" />
+      </label>
+      <p class="hint">
+        No back channel exists, so nothing adapts this for you. If the eye reports
+        tearing, slow it down.
+      </p>
+      <button id="start" disabled>Start strobing</button>
+    </div>
+    <canvas id="pulse" hidden></canvas>
+    <div id="status" class="overlay" hidden></div>
+    <script type="module" src="./src/skin.ts"></script>
+  </body>
+</html>
