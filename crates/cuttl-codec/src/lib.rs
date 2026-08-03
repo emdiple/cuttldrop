@@ -18,6 +18,9 @@
 //! - [`stream`] — framing + CRC gate over the fountain (§3c) — **landed**
 //! - [`fec`] — *inner* Reed–Solomon, below the CRC gate (§1b) — **landed**
 //! - [`beacon`] — repetition-coded header in the reserved strips (§3a) — **landed**
+//! - [`geom`] / [`eye`] — homography, finder detection, cell sampling (§3a) —
+//!   **landed**, and deliberately here rather than in the simulator so the
+//!   browser runs the same code (§4)
 //! - `manifest` — filename/size/mime/BLAKE3 as its own stream (§3c) — M2
 //!
 //! The two FEC layers are not interchangeable and the distinction is the one
@@ -30,16 +33,21 @@
 
 pub mod beacon;
 pub mod error;
+pub mod eye;
 pub mod fec;
 pub mod fountain;
+pub mod geom;
 pub mod geometry;
 pub mod palette;
 pub mod pulse;
+pub mod raster;
 pub mod stream;
 
 pub use beacon::Beacon;
 pub use error::{Error, Result};
+pub use geom::Homography;
 pub use geometry::{Grid, Region, Strip};
 pub use palette::Palette;
 pub use pulse::Pulse;
+pub use raster::Raster;
 pub use stream::{Ingest, Receiver};

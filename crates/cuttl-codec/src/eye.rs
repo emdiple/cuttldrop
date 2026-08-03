@@ -1,4 +1,9 @@
-//! Finding the pulse in a camera frame (`DESIGN.md` §3a, §9).
+//! The eye side: find the pulse in a frame, then read its cells (§3a, §9).
+//!
+//! This lives in the codec crate rather than the simulator because the browser
+//! needs exactly the same code. Everything here works on a borrowed
+//! [`Raster`] — no image library, no allocation of pixel buffers — so it
+//! compiles to `wasm32` unchanged.
 //!
 //! This is the step HCCB died on. Its triangular cells were dense but poor for
 //! robust corner localisation, and the format never recovered from it. So the
@@ -22,9 +27,12 @@
 //! a horizontal and a vertical scan, and it must lie in the outer part of the
 //! frame, because that is where corners are.
 
+use crate::error::{Error, Result};
 use crate::geom::Homography;
-use cuttl_codec::Grid;
-use image::RgbImage;
+use crate::geometry::Grid;
+use crate::palette::Palette;
+use crate::pulse::Pulse;
+use crate::raster::Raster;
 
 /// Fraction of the frame, measured from each edge, in which a finder centre is
 /// allowed to sit. Generous: it only has to exclude the middle.
@@ -36,9 +44,9 @@ const RATIO_TOLERANCE: f64 = 0.5;
 /// Locate the four finders and solve for the cell-space → image-space
 /// transform. `None` when fewer than four corners are confidently found, which
 /// the caller must treat as an unreadable frame — an erasure, not an error.
-pub fn locate(image: &RgbImage, grid: Grid) -> Option<Homography> {
-    let (w, h) = image.dimensions();
-    let luma = luma_of(image);
+pub fn locate(raster: &Raster, grid: Grid) -> Option<Homography> {
+    let (w, h) = (raster.width(), raster.height());
+    let luma = luma_of(raster);
     let threshold = otsu(&luma);
 
     let mut horizontal = Vec::new();
@@ -217,11 +225,64 @@ fn cluster(points: &[(f64, f64)], tolerance: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
-fn luma_of(image: &RgbImage) -> Vec<u8> {
-    image
-        .pixels()
-        .map(|p| ((p.0[0] as u32 * 77 + p.0[1] as u32 * 150 + p.0[2] as u32 * 29) >> 8) as u8)
-        .collect()
+fn luma_of(raster: &Raster) -> Vec<u8> {
+    let (w, h) = (raster.width(), raster.height());
+    let mut out = Vec::with_capacity((w as usize) * (h as usize));
+    for y in 0..h {
+        for x in 0..w {
+            out.push(raster.luma(x, y));
+        }
+    }
+    out
+}
+
+/// Sample every cell centre through a known cell-space → image-space transform.
+pub fn sample_with(
+    raster: &Raster,
+    grid: Grid,
+    palette: Palette,
+    transform: &Homography,
+) -> Result<Pulse> {
+    let mut pulse = Pulse::new(grid, palette)?;
+    for y in 0..grid.rows {
+        for x in 0..grid.cols {
+            let (ix, iy) = transform.apply(x as f64 + 0.5, y as f64 + 0.5);
+            pulse.set_cell(x, y, palette.from_rgb(raster.bilinear(ix, iy)))?;
+        }
+    }
+    Ok(pulse)
+}
+
+/// The eye's real entry point: locate the pulse, then read it.
+///
+/// A frame whose finders cannot be found is an *erasure* — count it and move
+/// on, exactly as for a CRC reject (§1b). The skin is looping; there will be
+/// another frame.
+pub fn read(raster: &Raster, grid: Grid, palette: Palette) -> Result<Pulse> {
+    let transform = locate(raster, grid).ok_or(Error::NotLocated)?;
+    sample_with(raster, grid, palette, &transform)
+}
+
+/// Read a frame that is known to be axis-aligned and to fill the raster exactly.
+///
+/// A shortcut for testing the codec without the optics in the way — wrong the
+/// moment there is any perspective, which is why [`read`] is the real path.
+pub fn sample_aligned(raster: &Raster, grid: Grid, palette: Palette) -> Result<Pulse> {
+    let (w, h) = (raster.width(), raster.height());
+    let dims_error = || Error::Dimensions {
+        w,
+        h,
+        cols: grid.cols,
+        rows: grid.rows,
+    };
+    let cell_px = w
+        .checked_div(grid.cols as u32)
+        .filter(|&n| n > 0)
+        .ok_or_else(dims_error)?;
+    if !w.is_multiple_of(grid.cols as u32) || h != grid.rows as u32 * cell_px {
+        return Err(dims_error());
+    }
+    sample_with(raster, grid, palette, &Homography::scale(cell_px as f64))
 }
 
 /// Otsu's method. A fixed threshold would be wrong under vignette and ambient

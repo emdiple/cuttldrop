@@ -17,12 +17,12 @@
 //! - temporal distortion — rolling-shutter tear, exposure blend between
 //!   consecutive pulses — **next**, and both need the beacon first
 //!
-//! ## Two ways to read a frame
+//! ## Where the eye actually lives
 //!
-//! [`read`] is the real one: find the finders, solve the homography, sample
-//! through it. [`sample`] is the axis-aligned shortcut, valid only when the
-//! grid exactly fills the image — useful for testing the codec without the
-//! optics in the way, and wrong the moment there is any perspective.
+//! Not here. Finder detection, the homography and cell sampling are in
+//! `cuttl_codec::eye`, because the browser needs the identical code and cannot
+//! depend on the `image` crate. What remains here is the adapter: an
+//! `RgbImage` is contiguous RGB bytes, so it becomes a `Raster` for free.
 //!
 //! From M2 this is joined by the **capture corpus** (`DESIGN.md` §5, M2):
 //! recorded real camera frames replayed through the decoder in CI. The
@@ -31,14 +31,10 @@
 #![forbid(unsafe_code)]
 
 pub mod channel;
-pub mod geom;
-pub mod locate;
 
 pub use channel::{Channel, Preset};
-pub use geom::Homography;
-pub use locate::locate;
 
-use cuttl_codec::{Error, Grid, Palette, Pulse, Result};
+use cuttl_codec::{Grid, Palette, Pulse, Raster, Result, eye};
 use image::{Rgb, RgbImage};
 
 /// Default pixels per chroma cell when rendering.
@@ -66,76 +62,25 @@ pub fn render(pulse: &Pulse, cell_px: u32) -> RgbImage {
     image
 }
 
-/// Recover cell values from an image by reading cell centres.
-///
-/// The cell size is inferred from the image dimensions, so the eye is not told
-/// the render scale — only the grid and palette, which it must already know
-/// from the beacon. Non-integer scales are rejected rather than rounded.
-pub fn sample(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
-    let (w, h) = image.dimensions();
-    let dims_error = || Error::Dimensions {
-        w,
-        h,
-        cols: grid.cols,
-        rows: grid.rows,
-    };
-
-    let cell_px = w
-        .checked_div(grid.cols as u32)
-        .filter(|&n| n > 0)
-        .ok_or_else(dims_error)?;
-    if !w.is_multiple_of(grid.cols as u32) || h != grid.rows as u32 * cell_px {
-        return Err(dims_error());
-    }
-
-    let mut pulse = Pulse::new(grid, palette)?;
-    let half = cell_px / 2;
-    for y in 0..grid.rows {
-        for x in 0..grid.cols {
-            let px = image.get_pixel(x as u32 * cell_px + half, y as u32 * cell_px + half);
-            pulse.set_cell(x, y, palette.from_rgb(px.0))?;
-        }
-    }
-    Ok(pulse)
+/// Borrow an `image` buffer as a codec [`Raster`] — no copy.
+pub fn raster_of(image: &RgbImage) -> Result<Raster<'_>> {
+    Raster::new(image.width(), image.height(), image.as_raw())
 }
 
-/// Sample every cell centre through a known cell-space → image-space transform.
-///
-/// Bilinear rather than nearest-neighbour: cell centres land on fractional
-/// pixels under any real perspective, and rounding them throws away the
-/// sub-pixel accuracy the homography just worked out.
-pub fn sample_with(
-    image: &RgbImage,
-    grid: Grid,
-    palette: Palette,
-    transform: &Homography,
-) -> Result<Pulse> {
-    let mut pulse = Pulse::new(grid, palette)?;
-    for y in 0..grid.rows {
-        for x in 0..grid.cols {
-            let (ix, iy) = transform.apply(x as f64 + 0.5, y as f64 + 0.5);
-            let rgb = channel::bilinear(image, ix, iy);
-            pulse.set_cell(x, y, palette.from_rgb(rgb))?;
-        }
-    }
-    Ok(pulse)
-}
-
-/// The eye's real entry point: locate the pulse, then read it.
-///
-/// A frame whose finders cannot be found is an *erasure* — the caller should
-/// count it and move on, exactly as it would for a CRC reject (§1b). The skin
-/// is looping; there will be another frame.
+/// Locate the pulse in a frame and read it. See `cuttl_codec::eye::read`.
 pub fn read(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
-    let transform = locate(image, grid).ok_or(Error::NotLocated)?;
-    sample_with(image, grid, palette, &transform)
+    eye::read(&raster_of(image)?, grid, palette)
+}
+
+/// Read a frame known to be axis-aligned and exactly grid-sized.
+pub fn sample(image: &RgbImage, grid: Grid, palette: Palette) -> Result<Pulse> {
+    eye::sample_aligned(&raster_of(image)?, grid, palette)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuttl_codec::Receiver;
-    use cuttl_codec::stream;
+    use cuttl_codec::{Error, Receiver, stream};
     use proptest::prelude::*;
     use rand::{RngExt, SeedableRng, rngs::StdRng};
 
