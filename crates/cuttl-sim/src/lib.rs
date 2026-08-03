@@ -426,6 +426,288 @@ mod tests {
         );
     }
 
+    /// One simulated transfer through the timed shutter model ([`channel::capture_timed`]):
+    /// the skin flips pulses at `pulse_hz`, a fixed 30 fps camera with phone
+    /// shutter timing watches, and tear/blend happen when the physics says so.
+    /// Returns (simulated seconds to completion, torn, rejected), or `None` if
+    /// the deadline passes first.
+    fn timed_transfer(
+        object: &[u8],
+        grid: Grid,
+        palette: Palette,
+        pulse_hz: f64,
+        deadline: f64,
+        seed: u64,
+    ) -> Option<(f64, u32, u32)> {
+        const CAPTURE_HZ: f64 = 30.0;
+        /// Camera timestamp jitter, ± seconds. Without it, ideal clocks at
+        /// integer pulse:capture ratios phase-lock, and one unlucky phase makes
+        /// *every* capture torn forever — measured, 30 Hz pulses never
+        /// completed against a 30 fps camera. Real clocks drift; ±2 ms turns
+        /// the pathology into the statistical cost it actually is.
+        const JITTER: f64 = 0.002;
+        // Tear and blend zeroed: in the timed model they are outcomes, not
+        // parameters, and leaving the coin flips on would double-count them.
+        let channel = Channel {
+            tear: 0.0,
+            blend: 0.0,
+            ..Channel::preset(Preset::Heavy)
+        };
+        let shutter = channel::Shutter::PHONE;
+        let pulses = stream::encode(object, grid, palette, 88, 3.0).unwrap();
+        let frames: Vec<RgbImage> = pulses.iter().map(|p| render(p, CELL_PX)).collect();
+        let period = 1.0 / pulse_hz;
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut rx = Receiver::new();
+        let start: f64 = shutter.exposure + rng.random_range(0.0..period);
+        let mut n = 0u64;
+        loop {
+            let t = start + n as f64 / CAPTURE_HZ + rng.random_range(-JITTER..JITTER);
+            n += 1;
+            if t > deadline {
+                return None;
+            }
+            // The pulses whose screen time overlaps this capture's window,
+            // folded through the loop — the skin repeats forever.
+            let first = ((t - shutter.exposure) / period).floor() as i64;
+            let last = ((t + shutter.readout) / period).floor() as i64;
+            let window: Vec<&RgbImage> = (first..=last)
+                .map(|i| &frames[i.rem_euclid(frames.len() as i64) as usize])
+                .collect();
+            let phase = t - first as f64 * period;
+            let frame = channel::capture_timed(
+                &window, period, phase, &shutter, &channel, CELL_PX, &mut rng,
+            );
+            if let Ok(pulse) = read(&frame, grid, palette) {
+                rx.ingest(&pulse);
+            }
+            if rx.is_complete() {
+                return Some((t, rx.torn(), rx.rejected()));
+            }
+        }
+    }
+
+    /// A flip landing mid-readout reads as torn with nothing but timing at
+    /// work — no `tear` probability anywhere in sight.
+    #[test]
+    fn a_mid_readout_flip_reads_as_torn_in_the_timed_model() {
+        let (grid, palette) = M1;
+        let pulses = stream::encode(&vec![0x42u8; 4096], grid, palette, 9, 0.0).unwrap();
+        let frames = [render(&pulses[3], CELL_PX), render(&pulses[4], CELL_PX)];
+        let shutter = channel::Shutter {
+            readout: 0.015,
+            exposure: 0.0,
+        };
+        // Pulse period 20 ms; rows read over [10 ms, 25 ms], flip at 20 ms —
+        // two thirds of the way down the frame.
+        let mut rng = StdRng::seed_from_u64(5);
+        let frame = channel::capture_timed(
+            &[&frames[0], &frames[1]],
+            0.020,
+            0.010,
+            &shutter,
+            &Channel::preset(Preset::None),
+            CELL_PX,
+            &mut rng,
+        );
+        let sampled = read(&frame, grid, palette).expect("finders are shared by both pulses");
+        assert_eq!(
+            cuttl_codec::Receiver::new().ingest(&sampled),
+            cuttl_codec::Ingest::Torn
+        );
+    }
+
+    /// Pulse-rate sweep, the decimen question: how fast should the skin strobe?
+    /// A measurement tool, not CI — run with:
+    /// `cargo test -p cuttl-sim --release rate_sweep -- --ignored --nocapture`
+    ///
+    /// Measured (mono, 30 fps camera, `Shutter::PHONE`, heavy channel, ±2 ms
+    /// camera jitter, mean of 3 seeds):
+    ///
+    /// | pulse Hz | 5 | 10 | 15 | **20** | 24 | 30 | 45 | 60 |
+    /// |---|---|---|---|---|---|---|---|---|
+    /// | KB/s | 0.69 | 1.37 | 2.06 | **2.74** | 2.29 | starved | 1.62 | 0.38 |
+    ///
+    /// Three findings. (1) Goodput is linear in pulse rate up to **20 Hz**, the
+    /// measured optimum — twice the old default, and exactly §3d's original
+    /// guess. (2) Pulse rates at integer ratios of the capture rate are a trap:
+    /// at 30:30 the phase relationship is frozen, one unlucky draw makes every
+    /// capture torn, and the transfer starves *forever* — jitter alone does not
+    /// walk it out. decimen's field notes ("reduce to 24–30 on 60 Hz screens")
+    /// are this same cliff seen from the other side. (3) Past ~43 Hz the 23 ms
+    /// shutter window is wider than the pulse period, so no capture can be
+    /// clean; mono survives only on blend-dominated rows at ~10× the cost.
+    #[test]
+    #[ignore = "measurement tool; findings pinned by faster_strobing_* and phase_lock_*"]
+    fn rate_sweep_prints_goodput_by_pulse_rate() {
+        let object: Vec<u8> = (0..12_000u32).map(|i| (i * 29) as u8).collect();
+        println!("pulse_hz    KB/s  (per seed: s to complete, torn, rejected)");
+        for &hz in &[5.0, 10.0, 15.0, 20.0, 24.0, 30.0, 45.0, 60.0] {
+            let mut detail = String::new();
+            let mut rates = Vec::new();
+            for seed in 0..3u64 {
+                match timed_transfer(&object, M1.0, M1.1, hz, 120.0, 100 + seed) {
+                    Some((secs, torn, rejected)) => {
+                        rates.push(object.len() as f64 / secs / 1024.0);
+                        detail += &format!("  [{secs:5.1}s t{torn:<3} r{rejected:<3}]");
+                    }
+                    None => detail += "  [did not finish]",
+                }
+            }
+            let mean = rates.iter().sum::<f64>() / rates.len().max(1) as f64;
+            println!("{hz:>8}  {mean:>6.2}{detail}");
+        }
+    }
+
+    /// The rate sweep's headline, pinned: 20 pulses/s beats the old 10 Hz
+    /// default handily. If this fails, either the shutter model or the codec
+    /// regressed in a way that changes the recommended operating point — and
+    /// the skin's default rate slider is set from this measurement.
+    #[test]
+    fn faster_strobing_beats_the_default_rate() {
+        let object: Vec<u8> = (0..6_000u32).map(|i| (i * 41) as u8).collect();
+        for seed in [201, 202] {
+            let (slow, ..) =
+                timed_transfer(&object, M1.0, M1.1, 10.0, 60.0, seed).expect("10 Hz must complete");
+            let (fast, ..) =
+                timed_transfer(&object, M1.0, M1.1, 20.0, 60.0, seed).expect("20 Hz must complete");
+            assert!(
+                fast < slow,
+                "seed {seed}: 20 Hz took {fast:.1}s, 10 Hz took {slow:.1}s"
+            );
+        }
+    }
+
+    /// The clock-lock hazard, pinned: when the pulse clock sits at an integer
+    /// ratio of the capture clock, their phase relationship freezes, and one
+    /// unlucky draw makes every capture straddle a flip — *forever*. Camera
+    /// timestamp jitter of ±2 ms cannot walk out of it; only a frequency
+    /// offset could, and ideal clocks have none. At 30:30 the sweep starved on
+    /// all three seeds; at 60:30 one lucky-phase seed flew and the rest
+    /// crawled. This lottery is why the skin's rate control must keep clear of
+    /// the capture rate and its multiples — decimen's "reduce to 24–30 on
+    /// 60 Hz screens" field note is the same cliff seen from the other side.
+    #[test]
+    fn phase_lock_at_the_capture_rate_can_starve_a_transfer() {
+        let object = vec![0x6Bu8; 4_000];
+        // Sanity: the same object at the recommended rate completes in ~1.5 s.
+        let (base, ..) =
+            timed_transfer(&object, M1.0, M1.1, 20.0, 60.0, 100).expect("20 Hz must complete");
+        assert!(base < 15.0);
+        // Same seed, pulse rate == capture rate: the phase draw is bad, and no
+        // amount of extra time helps — 15 s is a 10× allowance already.
+        assert!(
+            timed_transfer(&object, M1.0, M1.1, 30.0, 15.0, 100).is_none(),
+            "a locked bad phase should starve; if this completes, the model gained clock drift"
+        );
+    }
+
+    /// One point of the density sweep: locate rate and misread cells per
+    /// located frame, single frames through the heavy channel (warp included —
+    /// registration error is exactly what kills density).
+    fn density_point(cols: u16, rows: u16, cell_px: u32, seeds: u64) -> (f64, f64) {
+        let grid = Grid {
+            cols,
+            rows,
+            ..Grid::M3_COLOR
+        };
+        let palette = Palette::Color3;
+        let mut located = 0u32;
+        let mut errors = 0usize;
+        for seed in 0..seeds {
+            let mut pulse = Pulse::new(grid, palette).unwrap();
+            let data: Vec<u8> = (0..pulse.capacity())
+                .map(|i| (i * 31 + seed as usize * 7) as u8)
+                .collect();
+            pulse.write_payload(&data).unwrap();
+            let image = channel::apply(
+                &render(&pulse, cell_px),
+                &Channel::preset(Preset::Heavy),
+                cell_px,
+                &mut StdRng::seed_from_u64(400 + seed),
+            );
+            if let Ok(got) = read(&image, grid, palette) {
+                located += 1;
+                errors += pulse
+                    .cells()
+                    .iter()
+                    .zip(got.cells())
+                    .filter(|(a, b)| a != b)
+                    .count();
+            }
+        }
+        (
+            located as f64 / seeds as f64,
+            errors as f64 / located.max(1) as f64,
+        )
+    }
+
+    /// Density sweep, the other decimen question: how many cells can a frame
+    /// carry before our detector gives up? Run with:
+    /// `cargo test -p cuttl-sim --release density_sweep -- --ignored --nocapture`
+    ///
+    /// Measured (colour, heavy channel with warp, 6 seeds; locate % / misread
+    /// cells per located frame):
+    ///
+    /// | grid | 4 px/cell | 3 px/cell | 2 px/cell |
+    /// |---|---|---|---|
+    /// | 96×54 | 100% / 1.7 | 100% / 18 | 67% / 160 |
+    /// | 128×72 | 100% / 3.3 | 100% / 29 | 83% / 300 |
+    /// | 160×90 | 100% / 11 | 83% / 44 | 100% / 742 |
+    /// | 192×108 | 100% / 10 | 100% / 58 | 100% / 837 |
+    ///
+    /// The cliff sits between 3 and 2 px/cell and is driven by *sampling*
+    /// error, not detection — at 2 px/cell the finders are often still found
+    /// while the payload is garbage. At 4 px/cell even 192×108 (4× the M3 cell
+    /// count, 768×432 sensor px — inside the eye's 960 px working width) reads
+    /// with ~10 misread cells, comfortably within the inner-RS budget. The M4
+    /// grid target is therefore evidence, not aspiration.
+    #[test]
+    #[ignore = "measurement tool; the finding is pinned by the_m4_grid_is_reachable_in_sim"]
+    fn density_sweep_prints_detection_cliff() {
+        println!("   grid  px/cell   image_px  locate  err_cells/frame");
+        for &(cols, rows) in &[(96u16, 54u16), (128, 72), (160, 90), (192, 108)] {
+            for &cell_px in &[4u32, 3, 2] {
+                let (locate, errs) = density_point(cols, rows, cell_px, 6);
+                println!(
+                    "{cols:>3}×{rows:<3} {cell_px:>7}  {:>4}×{:<4}  {:>5.0}%  {errs:>10.1}",
+                    cols as u32 * cell_px,
+                    rows as u32 * cell_px,
+                    locate * 100.0
+                );
+            }
+        }
+    }
+
+    /// The density sweep's headline, pinned: the M4 grid (192×108, 4× the M3
+    /// cell count) locates every frame and misreads few enough cells for the
+    /// inner code, while 2 px/cell is confirmed past the cliff. If the first
+    /// half fails, the detector regressed; if the second half fails, the
+    /// channel got too easy and the sweep needs re-running.
+    #[test]
+    fn the_m4_grid_is_reachable_in_sim() {
+        let (locate, errors) = density_point(192, 108, 4, 4);
+        assert!(
+            locate >= 0.99,
+            "192×108 @ 4 px/cell located only {:.0}%",
+            locate * 100.0
+        );
+        assert!(
+            errors < 25.0,
+            "192×108 @ 4 px/cell misread {errors:.1} cells"
+        );
+
+        // Past the cliff means unusable, and the yardstick is the inner code:
+        // a colour pulse can absorb ~64 spread byte errors at the very best,
+        // so anything near that count in *cells* is far beyond repair.
+        let (_, past_cliff) = density_point(96, 54, 2, 4);
+        assert!(
+            past_cliff > 64.0,
+            "2 px/cell should be far past the inner-code budget, saw {past_cliff:.1}"
+        );
+    }
+
     /// Brutal is past the cliff, and the inner code does **not** rescue it.
     ///
     /// This corrects an earlier prediction of mine. When `Preset::Brutal` was
