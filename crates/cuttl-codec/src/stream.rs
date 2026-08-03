@@ -14,14 +14,23 @@
 //! *erasure*, which is the one thing the fountain layer can actually repair
 //! (§1b). A rejected pulse is never an `Err` — it is a normal, expected event.
 //!
-//! ## Still missing below this layer
+//! ## Order of operations
 //!
-//! The inner Reed–Solomon code (§1b) sits *between* the cells and this header,
-//! mopping up sparse cell errors so that a handful of misread cells does not
-//! cost a whole symbol. Until it exists, one bad cell kills one pulse, and the
-//! fountain has to carry the whole burden.
+//! The inner Reed–Solomon code ([`crate::fec`], §1b) sits *between* the cells
+//! and this header, so the full stack per pulse is:
+//!
+//! ```text
+//! skin:  header ‖ symbol  →  + inner ECC  →  cells
+//! eye:   cells  →  inner correct  →  CRC gate  →  fountain
+//! ```
+//!
+//! That order is the whole design in miniature. The inner code repairs the
+//! sparse cell errors, the CRC gate converts whatever survived into an erasure,
+//! and only then does anything reach the fountain — which repairs erasures and
+//! nothing else.
 
 use crate::error::{Error, Result};
+use crate::fec;
 use crate::fountain::{CONFIG_LEN, Fountain, RaptorQ, RaptorQSink, SYMBOL_ID_LEN, Sink};
 use crate::geometry::Grid;
 use crate::palette::Palette;
@@ -104,9 +113,15 @@ fn crc(header: &[u8], payload: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// Largest fountain symbol one pulse can carry.
+/// How a pulse's cells are divided between inner ECC and everything else.
+pub fn layout(grid: Grid, palette: Palette) -> Result<fec::Layout> {
+    fec::Layout::for_capacity(grid.payload_bytes(palette))
+}
+
+/// Largest fountain symbol one pulse can carry, after the inner code and the
+/// framing header have taken their share.
 pub fn symbol_capacity(grid: Grid, palette: Palette) -> Result<u16> {
-    let capacity = grid.payload_bytes(palette);
+    let capacity = layout(grid, palette)?.data_len();
     capacity
         .checked_sub(HEADER_LEN + SYMBOL_ID_LEN)
         .filter(|&n| n > 0)
@@ -133,6 +148,7 @@ pub fn encode(
 ) -> Result<Vec<Pulse>> {
     grid.validate()?;
     let max_symbol = symbol_capacity(grid, palette)?;
+    let layout = layout(grid, palette)?;
     let fountain = RaptorQ::new(object, max_symbol)?;
 
     let header = PulseHeader {
@@ -141,8 +157,9 @@ pub fn encode(
         object_crc: crc(&[], object),
     };
 
-    let capacity = grid.payload_bytes(palette);
-    let mut buf = vec![0u8; capacity];
+    // The header and symbol occupy the inner code's *data* space; ECC is added
+    // on top and the result is what actually reaches the cells.
+    let mut buf = vec![0u8; layout.data_len()];
 
     fountain
         .symbols(overhead)
@@ -153,7 +170,7 @@ pub fn encode(
             header.write_into(&mut buf, &symbol);
 
             let mut pulse = Pulse::new(grid, palette)?;
-            pulse.write_payload(&buf)?;
+            pulse.write_payload(&fec::encode(&buf, layout)?)?;
             Ok(pulse)
         })
         .collect()
@@ -208,7 +225,18 @@ impl Receiver {
         if self.object.is_some() {
             return Ingest::Duplicate;
         }
-        let bytes = pulse.read_payload();
+        // Inner code first: repair what can be repaired, so the CRC gate above
+        // only ever sees pulses that are genuinely fine or genuinely beyond
+        // help. A block past its correction budget is an erasure like any other.
+        let Ok(layout) = fec::Layout::for_capacity(pulse.capacity()) else {
+            self.rejected += 1;
+            return Ingest::Rejected;
+        };
+        let Some(bytes) = fec::decode(&pulse.read_payload(), layout) else {
+            self.rejected += 1;
+            return Ingest::Rejected;
+        };
+
         let symbol_len = self.sink.as_ref().map(|s| s.symbol_len());
         let Some((header, symbol)) = PulseHeader::parse(&bytes, symbol_len) else {
             self.rejected += 1;
@@ -356,37 +384,57 @@ mod tests {
         assert_eq!(rx.progress().0, 1);
     }
 
-    /// The CRC gate: a single flipped payload cell must drop the pulse rather
-    /// than feed a corrupt symbol to the fountain decoder (§1b).
+    /// Flip `count` payload cells, spread out so they land in distinct bytes.
+    fn corrupt(pulse: &Pulse, count: usize) -> Pulse {
+        let mut pulse = pulse.clone();
+        let coords: Vec<_> = pulse.grid().payload_coords().collect();
+        for i in 0..count {
+            // 8 cells apart in mono, so each flip damages a different byte and
+            // costs the inner code a full correction rather than sharing one.
+            let (x, y) = coords[(i * 8 + 40) % coords.len()];
+            let flipped = pulse.cell(x, y).unwrap() ^ 1;
+            pulse.set_cell(x, y, flipped).unwrap();
+        }
+        pulse
+    }
+
+    /// What the inner code bought: a cell error that used to cost the whole
+    /// symbol is now simply repaired (§1b).
     #[test]
-    fn corrupted_pulse_is_rejected_by_the_crc_gate() {
+    fn a_few_cell_errors_are_repaired_by_the_inner_code() {
         let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
-        let mut corrupt = pulses[0].clone();
-        let (x, y) = M1.0.payload_coords().nth(300).unwrap();
-        let flipped = corrupt.cell(x, y).unwrap() ^ 1;
-        corrupt.set_cell(x, y, flipped).unwrap();
+        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
 
         let mut rx = Receiver::new();
-        assert_eq!(rx.ingest(&corrupt), Ingest::Rejected);
+        assert_eq!(rx.ingest(&corrupt(&pulses[0], budget)), Ingest::Accepted);
+        assert_eq!(rx.rejected(), 0);
+    }
+
+    /// Past the inner code's budget, the CRC gate takes over and drops the
+    /// pulse rather than feeding a corrupt symbol to the fountain decoder.
+    #[test]
+    fn errors_past_the_inner_budget_hit_the_crc_gate() {
+        let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
+        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
+
+        let mut rx = Receiver::new();
+        assert_eq!(
+            rx.ingest(&corrupt(&pulses[0], budget * 3)),
+            Ingest::Rejected
+        );
         assert_eq!(rx.rejected(), 1);
     }
 
-    /// Corruption must never reach the object. Flip one cell in every pulse and
-    /// the transfer must fail to converge, not converge onto garbage.
+    /// Corruption must never reach the object. Damage every pulse past what the
+    /// inner code can repair, and the transfer must fail to converge rather
+    /// than converge onto garbage.
     #[test]
     fn corruption_never_reaches_the_object() {
         let object = vec![0x5Au8; 4096];
+        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
         let pulses = encode(&object, M1.0, M1.1, 1, 1.0).unwrap();
-        let mangled: Vec<Pulse> = pulses
-            .iter()
-            .map(|p| {
-                let mut p = p.clone();
-                let (x, y) = M1.0.payload_coords().nth(400).unwrap();
-                let v = p.cell(x, y).unwrap() ^ 1;
-                p.set_cell(x, y, v).unwrap();
-                p
-            })
-            .collect();
+        let mangled: Vec<Pulse> = pulses.iter().map(|p| corrupt(p, budget * 3)).collect();
+
         let rx = absorb_all(&mangled);
         assert!(!rx.is_complete());
         assert!(rx.finish().is_err());

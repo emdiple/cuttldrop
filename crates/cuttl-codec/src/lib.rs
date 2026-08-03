@@ -16,7 +16,7 @@
 //! - [`pulse`] — cell buffer, structure painting, bit packing (§3a) — **landed**
 //! - [`fountain`] — outer RaptorQ erasure code (§1a, §3c) — **landed**
 //! - [`stream`] — framing + CRC gate over the fountain (§3c) — **landed**
-//! - `fec` — *inner* Reed–Solomon, below the CRC gate (§1b) — M0 step 3
+//! - [`fec`] — *inner* Reed–Solomon, below the CRC gate (§1b) — **landed**
 //! - `beacon` — ECC-heavy header in the reserved strips (§3a) — M1
 //! - `manifest` — filename/size/mime/BLAKE3 as its own stream (§3c) — M2
 //!
@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod fec;
 pub mod fountain;
 pub mod geometry;
 pub mod palette;
