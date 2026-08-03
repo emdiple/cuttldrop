@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "wasm": "wasm-pack build ../crates/cuttl-wasm --target web --out-dir ../../web/pkg --release",
+    "cert": "sh scripts/cert.sh",
     "dev": "npm run wasm && vite --configLoader runner",
     "build": "npm run wasm && tsc --noEmit && vite build --configLoader runner",
     "test": "npm run wasm && node test/roundtrip.mjs",

@@ -35,6 +35,7 @@ const HINT_WINDOW = 30;
 const RATE_WINDOW = 2;
 
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
+const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
@@ -226,12 +227,32 @@ function finish(bytes: Uint8Array, name: string, mime: string): void {
   barFill.style.width = "100%";
 }
 
+/**
+ * Size the work canvas to the camera's real aspect, the first time the camera
+ * admits to having one.
+ *
+ * Deliberately lazy. `videoWidth` is 0 until metadata lands, and on iOS that
+ * can be *after* `play()` resolves — reading it too early gives 0, and a
+ * guessed aspect ratio stretches every frame. A stretched pulse still shows
+ * video and still finds nothing: the grid is no longer square, so sampling
+ * lands between cells and every frame fails the CRC gate. That failure mode
+ * looks exactly like "the camera doesn't work", which is why it is worth the
+ * two extra lines to never guess.
+ */
+function sized(): boolean {
+  if (work.width > 0) return true;
+  if (!video.videoWidth || !video.videoHeight) return false;
+  work.width = WORK_WIDTH;
+  work.height = Math.round((WORK_WIDTH * video.videoHeight) / video.videoWidth);
+  return true;
+}
+
 function capture(): void {
   if (done) return;
   // Counted even when dropped: this is the camera's rate, and a frame the
   // worker was too busy to take still arrived.
   captureRate.mark(performance.now());
-  if (busy) return;
+  if (busy || !sized()) return;
 
   workCtx.drawImage(video, 0, 0, work.width, work.height);
   const frame = workCtx.getImageData(0, 0, work.width, work.height);
@@ -260,7 +281,32 @@ function pump(): void {
   step();
 }
 
+/**
+ * Why there is no camera, when there is no camera.
+ *
+ * Overwhelmingly the answer is *not* permissions: `navigator.mediaDevices` is
+ * not exposed at all outside a secure context, and while `localhost` counts as
+ * one, the `http://192.168.x.x` a phone uses to reach a dev laptop does not.
+ * So the laptop's own camera works and the phone's appears broken — with the
+ * raw `TypeError` as the only clue. Say the real thing instead.
+ */
+function unavailable(): string | null {
+  // Typed as always present; on http it genuinely is not there.
+  const media = navigator.mediaDevices as MediaDevices | undefined;
+  if (media?.getUserMedia) return null;
+  if (!window.isSecureContext) {
+    return `${location.protocol}//${location.host} is not a secure context, so the browser hides the camera. Serve this over https — in web/: npm run cert, then npm run dev.`;
+  }
+  return "This browser exposes no camera API.";
+}
+
 async function start(): Promise<void> {
+  const blocked = unavailable();
+  if (blocked) {
+    hint.textContent = blocked;
+    return;
+  }
+
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -272,7 +318,16 @@ async function start(): Promise<void> {
   }
 
   video.srcObject = stream;
-  await video.play();
+  // iOS rejects `play()` in plenty of situations a desktop never hits, and an
+  // unhandled rejection here leaves the page sitting on its opening hint
+  // forever — the silent failure this whole function exists to avoid.
+  try {
+    await video.play();
+  } catch (error) {
+    hint.textContent = `Camera opened but would not play: ${error}`;
+    return;
+  }
+  begin.hidden = true;
   const track = stream.getVideoTracks()[0];
   await steady(track);
 
@@ -287,18 +342,40 @@ async function start(): Promise<void> {
       : "camera — resolution unreported";
   baseCameraMode = cameraMode.textContent;
 
-  const aspect = video.videoHeight / video.videoWidth || 9 / 16;
-  work.width = WORK_WIDTH;
-  work.height = Math.round(WORK_WIDTH * aspect);
-
   pump();
 }
+
+/**
+ * Resolves when the worker has its WASM up.
+ *
+ * The camera used to start on this signal. It cannot: iOS wants a *user
+ * gesture* behind `getUserMedia` and `play()`, and a page-load prompt is the
+ * one most likely to be dismissed or ignored. So the tap starts the camera and
+ * this only decides whether the tap has to wait.
+ */
+let workerReady!: () => void;
+const ready = new Promise<void>((resolve) => {
+  workerReady = resolve;
+});
+
+begin.addEventListener("click", () => {
+  begin.disabled = true;
+  begin.textContent = "Starting…";
+  hint.textContent = "Opening the camera…";
+  void ready.then(start).then(() => {
+    // Still visible means start() bailed and wrote its reason into the hint.
+    if (!begin.hidden) {
+      begin.disabled = false;
+      begin.textContent = "Try again";
+    }
+  });
+});
 
 worker.onmessage = (event: MessageEvent<FromWorker>) => {
   const message = event.data;
   switch (message.kind) {
     case "ready":
-      void start();
+      workerReady();
       break;
     case "error":
       hint.textContent = message.message;

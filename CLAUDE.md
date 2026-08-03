@@ -96,8 +96,9 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 # because the directory stands in for a skin that loops forever (§3d).
 
 # The browser. `dev` serves it; open /skin.html on one device, /eye.html on the
-# other. Camera access needs https or localhost.
-cd web && npm install && npm run dev
+# other. `cert` is mandatory whenever the eye is a phone: mediaDevices does not
+# exist outside a secure context, and a LAN address is not one.
+cd web && npm install && npm run cert && npm run dev
 cd web && npm test        # JS boundary round trip, no browser needed
 ```
 
@@ -216,6 +217,16 @@ cd web && npm test        # JS boundary round trip, no browser needed
   `symbols × symbolBytes ÷ elapsed`, clocked from the first *accepted symbol* rather
   than page load, so aiming time is not charged against the rate. This is the instrument
   the M1 observable reports through: without it "a file crossed the gap" is a boolean.
+- **Four ways an iPhone eye fails silently**, all now closed. (1) `mediaDevices` is
+  absent outside a secure context, so a LAN address gives no camera at all — hence
+  `npm run cert`, and the page now *says* this instead of printing a raw `TypeError`.
+  (2) `getUserMedia` and `play()` want a user gesture, so the camera starts on a tap
+  rather than on the worker's `ready`. (3) an unhandled `play()` rejection left the
+  page on its opening hint forever — indistinguishable from "no signal". (4) iOS can
+  resolve `play()` before `videoWidth` is known, and the old `9/16` fallback stretched
+  every frame: video visible, grid non-square, every frame failing the CRC gate. The
+  work canvas is now sized lazily from the first frame that has real dimensions.
+  Only (1) blocks bring-up; (4) is the one that would have wasted an afternoon.
 - **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
   hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
   when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;
