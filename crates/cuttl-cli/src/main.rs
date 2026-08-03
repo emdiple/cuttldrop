@@ -27,15 +27,22 @@ struct Cli {
     command: Command,
 }
 
-/// Grid + palette pairing. The eye will learn this from the beacon once the
-/// beacon exists (M1); until then both ends are told explicitly.
+/// Grid + palette pairing, in ascending order of bitrate and of risk.
+///
+/// The browser eye works this out for itself by trying each in turn; the CLI
+/// keeps an explicit flag because a pulse directory is usually being inspected
+/// deliberately, and a wrong guess should be an error rather than a fallback.
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 enum Profile {
-    /// 48×27 mono — the M1 air-gap profile
+    /// 64×36 mono — the M1 air-gap profile, 160 B/pulse
     #[default]
     M1,
-    /// 96×54 eight-colour — the M3 profile
+    /// 192×108 mono — density without colour, 2.3 KB/pulse
+    M2,
+    /// 96×54 eight-colour — the M3 profile, 1.4 KB/pulse
     M3,
+    /// 192×108 eight-colour — both levers, 7.1 KB/pulse
+    M4,
 }
 
 impl Profile {
@@ -44,7 +51,9 @@ impl Profile {
     fn parts(self) -> (Grid, Palette) {
         match self {
             Profile::M1 => cuttl_codec::Profile::M1,
+            Profile::M2 => cuttl_codec::Profile::M2,
             Profile::M3 => cuttl_codec::Profile::M3,
+            Profile::M4 => cuttl_codec::Profile::M4,
         }
         .parts()
     }
