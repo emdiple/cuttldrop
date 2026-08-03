@@ -111,16 +111,27 @@ privacy. Optional passphrase encryption is on the roadmap (`COMPARISON-decimen.m
 Measured, not estimated. Goodput is payload bytes per pulse after every layer of
 overhead.
 
-| Profile | Grid | Bits/cell | Bands | Goodput |
-|---|---|---|---|---|
-| M1 (mono) | 64 × 36 | 1 | 1 | **160 B/pulse** |
-| M3 (colour) | 96 × 54 | 3 | 2 | **1408 B/pulse** |
+| Profile | Grid | Bits/cell | Payload cells | Goodput | At 20 Hz |
+|---|---|---|---|---|---|
+| M1 — safe | 64 × 36 | 1 | 73% | 160 B/pulse | 3.2 KB/s |
+| M2 — dense | 192 × 108 | 1 | 91% | **2128 B/pulse** | 43 KB/s |
+| M3 — colour | 96 × 54 | 3 | 83% | 1408 B/pulse | 28 KB/s |
+| M4 — dense colour | 192 × 108 | 3 | 91% | **6560 B/pulse** | 131 KB/s |
 
-At a realistic 10 pulses/second that is roughly 1.6 KB/s mono and 14 KB/s colour —
-minus the manifest's slot every 8th pulse (12.5% for mono, 6.25% for colour), which is
-the price of files that arrive named and verified. The colour path is built and tested
-but its calibration machinery is not finished, so treat the second row as a ceiling
-rather than a promise.
+The skin picks one; the eye works out which by trying each grid until one passes the
+CRC gate, so density is a menu on one device only.
+
+Two things that table is really saying. **M2 beats M3** — density is a bigger lever
+than colour, and it is the safer one, since nothing about a mono grid depends on a
+camera's white balance. That is `DESIGN.md` §2's bottleneck ordering showing up as a
+number. And **the payload column is why**: registration costs the same four finders
+whatever the grid, so a 9× cell count buys 13× the bytes. Small grids do not merely
+carry less, they spend a quarter of themselves saying where they are.
+
+20 Hz is the measured optimum against a 30 fps camera, and 4 px/cell at the sensor is
+the measured floor — the cliff is between 3 and 2. Every figure here comes out of the
+simulator. Nothing in this table has met a real camera yet, which is exactly what the
+eye's goodput readout exists to settle.
 
 ## Layout
 
