@@ -19,13 +19,21 @@
 //! applied first because it decides *where* cells are rather than what colour
 //! they read as. Warping an already-blurred frame would blur it twice.
 //!
-//! ## Not modelled yet
+//! ## The temporal half
 //!
-//! Rolling-shutter tear and the exposure blend between consecutive pulses.
-//! Both are *temporal*: they need two pulses in flight at once, and tear needs
-//! the beacon (a pulse counter, duplicated top and bottom) before a torn frame
-//! can be told apart from a clean one. Frame loss is not modelled here either —
-//! that is the caller dropping whole pulses, which needs no image processing.
+//! Two models, at different fidelities:
+//!
+//! - [`capture`] — tear and exposure blend as *probabilities* (`Channel::tear`,
+//!   `Channel::blend`). Cheap, and right for tests that need "some frames are
+//!   torn" without caring why.
+//! - [`capture_timed`] — tear and blend *emerge* from [`Shutter`] physics: each
+//!   sensor row integrates whatever pulses were on screen during its exposure,
+//!   rows are read top to bottom over the readout time. This is what makes
+//!   **pulse rate** a sweepable variable: raise it and straddles happen more
+//!   often because the maths says so, not because a knob was turned.
+//!
+//! Frame loss is not modelled here — that is the caller dropping whole pulses,
+//! which needs no image processing.
 
 use cuttl_codec::{Homography, Raster};
 use image::{Rgb, RgbImage};
@@ -192,6 +200,115 @@ pub fn capture(
     let a = warp_with(current, transform.as_ref());
     let b = warp_with(next, transform.as_ref());
     photometric(&composite(&a, &b, channel, rng), channel, cell_px, rng)
+}
+
+/// Camera timing: what the sensor is doing while the skin flips pulses.
+///
+/// A row read at instant `t` has integrated the light of `[t - exposure, t]`;
+/// the first row is read at the capture instant and the last `readout` seconds
+/// later. Everything [`capture`] models with coin flips follows from these two
+/// numbers and the pulse period.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shutter {
+    /// Seconds from the first sensor row being read to the last.
+    pub readout: f64,
+    /// Seconds each row integrates light before it is read.
+    pub exposure: f64,
+}
+
+impl Shutter {
+    /// A mid-range phone filming a screen indoors: ~15 ms rolling readout,
+    /// ~8 ms exposure (screens are bright; auto-exposure keeps it short).
+    pub const PHONE: Self = Self {
+        readout: 0.015,
+        exposure: 0.008,
+    };
+}
+
+/// Capture one frame from a skin flipping pulses every `pulse_period` seconds.
+///
+/// `pulses[i]` is on screen during `[i·period, (i+1)·period)`; `phase` is the
+/// instant the first sensor row is read, in the same clock. The caller supplies
+/// enough consecutive pulses that the whole window `[phase - exposure,
+/// phase + readout]` is covered — indices are clamped, so a short slice merely
+/// freezes the ends rather than panicking.
+///
+/// Tear and blend are not parameters here; they *happen* when the window spans
+/// a flip. `Channel::tear` and `Channel::blend` are ignored, everything
+/// photometric still applies, and — as in [`capture`] — one warp is shared by
+/// every contributing pulse, because the camera does not move between the first
+/// sensor row and the last.
+pub fn capture_timed(
+    pulses: &[&RgbImage],
+    pulse_period: f64,
+    phase: f64,
+    shutter: &Shutter,
+    channel: &Channel,
+    cell_px: u32,
+    rng: &mut impl Rng,
+) -> RgbImage {
+    assert!(!pulses.is_empty() && pulse_period > 0.0);
+    let (w, h) = pulses[0].dimensions();
+    let transform = warp_transform((w, h), channel.warp, rng);
+    // Warped lazily: most windows touch one or two pulses.
+    let mut warped: Vec<Option<RgbImage>> = (0..pulses.len()).map(|_| None).collect();
+
+    let mut out = RgbImage::new(w, h);
+    for y in 0..h {
+        let row_at = if h > 1 {
+            phase + (y as f64 / (h - 1) as f64) * shutter.readout
+        } else {
+            phase
+        };
+        let (from, to) = (row_at - shutter.exposure, row_at);
+
+        // Which pulses this row saw, and for how long.
+        let mut weights: Vec<(usize, f64)> = Vec::new();
+        let first = (from / pulse_period).floor().max(0.0) as usize;
+        let last = ((to / pulse_period).floor().max(0.0) as usize).min(pulses.len() - 1);
+        for i in first.min(pulses.len() - 1)..=last {
+            let (lo, hi) = (i as f64 * pulse_period, (i + 1) as f64 * pulse_period);
+            let weight = if shutter.exposure > 0.0 {
+                (to.min(hi) - from.max(lo)).max(0.0)
+            } else if (lo..hi).contains(&row_at) {
+                1.0
+            } else {
+                0.0
+            };
+            if weight > 0.0 {
+                weights.push((i, weight));
+            }
+        }
+        for &(i, _) in &weights {
+            if warped[i].is_none() {
+                warped[i] = Some(warp_with(pulses[i], transform.as_ref()));
+            }
+        }
+
+        let total: f64 = weights.iter().map(|(_, weight)| weight).sum();
+        for x in 0..w {
+            let mut acc = [0f64; 3];
+            for &(i, weight) in &weights {
+                let px = warped[i].as_ref().expect("warped above").get_pixel(x, y).0;
+                for (c, sum) in acc.iter_mut().enumerate() {
+                    *sum += weight * px[c] as f64;
+                }
+            }
+            let mut px = [0u8; 3];
+            if total > 0.0 {
+                for (c, value) in px.iter_mut().enumerate() {
+                    *value = (acc[c] / total).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+            out.put_pixel(x, y, Rgb(px));
+        }
+    }
+    // Timing always applies; the photometric stages are skipped for a perfect
+    // camera exactly as `apply` skips them, so a clean window is bit-exact.
+    if channel.is_identity() {
+        return out;
+    }
+    photometric(&out, channel, cell_px, rng)
 }
 
 /// Stitch or blend two already-warped frames.
@@ -438,6 +555,61 @@ mod tests {
 
         let drift = mean_drift(&image, &out);
         assert!(drift > 20.0, "mean per-channel drift was only {drift:.1}");
+    }
+
+    /// A window that never crosses a flip reproduces its pulse bit-exactly.
+    #[test]
+    fn timed_window_inside_one_pulse_is_clean() {
+        let a = checkerboard(64, 64);
+        let b = RgbImage::from_pixel(64, 64, Rgb([255, 0, 0]));
+        let shutter = Shutter {
+            readout: 0.002,
+            exposure: 0.001,
+        };
+        let mut rng = StdRng::seed_from_u64(3);
+        // Window [0.004, 0.007] sits inside pulse 0's [0, 0.1).
+        let out = capture_timed(
+            &[&a, &b],
+            0.1,
+            0.005,
+            &shutter,
+            &Channel::preset(Preset::None),
+            8,
+            &mut rng,
+        );
+        assert_eq!(out, a);
+    }
+
+    /// A flip inside the readout stitches the frame at the corresponding rows:
+    /// top rows read before the flip see pulse 0, bottom rows see pulse 1.
+    #[test]
+    fn timed_flip_mid_readout_stitches_by_row() {
+        let a = RgbImage::from_pixel(16, 16, Rgb([255, 255, 255]));
+        let b = RgbImage::from_pixel(16, 16, Rgb([0, 0, 0]));
+        let shutter = Shutter {
+            readout: 0.010,
+            exposure: 0.0,
+        };
+        let mut rng = StdRng::seed_from_u64(3);
+        // Rows read over [0.015, 0.025]; the flip is at 0.020 — halfway down.
+        let out = capture_timed(
+            &[&a, &b],
+            0.020,
+            0.015,
+            &shutter,
+            &Channel::preset(Preset::None),
+            8,
+            &mut rng,
+        );
+        assert_eq!(out.get_pixel(8, 0).0, [255, 255, 255], "top is pulse 0");
+        assert_eq!(out.get_pixel(8, 15).0, [0, 0, 0], "bottom is pulse 1");
+        let boundary = (0..16)
+            .find(|&y| out.get_pixel(8, y).0 == [0, 0, 0])
+            .unwrap();
+        assert!(
+            (6..=9).contains(&boundary),
+            "tear line at row {boundary}, expected near the middle"
+        );
     }
 
     /// Mean absolute per-channel difference, 0–255.
