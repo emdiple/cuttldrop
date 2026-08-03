@@ -5,6 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Built by `npm run wasm` -> `wasm-pack build --target web --release`, which is
+# three steps, not one: cargo builds for wasm32, then the *wasm-bindgen* CLI
+# generates `cuttl_wasm.js` and the `.d.ts` from the `#[wasm_bindgen]` items in
+# lib.rs, then wasm-opt runs over the result. The JS class bindings do not exist
+# without step two, so a bare `cargo build --release --target wasm32` is not a
+# substitute. wasm-pack also pins the bindgen CLI to the crate version above --
+# a mismatch there is a notoriously opaque failure.
+#
+# The output shares the workspace `[profile.release]`, which is speed-tuned, and
+# that is deliberate -- see the size measurements in CLAUDE.md.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
