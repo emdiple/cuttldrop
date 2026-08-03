@@ -53,9 +53,13 @@ glob and will expand to the wrong thing or nothing.
 8. **BLAKE3 verify is mandatory** — never hand back an unverified file.
 9. **Bottleneck ranking** (§2): temporal (rolling shutter/exposure) ≫ spatial (MTF)
    ≫ colour accuracy ≫ decode CPU. Plan work in that order.
-10. **Stack split** (§4): Rust owns the codec + simulator + CLI (+ WASM shim at M1);
-    TypeScript owns the browser (camera, render, UI). The per-frame image pipeline
-    starts in TS and moves to WASM only if a profiler demands it — expect it won't.
+10. **Stack split** (§4): Rust owns the codec + simulator + CLI + WASM shim;
+    TypeScript owns the browser (camera, canvas, UI, worker plumbing). **Revised at
+    M1a**: the per-frame image pipeline (finder detection, homography, sampling) is
+    Rust too, not TS. It already existed and was tested for the simulator, and a
+    second implementation is exactly the skin/eye divergence the shared crate exists
+    to prevent. It works on a borrowed `Raster` — no image crate — so it compiles to
+    wasm32 unchanged.
 11. **iPhone-as-eye**: probe iOS Safari camera-control limits during M1, decide then.
 
 ## Layout

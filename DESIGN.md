@@ -418,11 +418,17 @@ starts in TS and moves only if a profiler says so.**
 - **The render path.** It's `putImageData`. Rust adds nothing.
 - **Camera plumbing, `getUserMedia` constraints, permissions, UI overlay.** All TS, all
   DOM-shaped.
-- **The per-frame image pipeline — for now.** Real work, but §2 says ~12 ms in TS with
-  sane algorithms. And the WASM boundary isn't free: 1080p RGBA is 8 MB/frame, and
-  copying that into WASM linear memory at 30 fps is 250 MB/s of pure overhead that could
-  *erase* the gain. If we move it later, move only the sparse sampling and let the ¼-res
-  grayscale plane be the one thing we copy.
+- ~~**The per-frame image pipeline — for now.**~~ **Reversed at M1a, and worth saying
+  why.** The plan was to write finder detection, the homography and cell sampling in
+  TypeScript and move them to WASM only under a profiler. But M0 built all three in
+  Rust to drive the simulator, with tests — including two subtle bugs already found and
+  fixed (single-linkage clustering, and a half-pixel coordinate convention). Rewriting
+  that in TypeScript would mean re-deriving those fixes and maintaining two
+  implementations of the one thing §4 says must never diverge: the definition skin and
+  eye both agree on. So `geom` and `eye` moved into `cuttl-codec`, behind a borrowed
+  `Raster` view with no image-library dependency, and the browser calls the same code.
+  The boundary copy is real — 1080p RGB is ~6 MB/frame — but it is a memcpy at roughly
+  1 ms, against re-implementing and re-debugging a working pipeline.
 
 ### Does the decode hot loop need WASM, or is WebCodecs + a worker enough?
 

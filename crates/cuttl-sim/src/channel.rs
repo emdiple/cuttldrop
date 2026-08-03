@@ -27,7 +27,7 @@
 //! can be told apart from a clean one. Frame loss is not modelled here either —
 //! that is the caller dropping whole pulses, which needs no image processing.
 
-use crate::geom::Homography;
+use cuttl_codec::{Homography, Raster};
 use image::{Rgb, RgbImage};
 use rand::{Rng, RngExt};
 
@@ -307,6 +307,9 @@ fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
     };
     let (w, h) = image.dimensions();
     let (fw, fh) = (w as f64, h as f64);
+    let Ok(source) = Raster::new(w, h, image.as_raw()) else {
+        return image.clone();
+    };
     let mut out = RgbImage::new(w, h);
     for y in 0..h {
         for x in 0..w {
@@ -314,27 +317,8 @@ fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
             if sx < 0.0 || sy < 0.0 || sx >= fw || sy >= fh {
                 continue; // dark surround
             }
-            out.put_pixel(x, y, Rgb(bilinear(image, sx, sy)));
+            out.put_pixel(x, y, Rgb(source.bilinear(sx, sy)));
         }
-    }
-    out
-}
-
-/// Bilinear sample, clamped at the edges.
-pub(crate) fn bilinear(image: &RgbImage, x: f64, y: f64) -> [u8; 3] {
-    let (w, h) = image.dimensions();
-    let x = x.clamp(0.0, w as f64 - 1.0);
-    let y = y.clamp(0.0, h as f64 - 1.0);
-    let (x0, y0) = (x.floor() as u32, y.floor() as u32);
-    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
-    let (fx, fy) = (x - x0 as f64, y - y0 as f64);
-
-    let mut out = [0u8; 3];
-    for (c, value) in out.iter_mut().enumerate() {
-        let p = |px: u32, py: u32| image.get_pixel(px, py).0[c] as f64;
-        let top = p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx;
-        let bottom = p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx;
-        *value = (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8;
     }
     out
 }

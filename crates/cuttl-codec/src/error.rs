@@ -51,6 +51,9 @@ pub enum Error {
     #[error("inner code cannot fit {ecc_len} B of ECC into a {capacity} B pulse")]
     NoRoomForEcc { capacity: usize, ecc_len: usize },
 
+    #[error("raster {width}×{height} needs {} B of RGB, got {len}", *width as usize * *height as usize * 3)]
+    RasterSize { width: u32, height: u32, len: usize },
+
     #[error("could not locate the pulse: fewer than four finders found")]
     NotLocated,
 
