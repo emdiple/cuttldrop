@@ -228,23 +228,71 @@ mod tests {
         assert!(out.is_err());
     }
 
-    /// Measured motivation for the inner Reed–Solomon code (§1b).
+    /// Mean cells misread per pulse, over `runs` seeds.
+    fn mean_cell_errors(grid: Grid, palette: Palette, preset: Preset, runs: u64) -> f64 {
+        let total: usize = (0..runs)
+            .map(|seed| {
+                let mut pulse = Pulse::new(grid, palette).unwrap();
+                let data: Vec<u8> = (0..pulse.capacity())
+                    .map(|i| (i * 7 + seed as usize * 3) as u8)
+                    .collect();
+                pulse.write_payload(&data).unwrap();
+                let image = channel::apply(
+                    &render(&pulse, CELL_PX),
+                    &Channel::preset(preset),
+                    CELL_PX,
+                    &mut StdRng::seed_from_u64(seed),
+                );
+                let got = sample(&image, grid, palette).unwrap();
+                pulse
+                    .cells()
+                    .iter()
+                    .zip(got.cells())
+                    .filter(|(a, b)| a != b)
+                    .count()
+            })
+            .sum();
+        total as f64 / runs as f64
+    }
+
+    /// The measurement the inner code was sized against, pinned so it cannot
+    /// drift silently. At 3 px/cell, mean cells misread per pulse:
     ///
-    /// Past roughly 0.45 cell widths of blur, nearly every pulse contains at
-    /// least one misread cell. With no inner code one bad cell costs the whole
-    /// symbol, so rejection goes to ~100% and no amount of fountain overhead
-    /// helps — the fountain repairs erasures, and this is an *error* problem.
+    /// | preset | m1 mono | m3 colour |
+    /// |--------|---------|-----------|
+    /// | Light  | 0.0     | 0.0       |
+    /// | Heavy  | 0.0     | 0.0       |
+    /// | Brutal | 33.1    | 638.7     |
     ///
-    /// **When the inner code lands, this test should start failing.** That is
-    /// the point: the failure is the measurement of what RS bought us.
+    /// There is no middle ground here: below the cliff, photometric distortion
+    /// costs mono *nothing*; above it, the error count is far past what any
+    /// affordable ECC could absorb. The regime the inner code actually protects
+    /// — sparse errors from mis-registration and real optics — is not yet
+    /// simulated. It arrives with geometric distortion in M0 step 3b.
     #[test]
-    fn brutal_is_currently_unsurvivable() {
+    fn channel_error_budget_is_what_ecc_was_sized_against() {
+        for (grid, palette) in [M1, (Grid::M3_COLOR, Palette::Color3)] {
+            for preset in [Preset::Light, Preset::Heavy] {
+                let errors = mean_cell_errors(grid, palette, preset, 8);
+                assert_eq!(errors, 0.0, "{palette:?} at {preset:?} was {errors}");
+            }
+        }
+        assert!(mean_cell_errors(M1.0, M1.1, Preset::Brutal, 8) > 20.0);
+    }
+
+    /// Brutal is past the cliff, and the inner code does **not** rescue it.
+    ///
+    /// This corrects an earlier prediction of mine. When `Preset::Brutal` was
+    /// added, this test was written expecting it to start failing once
+    /// Reed–Solomon landed. RS has landed and it still passes. Measurement
+    /// says why: brutal produces ~33 misread cells per mono pulse, so
+    /// correcting it would need roughly 66 of a pulse's 114 bytes as ECC —
+    /// leaving less room for payload than the header already takes.
+    #[test]
+    fn brutal_stays_unsurvivable_even_with_rs() {
         let data = vec![0x77u8; 8192];
         let (out, rejected, delivered) = transfer(&data, 2.0, Preset::Brutal, 0.0, 4);
-        assert!(
-            out.is_err(),
-            "brutal now survives — has the inner code landed?"
-        );
+        assert!(out.is_err(), "brutal now survives — what changed?");
         assert!(
             rejected as f64 > delivered as f64 * 0.9,
             "expected near-total rejection, got {rejected}/{delivered}"

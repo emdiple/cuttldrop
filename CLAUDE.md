@@ -86,9 +86,14 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 - **M0 step 1** ✅ lossless `cuttl encode | decode` round-trip
 - **M0 step 2** ✅ RaptorQ fountain + photometric channel. `--distort heavy --loss 0.6`
   decodes byte-identical. Goodput 80 B/pulse at 48×27 mono, 1598 B/pulse at 96×54 colour.
-- **M0 step 3** geometric + temporal distortion (perspective warp, rolling-shutter tear,
-  exposure blend) — needs finder detection + homography so the eye *locates* the grid.
-  Plus the inner RS code, which `--distort brutal` exists to justify (see below).
+- **M0 step 3a** ✅ inner Reed–Solomon below the CRC gate. Goodput 64 B/pulse at 48×27
+  mono, 1480 B/pulse at 96×54 colour — RS costs ~20% at M1, ~7% at M3.
+- **M0 step 3b** geometric + temporal distortion (perspective warp, rolling-shutter tear,
+  exposure blend) — needs finder detection + homography so the eye *locates* the grid
+  rather than being told where it is. **Blocked on a decision**: `M1_MONO` uses a 5×5
+  finder, whose centre scan-line ratio is 1:1:1:1:1 — not distinctive against random
+  payload. QR-style detection wants 1:1:3:1:1, which needs a 7×7 finder plus a quiet
+  separator, costing ~10% more payload. Decide before building detection on top.
 - **M1** air gap crossed: B/W 48×27, two devices, real file, ~0.8 KB/s
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
@@ -97,16 +102,21 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 
 ## Provisional / open
 
-- `reed-solomon-32` chosen for the inner code (error+erasure, GF(256), no_std;
-  32-ECC-byte cap → interleave 2–4 blocks per band). Validate against real M0
-  error rates before committing.
-- **Measured, M0 step 2** — the inner code is not optional. Blur is scale-invariant
-  when measured in cell widths; past ~0.45 of a cell (`Preset::Brutal`) essentially
-  every pulse holds at least one misread cell, one bad cell costs the whole symbol,
-  and rejection hits 100%. No amount of fountain overhead helps: the fountain repairs
-  *erasures*, and this is an *error* problem. `brutal_is_currently_unsurvivable` pins
-  it — **that test is meant to start failing when RS lands**, and its failure is the
-  measurement of what RS bought.
+- ~~`reed-solomon-32` for the inner code~~ — **wrong crate, corrected in step 3a.**
+  Despite the name it works in GF(2^5) with 31-*symbol*, 5-bit blocks, not GF(256)
+  with a 32-byte ECC cap. Using it would have meant repacking every byte and running
+  ~90 blocks per colour pulse. Now on `reed-solomon` 0.2 — the GF(2^8) original it
+  was forked from, 255-byte blocks, byte symbols, no_std.
+- **Corrected prediction, M0 step 3a** — `brutal` was expected to start decoding once
+  RS landed. It did not, and the test that pinned that expectation now records why.
+  Measured mean cells misread per pulse: mono 33.1, colour 638.7. Correcting 33 byte
+  errors needs ~66 of a pulse's 114 bytes as ECC — less room left for payload than
+  the header takes. **The inner code protects the sparse-error regime, not this one.**
+- **Open, M0 step 3a** — the regime RS actually protects is *not yet simulated*.
+  Photometric distortion gives mono exactly 0 errors/pulse below the cliff and 33
+  above it, with no middle ground, so RS currently costs 20% of M1 goodput and buys
+  nothing measurable. Sparse errors arrive with mis-registration in step 3b; re-check
+  `ECC_LEN` against that data before treating 16 as settled.
 - **Measured, M0 step 2** — photometric distortion barely touches mono. At `Heavy` the
   cell error rate is ~3e-6 and zero pulses are lost; the same preset costs colour ~1.5%
   of pulses. Mono's decision margin is simply enormous. The photometric channel earns

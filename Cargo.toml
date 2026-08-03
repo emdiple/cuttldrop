@@ -19,12 +19,11 @@ blake3 = "1.8"     # whole-object integrity (DESIGN.md §3c)
 crc32fast = "1.5"  # per-symbol error->erasure gate (DESIGN.md §1b)
 thiserror = "2"
 
-# Inner RS layer (DESIGN.md §1b). PROVISIONAL: chosen for error+erasure
-# correction over GF(256) and no_std support. Capped at 32 ECC bytes, so a
-# band needs 2-4 interleaved blocks -- which also spreads burst errors, so the
-# cap is not purely a cost. Validate against real M0 error rates before
-# committing. Not yet wired into cuttl-codec.
-reed-solomon-32 = "2.0"
+# Inner RS layer (DESIGN.md §1b): GF(2^8), 255-byte blocks, byte symbols, no_std.
+# Explicitly NOT reed-solomon-32 -- despite the name that crate works in GF(2^5)
+# with 31-symbol, 5-bit blocks, so it would mean repacking every byte and running
+# ~90 blocks for one colour pulse. This is the GF(2^8) original it was forked from.
+reed-solomon = "0.2"
 
 image = { version = "0.25", default-features = false, features = ["png"] }
 clap = { version = "4", features = ["derive"] }

@@ -45,6 +45,9 @@ pub enum Error {
         symbol_id: usize,
     },
 
+    #[error("inner code cannot fit {ecc_len} B of ECC into a {capacity} B pulse")]
+    NoRoomForEcc { capacity: usize, ecc_len: usize },
+
     #[error("malformed fountain configuration in pulse header")]
     BadConfig,
 
