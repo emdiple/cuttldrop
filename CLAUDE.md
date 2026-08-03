@@ -90,6 +90,9 @@ cargo fmt --all && cargo clippy --workspace --all-targets   # CI runs both with 
 # The M0 observable, working today:
 cargo run --release -p cuttl-cli -- encode FILE -o pulses/
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
+# -o is optional: decode names the output from the manifest (and refuses to
+# overwrite without an explicit -o). Decode replays the directory up to 10×,
+# because the directory stands in for a skin that loops forever (§3d).
 
 # The browser. `dev` serves it; open /skin.html on one device, /eye.html on the
 # other. Camera access needs https or localhost.
@@ -126,12 +129,15 @@ cd web && npm test        # JS boundary round trip, no browser needed
   camera** — that is the remaining M1 observable and needs two physical devices.
 - **M1 observable** ⬜ **the only thing blocking M1**: a real file across a real air
   gap, two physical devices. Cannot be done from a terminal — needs a camera.
-- **M2** robustness. Three of the original six landed early and are struck out:
-  ~~tear detect~~ (3c), ~~RS + CRC~~ (3a), ~~feedback overlay~~ (M1c). Left:
-  ~~per-band symbols~~ (landed; see below), **manifest stream** (filename/size/mime so the eye can name the file and
-  show it early), **BLAKE3** replacing the placeholder CRC-32 object check, **capture
-  corpus** (recorded real camera frames replayed in CI), and **decode in a worker**
-  (currently on the main thread — fine for M1, janky beyond it).
+- **M2** robustness — **complete except the capture corpus**, which needs a camera.
+  ~~tear detect~~ (3c), ~~RS + CRC~~ (3a), ~~feedback overlay~~ (M1c),
+  ~~per-band symbols~~ (see below), ~~manifest stream~~ (name/mime + full BLAKE3,
+  band 0's slot every 8th pulse, flagged in the v3 header; size rides in the OTI),
+  ~~BLAKE3 verify~~ (completion now *requires* the manifest and `finish` checks the
+  full hash — the CRC-32 object check is gone), ~~decode in a worker~~ (frames cross
+  as transferred buffers; busy frames are dropped, not queued). Left: **capture
+  corpus** (recorded real camera frames replayed in CI) — hardware-gated, like the
+  M1 observable.
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
 - **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder experiments
 - **M5** product: multi-file, PWA, native eye shell only if iOS forces it
@@ -168,5 +174,10 @@ cd web && npm test        # JS boundary round trip, no browser needed
   cell error rate is ~3e-6 and zero pulses are lost; the same preset costs colour ~1.5%
   of pulses. Mono's decision margin is simply enormous. The photometric channel earns
   its keep at M3, not now — which is §1c's bottleneck ordering showing up as a number.
+- **Manifest period = 8 pulses** — the name arrives ≤ 0.8 s in at 10 Hz, costing
+  1-in-8 of mono's symbol slots (12.5%) and 1-in-16 of colour's (6.25%). A knob,
+  not a law: revisit if sustained mono goodput ever matters more than naming
+  latency. The manifest is *not* fountain-coded (§3c corrected in place): it fits
+  one symbol, and a fountain over one symbol is just repetition.
 - On-record prediction (§5 M3): measured colour gain lands near **1.7×**.
 - RS strength laddering across pulses: speculative, M4 at the earliest (§5 M4).

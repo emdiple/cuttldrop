@@ -356,12 +356,22 @@ only true correctness check.
 Show progress as `symbols collected / K`. That's honest and monotonic. Don't show
 "% decoded" — it isn't a real quantity.
 
-**Two multiplexed streams.** The bulk stream carries the file. A tiny separate manifest
-stream (filename, size, mime, hash), fountain-coded on its own and interleaved ~1-in-16,
-so the eye can display *"receiving cuttlefish.pdf — 2.4 MB"* within a second or two
-instead of after the whole transfer. Cheap, and the UX difference is large. The 12-byte
-RFC 6330 OTI rides in the beacon field, since it's needed before anything can be
-interpreted.
+**The manifest.** ~~Two multiplexed streams: a tiny separate manifest stream (filename,
+size, mime, hash), fountain-coded on its own and interleaved ~1-in-16~~ — **landed
+simpler at M2, deliberately.** The manifest fits in *one* symbol, and a fountain code
+over a single-symbol object degenerates to repetition — there is nothing for a second
+OTI and a second decoder to buy. What ships instead: every 8th pulse donates band 0's
+symbol slot to the manifest (name, mime, and the full BLAKE3 hash), flagged in the
+stream header and protected by the same RS + CRC path as any symbol. That is 1-in-8 of
+mono's symbol slots and 1-in-16 of colour's — the colour figure landing exactly where
+this paragraph guessed. Size is deliberately not carried: the OTI in every stream header
+already holds the exact transfer length, and a second copy could only disagree. (The
+plan to put the OTI in the beacon died at M0 step 3c, when the beacon measured 4 bytes;
+it rides in the band-0 stream header.) The eye displays *"receiving cuttlefish.pdf —
+2.4 MB"* within a second of looking, whenever it starts. The header also repeats the
+hash's first four bytes in every pulse, binding symbols and manifest to each other;
+completion requires both, and nothing is handed back until the reconstruction matches
+the full hash.
 
 ### 3d. Skin (sender)
 
@@ -398,7 +408,10 @@ Pipeline, with where the realtime budget goes at 30 fps (33 ms/frame):
 | **Total** | **~13 ms** | comfortable inside 33 ms, in TypeScript |
 
 Run it in a worker so the UI thread stays free for the feedback overlay. Amortised
-RaptorQ decode attempts happen off the per-frame path.
+RaptorQ decode attempts happen off the per-frame path. **Landed (M2):** the page keeps
+the camera and the overlay; the worker owns the WASM eye. Frames cross as *transferred*
+buffers, and a frame captured while the worker is busy is dropped rather than queued —
+a decoder behind a live camera must shed load, and the skin repeats everything anyway.
 
 ### 3f. Failure modes and detection
 
@@ -508,8 +521,10 @@ frame they were a quarter of everything. Enlarging amortises the fixed cost and 
 than pays for itself: measured goodput went **64 → 160 B/pulse**.
 
 **M2 — Robustness. The milestone where it stops being a demo.**
-Per-band symbols, dual beacons + tear detection, inner RS, CRC gating, manifest stream,
-BLAKE3 verify, live eye feedback overlay.
+~~Per-band symbols~~, ~~dual beacons + tear detection~~, ~~inner RS~~, ~~CRC gating~~,
+~~manifest stream~~, ~~BLAKE3 verify~~, ~~live eye feedback overlay~~ — all landed, and
+the decode worker (§3e) landed with them. What remains of M2 is the capture corpus
+below, which needs a real camera.
 
 Also: **start the capture corpus.** Record a few hundred *real* camera frames of a known
 stream across lighting, distance, angle, and motion conditions, and replay them through
