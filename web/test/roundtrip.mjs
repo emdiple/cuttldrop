@@ -21,9 +21,11 @@ const { default: init, Skin, Eye, Outcome } = await import(pkg.href);
 await init({ module_or_path: await readFile(fileURLToPath(wasm)) });
 
 const PROFILE = "m1";
+const NAME = "boundary.bin";
+const MIME = "application/test";
 const object = Uint8Array.from({ length: 12_000 }, (_, i) => (i * 37) & 0xff);
 
-const skin = new Skin(object, PROFILE, 0x5eed, 0.5);
+const skin = new Skin(object, NAME, MIME, PROFILE, 0x5eed, 0.5);
 assert.ok(skin.pulseCount > 0, "skin produced no pulses");
 assert.equal(skin.cols, 64, "unexpected grid width");
 assert.equal(skin.rows, 36, "unexpected grid height");
@@ -41,11 +43,19 @@ assert.deepEqual(skin.pulseRgba(skin.pulseCount), first, "pulse indexing should 
 const eye = new Eye(PROFILE);
 assert.equal(eye.symbols, 0);
 assert.equal(eye.isComplete, false);
+assert.equal(eye.fileName, undefined, "no manifest should mean no name");
 
 let frames = 0;
 for (let i = 0; i < skin.pulseCount; i += 1) {
   frames += 1;
   const outcome = eye.ingest(skin.pulseRgba(i), skin.cols, skin.rows);
+  if (i === 0) {
+    // Pulse 0 carries the manifest: the eye names the file before it has it.
+    assert.equal(eye.fileName, NAME, "manifest name should arrive with the first pulse");
+    assert.equal(eye.fileMime, MIME, "manifest mime should arrive with the first pulse");
+    assert.equal(eye.expectedBytes, object.length, "size should be known from the OTI");
+    assert.equal(eye.isComplete, false, "one pulse must not complete a transfer");
+  }
   if (outcome === Outcome.Completed) break;
   assert.notEqual(outcome, Outcome.Unlocatable, `frame ${i} could not be located`);
 }
