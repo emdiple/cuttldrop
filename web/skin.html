@@ -38,7 +38,19 @@
       <button id="start" disabled>Start strobing</button>
     </div>
     <canvas id="pulse" hidden></canvas>
-    <div id="status" class="overlay" hidden></div>
+    <!--
+      Size lives here, not in the setup panel: it is the one control you want
+      while the phone is already aimed, and every notch is a whole pixel per
+      cell, so no two positions render the same grid.
+    -->
+    <div id="status" class="overlay" hidden>
+      <span id="status-text"></span>
+      <label class="size">
+        Size
+        <input type="range" id="size" min="1" max="1" value="1" />
+        <output id="size-value"></output>
+      </label>
+    </div>
     <script type="module" src="./src/skin.ts"></script>
   </body>
 </html>

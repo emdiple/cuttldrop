@@ -135,11 +135,40 @@ body.skin:has(#pulse:not([hidden])) {
   bottom: 0.75rem;
   left: 50%;
   transform: translateX(-50%);
-  padding: 0.3rem 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.3rem 0.8rem;
   border-radius: 999px;
   background: #0009;
   color: var(--dim);
   font-size: 0.75rem;
+}
+
+/*
+ * The overlay sits over the pulse at full size, so it must stay small and
+ * must not react to a drag that was aimed at the slider.
+ */
+.overlay .size {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.overlay .size input[type="range"] {
+  width: 6rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.overlay .size input[type="range"]:disabled {
+  opacity: 0.35;
+}
+
+.overlay output {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- eye ---------- */
