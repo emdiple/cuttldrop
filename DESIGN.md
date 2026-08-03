@@ -634,6 +634,8 @@ Proposed, pending ruling:
   density is that high. What it deliberately does not test is our layer: stock QR is
   binary by spec, whole-frame erasure granularity, and detection strength is rented from
   zxing rather than owned — the three constraints this project exists to remove.
+  Full comparison, its limitations, and the roadmap items adopted from them:
+  `COMPARISON-decimen.md`.
 - **Twibright Optar** — paper-based optical storage, Golay-based ECC on a plain
   black/white raster. The right reference for "how dense can a raster get before the
   optics give up."

@@ -139,8 +139,11 @@ cd web && npm test        # JS boundary round trip, no browser needed
   corpus** (recorded real camera frames replayed in CI) — hardware-gated, like the
   M1 observable.
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
-- **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder experiments
-- **M5** product: multi-file, PWA, native eye shell only if iOS forces it
+- **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder
+  experiments; adaptive compression + measured file-size ceiling (`COMPARISON-decimen.md`
+  R3–R4)
+- **M5** product: multi-file, PWA, native eye shell only if iOS forces it; optional
+  passphrase encryption, standalone single-file builds (`COMPARISON-decimen.md` R2, R8)
 
 ## Provisional / open
 
@@ -181,3 +184,7 @@ cd web && npm test        # JS boundary round trip, no browser needed
   one symbol, and a fountain over one symbol is just repetition.
 - On-record prediction (§5 M3): measured colour gain lands near **1.7×**.
 - RS strength laddering across pulses: speculative, M4 at the earliest (§5 M4).
+- **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
+  hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
+  when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;
+  the eye's capture loop needs a generation counter before any stream-restart UI ships.
