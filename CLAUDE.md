@@ -184,6 +184,16 @@ cd web && npm test        # JS boundary round trip, no browser needed
   one symbol, and a fountain over one symbol is just repetition.
 - On-record prediction (§5 M3): measured colour gain lands near **1.7×**.
 - RS strength laddering across pulses: speculative, M4 at the earliest (§5 M4).
+- **Measured, timed shutter model** — tear and blend now *emerge* from pulse rate vs
+  `Shutter::PHONE` timing (`capture_timed`). Mono goodput is linear to **20 Hz**
+  (2.74 KB/s at 30 fps capture — 2× the old default; skin slider now defaults to 20,
+  max 30). Integer pulse:capture ratios freeze the phase and can starve a transfer
+  outright (30:30 starved every seed); above ~43 Hz the shutter window exceeds the
+  period and nothing captures clean. Findings pinned; sweeps re-runnable with
+  `cargo test -p cuttl-sim --release -- --ignored --nocapture`.
+- **Measured, density** — the cliff is between 3 and 2 px/cell (sampling error, not
+  detection). At 4 px/cell, 192×108 reads with ~10 misread cells/frame — the M4 grid
+  is reachable in sim; px/cell at the sensor is the binding constraint.
 - **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
   hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
   when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;

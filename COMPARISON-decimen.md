@@ -94,6 +94,13 @@ density when the detector is good enough.
 | R7 | Generation counter on the eye's capture loop before any stream-restart UI ships | with M5 UI work |
 | R8 | Single-file standalone builds (sender ~small, receiver with embedded WASM) alongside the M5 PWA | M5 |
 
+The two questions their 129 KB/s raised — how fast should the skin strobe, and how
+dense can a frame get — have since been answered in simulation: goodput is linear in
+pulse rate up to **20 Hz** (the new skin default; integer ratios of the capture rate
+are a starvation hazard), and the detector holds 100% locate up to **192×108 at
+4 px/cell**, so the M4 grid is reachable. See `DESIGN.md` §3d and §5 M4 for the
+measured tables.
+
 The sharpest thing this comparison says is not on the list: decimen has demonstrated,
 on hardware, everything Cuttldrop has only simulated. The M1 observable — one real file
 across one real air gap — is still the highest-value step, and it got more urgent.

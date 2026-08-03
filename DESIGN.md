@@ -384,7 +384,15 @@ the full hash.
   context; if palette drift shows up, *then* go to WebGL2 for explicit control.)
 - **Pacing: `requestAnimationFrame`, holding each pulse for an integer number of display
   refreshes.** Never attempt to change pulses faster than the display can commit them.
-  3 refreshes at 60 Hz = 20 pulses/sec is a sane starting point.
+  3 refreshes at 60 Hz = 20 pulses/sec is a sane starting point. **Measured (M2, timed
+  shutter model): 20 Hz is not just sane, it is the optimum.** Against a 30 fps camera
+  with phone shutter timing, mono goodput is linear in pulse rate up to 20 Hz
+  (2.74 KB/s, 2× the old 10 Hz default) and degrades beyond it. Two hazards past the
+  optimum: at integer pulse:capture ratios the phase relationship freezes and an
+  unlucky draw makes *every* capture straddle a flip — 30 Hz pulses against a 30 fps
+  camera starved on every seed — and above ~43 Hz the ~23 ms shutter window is wider
+  than the pulse period, so no capture can be clean. The skin's slider now defaults to
+  20 and stops at 30. Sweep: `rate_sweep_prints_goodput_by_pulse_rate` in `cuttl-sim`.
 - **Refresh-rate mismatch has no automatic solution** — no back channel means the skin
   cannot know how the eye is doing. So: expose a manual pulse-rate control, and let the
   human close the loop off the eye's on-screen feedback (§1e).
@@ -548,6 +556,14 @@ QDA is an M4 question, not an M3 one.
 Shrink cells toward 96×54 then 160×90, push pulse rate, region-level glare masking,
 optionally decode torn frames as two independent band sets. Radial distortion term if the
 data demands it. Online QDA classifier (§3b) if M3's error rates justify it.
+
+**Measured ahead of schedule (M2, sim):** the detection cliff sits between 3 and
+2 px/cell and is driven by *sampling* error, not finder detection. At 4 px/cell the
+eye locates 100% of frames up to **192×108** — 4× the M3 cell count, still inside the
+browser eye's 960 px working width — with ~10 misread cells per frame, comfortably
+within the inner-code budget. The binding constraint on density is px/cell at the
+sensor, not cell count on the screen; the 160×90 target above is evidence, not
+aspiration. Sweep: `density_sweep_prints_detection_cliff` in `cuttl-sim`.
 
 Speculative, flagged not decided: **ladder the inner RS strength across pulses** — some
 light, some heavy — so that whatever the channel conditions are, a workable subset gets
