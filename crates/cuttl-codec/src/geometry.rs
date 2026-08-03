@@ -106,6 +106,36 @@ pub struct Grid {
     pub timing_cols: u16,
     /// A pilot every `pilot_period` cells in both axes → ~1-in-period² density.
     pub pilot_period: u16,
+    /// Horizontal stripes the data region is cut into, each an independent
+    /// fountain symbol (§3a).
+    ///
+    /// The point is damage granularity: a rolling-shutter tear or a glare blob
+    /// ruins the rows it touches, and with one symbol per pulse that costs the
+    /// whole pulse. With bands it costs the bands it crossed.
+    ///
+    /// It is not free, and the cost is worst exactly where pulses are small:
+    /// the inner code spends `ECC_LEN` bytes *per band*, so four bands on the
+    /// M1 profile would burn 30% of the pulse on ECC alone. Hence 1 here.
+    ///
+    /// On the colour profile the right count turned out to be **2**, which is
+    /// well below what §3a guessed. Measured bytes delivered per frame shown,
+    /// under `Preset::Heavy`, averaged over four seeds:
+    ///
+    /// | bands | 1   | 2        | 3   | 4   | 5   | 7   |
+    /// |-------|-----|----------|-----|-----|-----|-----|
+    /// | B/frame | 952 | **1014** | 978 | 985 | 870 | 800 |
+    ///
+    /// The curve rises then falls, and by seven bands it is *worse than not
+    /// banding at all*. Two reasons. Per-band ECC and framing are a fixed tax
+    /// that scales with the band count. And tear is partly self-mitigating:
+    /// bands below the tear line hold the *next* pulse's symbols, which are
+    /// perfectly valid — a torn frame loses only the band straddling the tear,
+    /// so extra granularity buys less than it appears to.
+    ///
+    /// The stronger case for bands is glare, which ruins a fixed *region* and
+    /// is not self-mitigating. The channel does not model it yet, so that case
+    /// is currently unmeasured — see `banding_beats_whole_pulse_symbols_under_tear`.
+    pub bands: u8,
 }
 
 impl Grid {
@@ -124,6 +154,9 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        // One band: at 211 B per pulse there is not enough room to pay for a
+        // second copy of the inner code. See `bands`.
+        bands: 1,
     };
 
     /// The M3 profile: 96×54, sized for the 8-colour palette (§5, M3).
@@ -135,6 +168,8 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        // Two. Measured, not chosen: see `bands`.
+        bands: 2,
     };
 
     pub const fn cell_count(&self) -> u32 {
@@ -195,6 +230,55 @@ impl Grid {
     /// Whole bytes carried by one pulse, before any framing overhead.
     pub fn payload_bytes(&self, palette: Palette) -> usize {
         (self.payload_bits(palette) / 8) as usize
+    }
+
+    /// Row range covered by one band, as evenly as the data region divides.
+    ///
+    /// Bands are *row-contiguous* on purpose. A tear is a horizontal line, so
+    /// only a contiguous stripe can be the unit of damage; scattering a symbol
+    /// across the frame would mean every tear damaged every symbol.
+    pub fn band_rows(&self, band: u8) -> core::ops::Range<u16> {
+        let start = self.beacon_rows;
+        let end = self.rows.saturating_sub(self.beacon_rows);
+        let total = end.saturating_sub(start);
+        let count = self.bands.max(1) as u16;
+        if band as u16 >= count {
+            return start..start;
+        }
+        let (base, extra) = (total / count, total % count);
+        let index = band as u16;
+        let lo = start + index * base + index.min(extra);
+        let hi = lo + base + u16::from(index < extra);
+        lo..hi.min(end)
+    }
+
+    /// Payload cells of one band, in raster order.
+    ///
+    /// Concatenating every band in order reproduces [`Grid::payload_coords`]
+    /// exactly, which is what lets the single-band case stay identical.
+    pub fn band_payload_coords(&self, band: u8) -> impl Iterator<Item = (u16, u16)> {
+        let g = *self;
+        let rows = g.band_rows(band);
+        rows.flat_map(move |y| (0..g.cols).map(move |x| (x, y)))
+            .filter(move |&(x, y)| g.region(x, y) == Region::Payload)
+    }
+
+    pub fn band_payload_cells(&self, band: u8) -> u32 {
+        self.band_payload_coords(band).count() as u32
+    }
+
+    /// Whole bytes one band carries, before framing.
+    pub fn band_payload_bytes(&self, band: u8, palette: Palette) -> usize {
+        ((self.band_payload_cells(band) * palette.bits_per_cell()) / 8) as usize
+    }
+
+    /// The smallest band. Symbol size has to fit the tightest one, because a
+    /// fountain code needs every symbol the same length.
+    pub fn min_band_payload_bytes(&self, palette: Palette) -> usize {
+        (0..self.bands.max(1))
+            .map(|band| self.band_payload_bytes(band, palette))
+            .min()
+            .unwrap_or(0)
     }
 
     /// Cells of one beacon strip, in raster order.
@@ -305,6 +389,61 @@ mod tests {
         assert!(
             (1400..=1900).contains(&m3),
             "M3 colour payload was {m3} B/pulse"
+        );
+    }
+
+    /// Bands must tile the data region exactly: every payload cell in one band,
+    /// none in two. If this drifts, symbols silently overlap or lose bytes.
+    #[test]
+    fn bands_tile_the_payload_exactly() {
+        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+            let mut seen: Vec<(u16, u16)> = (0..grid.bands)
+                .flat_map(|band| grid.band_payload_coords(band))
+                .collect();
+            let mut whole: Vec<(u16, u16)> = grid.payload_coords().collect();
+            assert_eq!(
+                seen.len(),
+                whole.len(),
+                "{grid:?} band cells vs payload cells"
+            );
+            seen.sort_unstable();
+            whole.sort_unstable();
+            assert_eq!(seen, whole, "{grid:?} bands do not tile the payload");
+        }
+    }
+
+    #[test]
+    fn band_rows_are_contiguous_and_cover_the_data_region() {
+        for grid in [Grid::M1_MONO, Grid::M3_COLOR] {
+            let mut next = grid.beacon_rows;
+            for band in 0..grid.bands {
+                let rows = grid.band_rows(band);
+                assert_eq!(rows.start, next, "{grid:?} band {band} is not contiguous");
+                assert!(rows.end > rows.start, "{grid:?} band {band} is empty");
+                next = rows.end;
+            }
+            assert_eq!(
+                next,
+                grid.rows - grid.beacon_rows,
+                "{grid:?} bands stop short"
+            );
+        }
+    }
+
+    /// Bands differ in size because the finder zones eat into the top and
+    /// bottom of the data region. Symbol sizing has to use the smallest, so
+    /// keep an eye on how lopsided it is.
+    #[test]
+    fn band_sizes_stay_within_a_workable_spread() {
+        let grid = Grid::M3_COLOR;
+        let sizes: Vec<usize> = (0..grid.bands)
+            .map(|b| grid.band_payload_bytes(b, Palette::Color3))
+            .collect();
+        let (min, max) = (*sizes.iter().min().unwrap(), *sizes.iter().max().unwrap());
+        assert!(min > 0, "a band carries nothing: {sizes:?}");
+        assert!(
+            max <= min * 2,
+            "bands too lopsided, smallest sets the symbol size: {sizes:?}"
         );
     }
 

@@ -1,33 +1,43 @@
 //! Object → pulses → object, over the fountain layer.
 //!
-//! Each pulse carries one fountain symbol plus the framing needed to interpret
-//! it standalone. There is no pulse index and no total: a rateless stream has
-//! neither. The eye absorbs symbols in any order, from any subset, and stops
-//! when the object falls out (`DESIGN.md` §3c).
+//! A pulse carries one fountain symbol *per band*. There is no pulse index and
+//! no total: a rateless stream has neither. The eye absorbs symbols in any
+//! order, from any subset, and stops when the object falls out (§3c).
+//!
+//! ## Layout
+//!
+//! ```text
+//! band 0:  MAGIC ver stream_id config object_crc │ symbol │ crc32
+//! band 1:                                        │ symbol │ crc32
+//! band n:                                        │ symbol │ crc32
+//! ```
+//!
+//! Only band 0 carries the stream header, because those fields are identical in
+//! every pulse of a stream — the eye needs them once and then never again. Every
+//! band carries its own CRC, and that is what makes bands independent: damage
+//! confined to one band's rows costs one symbol, not the pulse (§3a).
+//!
+//! Losing band 0 to a tear therefore costs a symbol but not the transfer; the
+//! header arrives again on the next pulse, and the one after that.
 //!
 //! ## The CRC gate
 //!
-//! The single most important line in this module is the CRC check in
-//! [`PulseHeader::parse`]. A fountain decoder assumes every symbol it receives
-//! is correct or absent; one silently corrupt symbol propagates through the XOR
-//! graph and poisons the entire object. The gate converts an *error* into an
-//! *erasure*, which is the one thing the fountain layer can actually repair
-//! (§1b). A rejected pulse is never an `Err` — it is a normal, expected event.
+//! The most important check here is the per-band CRC. A fountain decoder assumes
+//! every symbol it receives is correct or absent; one silently corrupt symbol
+//! propagates through the XOR graph and poisons the whole object. The gate turns
+//! an *error* into an *erasure*, the one thing the fountain layer can repair
+//! (§1b). A rejected band is never an `Err` — it is routine.
 //!
 //! ## Order of operations
 //!
-//! The inner Reed–Solomon code ([`crate::fec`], §1b) sits *between* the cells
-//! and this header, so the full stack per pulse is:
-//!
 //! ```text
-//! skin:  header ‖ symbol  →  + inner ECC  →  cells
-//! eye:   cells  →  inner correct  →  CRC gate  →  fountain
+//! skin:  header ‖ symbol  →  + inner ECC  →  band cells
+//! eye:   band cells  →  inner correct  →  CRC gate  →  fountain
 //! ```
 //!
-//! That order is the whole design in miniature. The inner code repairs the
-//! sparse cell errors, the CRC gate converts whatever survived into an erasure,
-//! and only then does anything reach the fountain — which repairs erasures and
-//! nothing else.
+//! The inner code repairs sparse cell errors, the CRC gate converts whatever
+//! survived into an erasure, and only then does anything reach the fountain —
+//! which repairs erasures and nothing else.
 
 use crate::beacon::{self, Beacon};
 use crate::error::{Error, Result};
@@ -39,107 +49,134 @@ use crate::pulse::Pulse;
 use std::collections::HashSet;
 
 const MAGIC: [u8; 2] = *b"CD";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
-/// Framing header, prepended to every pulse's payload.
-///
-/// Temporary home: per §3a the stream id belongs in the beacon strip, duplicated
-/// top and bottom under heavy ECC. The M0 arithmetic showed the beacon holds
-/// only ~4 bytes, so the fountain config cannot live there and rides here
-/// instead — repeated every pulse, since the eye needs it before it can
-/// interpret anything at all.
+/// Stream header bytes, carried by band 0 only.
+pub const STREAM_HEADER_LEN: usize = 23;
+/// Symbol id plus the trailing CRC, on every band.
+const BAND_OVERHEAD: usize = SYMBOL_ID_LEN + 4;
+
+/// Fields every pulse of a stream repeats verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PulseHeader {
+pub struct StreamHeader {
     pub stream_id: u32,
-    /// Fountain configuration; RFC 6330 OTI for RaptorQ.
+    /// Fountain configuration; the RFC 6330 OTI for RaptorQ.
     pub config: [u8; CONFIG_LEN],
     /// CRC-32 of the whole object, checked after reconstruction. BLAKE3 replaces
-    /// this when the manifest stream lands at M2 (§3c).
+    /// this when the manifest stream lands (§3c).
     pub object_crc: u32,
 }
 
-/// Header bytes, including the trailing CRC.
-pub const HEADER_LEN: usize = 27;
-const CRC_OFFSET: usize = 23;
-
-impl PulseHeader {
-    fn write_into(&self, buf: &mut [u8], symbol: &[u8]) {
+impl StreamHeader {
+    fn write_into(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&MAGIC);
         buf[2] = VERSION;
         buf[3..7].copy_from_slice(&self.stream_id.to_le_bytes());
         buf[7..19].copy_from_slice(&self.config);
         buf[19..23].copy_from_slice(&self.object_crc.to_le_bytes());
-        let crc = crc(&buf[..CRC_OFFSET], symbol);
-        buf[CRC_OFFSET..HEADER_LEN].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// Parse and verify. `None` means "not a valid pulse" — bad magic, version
-    /// or CRC — which the caller must treat as an erasure, never an error.
-    ///
-    /// `symbol_len` comes from the fountain config, not from the header, because
-    /// RaptorQ picks a symbol size that may be smaller than the space offered.
-    fn parse(bytes: &[u8], symbol_len: Option<usize>) -> Option<(Self, &[u8])> {
-        if bytes.len() < HEADER_LEN || bytes[0..2] != MAGIC || bytes[2] != VERSION {
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < STREAM_HEADER_LEN || bytes[0..2] != MAGIC || bytes[2] != VERSION {
             return None;
         }
-        let header = Self {
+        Some(Self {
             stream_id: u32::from_le_bytes(bytes[3..7].try_into().ok()?),
             config: bytes[7..19].try_into().ok()?,
             object_crc: u32::from_le_bytes(bytes[19..23].try_into().ok()?),
-        };
-
-        // On the first pulse the eye does not yet know the symbol size, so it
-        // derives it from this pulse's own config — which the CRC has not
-        // vouched for yet. `probe` validates without building a decoder, so a
-        // corrupt config becomes an erasure instead of a panic.
-        let len = match symbol_len {
-            Some(len) => len,
-            None => RaptorQSink::probe(&header.config)?,
-        };
-        let want = if len == 0 { 0 } else { SYMBOL_ID_LEN + len };
-        let symbol = bytes.get(HEADER_LEN..HEADER_LEN + want)?;
-
-        let expected = u32::from_le_bytes(bytes[CRC_OFFSET..HEADER_LEN].try_into().ok()?);
-        if crc(&bytes[..CRC_OFFSET], symbol) != expected {
-            return None;
-        }
-        Some((header, symbol))
+        })
     }
 }
 
-fn crc(header: &[u8], payload: &[u8]) -> u32 {
+fn crc(bytes: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
-    hasher.update(header);
-    hasher.update(payload);
+    hasher.update(bytes);
     hasher.finalize()
 }
 
-/// How a pulse's cells are divided between inner ECC and everything else.
-pub fn layout(grid: Grid, palette: Palette) -> Result<fec::Layout> {
-    fec::Layout::for_capacity(grid.payload_bytes(palette))
+/// How one band's cells split between inner ECC and everything else.
+pub fn band_layout(grid: Grid, palette: Palette, band: u8) -> Result<fec::Layout> {
+    fec::Layout::for_capacity(grid.band_payload_bytes(band, palette))
 }
 
-/// Largest fountain symbol one pulse can carry, after the inner code and the
-/// framing header have taken their share.
+/// Bytes reserved before the symbol in a given band.
+const fn reserved_in(band: u8) -> usize {
+    if band == 0 {
+        STREAM_HEADER_LEN + BAND_OVERHEAD
+    } else {
+        BAND_OVERHEAD
+    }
+}
+
+/// Largest fountain symbol every band can carry.
+///
+/// The *smallest* band sets this, because a fountain code needs one symbol size
+/// for the whole object. Band 0 is usually the binding one: it pays for the
+/// stream header on top of everything else.
 pub fn symbol_capacity(grid: Grid, palette: Palette) -> Result<u16> {
-    let capacity = layout(grid, palette)?.data_len();
-    capacity
-        .checked_sub(HEADER_LEN + SYMBOL_ID_LEN)
-        .filter(|&n| n > 0)
-        .map(|n| n.min(u16::MAX as usize) as u16)
-        .ok_or(Error::NoRoomForSymbol {
-            capacity,
-            header: HEADER_LEN,
-            symbol_id: SYMBOL_ID_LEN,
-        })
+    let mut smallest = usize::MAX;
+    for band in 0..grid.bands.max(1) {
+        let data = band_layout(grid, palette, band)?.data_len();
+        let room = data
+            .checked_sub(reserved_in(band))
+            .filter(|&n| n > 0)
+            .ok_or(Error::NoRoomForSymbol {
+                capacity: data,
+                header: reserved_in(band),
+                symbol_id: SYMBOL_ID_LEN,
+            })?;
+        smallest = smallest.min(room);
+    }
+    Ok(smallest.min(u16::MAX as usize) as u16)
 }
 
-/// Encode an object as a batch of pulses.
+/// Frame one band: optional stream header, the symbol, then a CRC over both.
+fn frame_band(band: u8, header: &StreamHeader, symbol: &[u8], data_len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; data_len];
+    let mut at = 0;
+    if band == 0 {
+        header.write_into(&mut buf[..STREAM_HEADER_LEN]);
+        at = STREAM_HEADER_LEN;
+    }
+    buf[at..at + symbol.len()].copy_from_slice(symbol);
+    let end = at + symbol.len();
+    let checksum = crc(&buf[..end]);
+    buf[end..end + 4].copy_from_slice(&checksum.to_le_bytes());
+    buf
+}
+
+/// Split a band's decoded bytes back into header and symbol, verifying the CRC.
+///
+/// `symbol_len` comes from the fountain config, not the wire, because RaptorQ
+/// picks a symbol size that may be smaller than the space offered. `None` means
+/// the band is unusable — an erasure, never an error.
+fn parse_band(band: u8, bytes: &[u8], symbol_len: usize) -> Option<(Option<StreamHeader>, &[u8])> {
+    let header = if band == 0 {
+        Some(StreamHeader::parse(bytes)?)
+    } else {
+        None
+    };
+    let at = if band == 0 { STREAM_HEADER_LEN } else { 0 };
+    let end = at
+        + if symbol_len == 0 {
+            0
+        } else {
+            SYMBOL_ID_LEN + symbol_len
+        };
+
+    let symbol = bytes.get(at..end)?;
+    let expected = u32::from_le_bytes(bytes.get(end..end + 4)?.try_into().ok()?);
+    if crc(&bytes[..end]) != expected {
+        return None;
+    }
+    Some((header, symbol))
+}
+
+/// Encode an object as a batch of pulses, `grid.bands` symbols at a time.
 ///
 /// `overhead` is the ratio of repair symbols to source symbols. It exists only
 /// because a directory of PNGs has to stand in for a skin that loops forever;
-/// at `0.0` the output is exactly the source symbols and survives no loss at
-/// all, which is why the CLI defaults it much higher.
+/// at `0.0` the output is exactly the source symbols and survives no loss.
 pub fn encode(
     object: &[u8],
     grid: Grid,
@@ -149,61 +186,56 @@ pub fn encode(
 ) -> Result<Vec<Pulse>> {
     grid.validate()?;
     let max_symbol = symbol_capacity(grid, palette)?;
-    let layout = layout(grid, palette)?;
     let fountain = RaptorQ::new(object, max_symbol)?;
 
-    let header = PulseHeader {
+    let header = StreamHeader {
         stream_id,
         config: fountain.config(),
-        object_crc: crc(&[], object),
+        object_crc: crc(object),
     };
 
-    // The header and symbol occupy the inner code's *data* space; ECC is added
-    // on top and the result is what actually reaches the cells.
-    let mut buf = vec![0u8; layout.data_len()];
+    let bands = grid.bands.max(1) as usize;
+    let symbols = fountain.symbols(overhead);
+    let mut pulses = Vec::with_capacity(symbols.len().div_ceil(bands));
 
-    fountain
-        .symbols(overhead)
-        .into_iter()
-        .enumerate()
-        .map(|(index, symbol)| {
-            buf.iter_mut().for_each(|b| *b = 0);
-            buf[HEADER_LEN..HEADER_LEN + symbol.len()].copy_from_slice(&symbol);
-            header.write_into(&mut buf, &symbol);
-
-            let mut pulse = Pulse::new(grid, palette)?;
-            pulse.write_payload(&fec::encode(&buf, layout)?)?;
-            // The counter only has to *differ* between adjacent pulses for tear
-            // detection to work; the beacon's stream id is the low byte of the
-            // real one, which is enough to shrug off a foreign transfer early.
-            beacon::write(
-                &mut pulse,
-                Beacon {
-                    stream_id: stream_id as u8,
-                    counter: index as u32,
-                },
+    for (index, chunk) in symbols.chunks(bands).enumerate() {
+        let mut pulse = Pulse::new(grid, palette)?;
+        for (band, symbol) in chunk.iter().enumerate() {
+            let band = band as u8;
+            let data_len = band_layout(grid, palette, band)?.data_len();
+            let framed = frame_band(band, &header, symbol, data_len);
+            pulse.write_band(
+                band,
+                &fec::encode(&framed, band_layout(grid, palette, band)?)?,
             )?;
-            Ok(pulse)
-        })
-        .collect()
+        }
+        // A short final chunk leaves its remaining bands blank; they simply fail
+        // their CRC at the far end, which is an erasure like any other.
+        beacon::write(
+            &mut pulse,
+            Beacon {
+                stream_id: stream_id as u8,
+                counter: index as u32,
+            },
+        )?;
+        pulses.push(pulse);
+    }
+    Ok(pulses)
 }
 
-/// What happened to an ingested pulse.
+/// What a whole pulse amounted to. With bands, this is a summary: one frame can
+/// contribute several symbols, and they need not all fare the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ingest {
-    /// Absorbed; the object is not yet recoverable.
+    /// At least one new symbol absorbed.
     Accepted,
-    /// Absorbed, and the object came out. Further pulses are redundant.
+    /// Absorbed, and the object came out.
     Completed,
-    /// A symbol already held, or any pulse arriving after completion. Expected
-    /// and harmless — the skin loops forever.
+    /// Every usable band was a symbol already held.
     Duplicate,
-    /// Failed the CRC gate, or belongs to another stream. An erasure, never an
-    /// error (§1b).
+    /// No band survived its CRC.
     Rejected,
-    /// The two beacon strips disagree: this frame was stitched from two pulses
-    /// by a rolling shutter. Also an erasure — but a *diagnosable* one, which
-    /// `Rejected` is not (§3a).
+    /// Beacon strips disagreed and nothing could be salvaged.
     Torn,
 }
 
@@ -243,72 +275,101 @@ impl Receiver {
         if self.object.is_some() {
             return Ingest::Duplicate;
         }
-        // Cheapest check first. A torn frame would fail the CRC anyway, so this
-        // is not what makes the transfer correct — it makes the failure *legible*
-        // and skips the Reed–Solomon and fountain work (§3a).
-        if beacon::is_intact(pulse) == Some(false) {
+        let grid = pulse.grid();
+        let palette = pulse.palette();
+        let bands = grid.bands.max(1);
+
+        // A stitched frame is worth reporting either way, but with bands it is
+        // no longer worth discarding: the tear ruins the bands it crossed and
+        // leaves the rest perfectly readable. Only a single-band pulse has
+        // nothing left to salvage.
+        let torn = beacon::is_intact(pulse) == Some(false);
+        if torn {
             self.torn += 1;
-            return Ingest::Torn;
+            if bands == 1 {
+                return Ingest::Torn;
+            }
         }
 
-        // Inner code first: repair what can be repaired, so the CRC gate above
-        // only ever sees pulses that are genuinely fine or genuinely beyond
-        // help. A block past its correction budget is an erasure like any other.
-        let Ok(layout) = fec::Layout::for_capacity(pulse.capacity()) else {
-            self.rejected += 1;
-            return Ingest::Rejected;
-        };
-        let Some(bytes) = fec::decode(&pulse.read_payload(), layout) else {
-            self.rejected += 1;
-            return Ingest::Rejected;
-        };
-
-        let symbol_len = self.sink.as_ref().map(|s| s.symbol_len());
-        let Some((header, symbol)) = PulseHeader::parse(&bytes, symbol_len) else {
-            self.rejected += 1;
-            return Ingest::Rejected;
-        };
-
-        match self.stream_id {
-            // Lock onto the first stream seen; ignore any other in view.
-            Some(id) if id != header.stream_id => {
+        let mut fresh = 0;
+        let mut usable = 0;
+        for band in 0..bands {
+            let Ok(layout) = band_layout(grid, palette, band) else {
+                continue;
+            };
+            let Some(bytes) = fec::decode(&pulse.read_band(band), layout) else {
                 self.rejected += 1;
-                return Ingest::Rejected;
+                continue;
+            };
+
+            // Until a config is locked, only band 0 can be interpreted: every
+            // other band's symbol length is unknown.
+            let symbol_len = match &self.sink {
+                Some(sink) => sink.symbol_len(),
+                None if band == 0 => match StreamHeader::parse(&bytes)
+                    .and_then(|header| RaptorQSink::probe(&header.config))
+                {
+                    Some(len) => len,
+                    None => {
+                        self.rejected += 1;
+                        continue;
+                    }
+                },
+                None => continue,
+            };
+
+            let Some((header, symbol)) = parse_band(band, &bytes, symbol_len) else {
+                self.rejected += 1;
+                continue;
+            };
+            if let Some(header) = header
+                && !self.adopt(header)
+            {
+                self.rejected += 1;
+                continue;
             }
-            Some(_) => {}
+            usable += 1;
+
+            if symbol.len() >= SYMBOL_ID_LEN {
+                let id: [u8; SYMBOL_ID_LEN] =
+                    symbol[..SYMBOL_ID_LEN].try_into().expect("checked length");
+                if !self.seen.insert(id) {
+                    continue;
+                }
+            }
+            fresh += 1;
+            self.accepted += 1;
+
+            let Some(sink) = self.sink.as_mut() else {
+                continue;
+            };
+            if let Some(object) = sink.absorb(symbol) {
+                self.object = Some(object);
+                return Ingest::Completed;
+            }
+        }
+
+        match (fresh, usable, torn) {
+            (0, 0, true) => Ingest::Torn,
+            (0, 0, false) => Ingest::Rejected,
+            (0, _, _) => Ingest::Duplicate,
+            _ => Ingest::Accepted,
+        }
+    }
+
+    /// Lock onto the first stream seen; reject anything that disagrees.
+    fn adopt(&mut self, header: StreamHeader) -> bool {
+        match self.stream_id {
+            Some(id) => id == header.stream_id && self.object_crc == header.object_crc,
             None => {
                 let Ok(sink) = RaptorQSink::new(&header.config) else {
-                    self.rejected += 1;
-                    return Ingest::Rejected;
+                    return false;
                 };
                 self.stream_id = Some(header.stream_id);
                 self.object_crc = header.object_crc;
                 self.sink = Some(sink);
+                true
             }
-        }
-
-        // A pulse that agrees on the stream but not on its contents is a
-        // corrupt header that happened to pass CRC, or a restarted transfer.
-        if header.object_crc != self.object_crc {
-            self.rejected += 1;
-            return Ingest::Rejected;
-        }
-
-        if symbol.len() >= SYMBOL_ID_LEN {
-            let id: [u8; SYMBOL_ID_LEN] = symbol[..SYMBOL_ID_LEN].try_into().expect("checked len");
-            if !self.seen.insert(id) {
-                return Ingest::Duplicate;
-            }
-        }
-
-        self.accepted += 1;
-        let sink = self.sink.as_mut().expect("sink set above");
-        match sink.absorb(symbol) {
-            Some(object) => {
-                self.object = Some(object);
-                Ingest::Completed
-            }
-            None => Ingest::Accepted,
         }
     }
 
@@ -322,12 +383,13 @@ impl Receiver {
         )
     }
 
+    /// Bands dropped by the CRC gate. Counts *bands*, not pulses.
     pub fn rejected(&self) -> u32 {
         self.rejected
     }
 
-    /// Frames dropped because their beacon strips disagreed. A rising count is
-    /// the signal behind a `SLOW DOWN` hint to the human (§1e).
+    /// Frames whose beacon strips disagreed. A rising count is the signal
+    /// behind a `SLOW DOWN` hint to the human (§1e).
     pub fn torn(&self) -> u32 {
         self.torn
     }
@@ -346,7 +408,7 @@ impl Receiver {
             let (have, need) = self.progress();
             return Err(Error::NotConverged { have, need });
         };
-        let got = crc(&[], object);
+        let got = crc(object);
         if got != self.object_crc {
             return Err(Error::ObjectCrc {
                 expected: self.object_crc,
@@ -363,6 +425,7 @@ mod tests {
     use proptest::prelude::*;
 
     const M1: (Grid, Palette) = (Grid::M1_MONO, Palette::Mono1);
+    const M3: (Grid, Palette) = (Grid::M3_COLOR, Palette::Color3);
 
     fn absorb_all(pulses: &[Pulse]) -> Receiver {
         let mut rx = Receiver::new();
@@ -372,36 +435,91 @@ mod tests {
         rx
     }
 
+    /// Flip `count` payload cells inside one band, spread so each lands in a
+    /// different byte and costs the inner code a full correction.
+    fn damage_band(pulse: &Pulse, band: u8, count: usize) -> Pulse {
+        let mut pulse = pulse.clone();
+        let coords: Vec<_> = pulse.grid().band_payload_coords(band).collect();
+        for i in 0..count {
+            let (x, y) = coords[(i * 8 + 24) % coords.len()];
+            let flipped = pulse.cell(x, y).unwrap() ^ 1;
+            pulse.set_cell(x, y, flipped).unwrap();
+        }
+        pulse
+    }
+
     #[test]
     fn empty_object_roundtrips() {
         let pulses = encode(&[], M1.0, M1.1, 1, 0.0).unwrap();
         assert_eq!(absorb_all(&pulses).finish().unwrap(), Vec::<u8>::new());
     }
 
-    /// The point of the whole fountain layer: an arbitrary subset suffices.
+    /// The point of bands: damage one stripe and the others still deliver.
     #[test]
-    fn decodes_after_sixty_percent_loss() {
-        let object: Vec<u8> = (0..8192u32).map(|i| (i ^ (i >> 3)) as u8).collect();
-        let pulses = encode(&object, M1.0, M1.1, 7, 2.0).unwrap();
+    fn damage_to_one_band_spares_the_others() {
+        let (grid, palette) = M3;
+        assert!(grid.bands > 1, "this test needs a banded profile");
 
-        // Deterministic, unbiased-enough decimation: keep 2 of every 5.
-        let kept: Vec<_> = pulses
+        let object: Vec<u8> = (0..40_000u32).map(|i| (i ^ (i >> 4)) as u8).collect();
+        // Overhead 3.0 because wrecking one of two bands throws away half the
+        // symbols; the fountain has to make that up out of what is left.
+        let pulses = encode(&object, grid, palette, 3, 3.0).unwrap();
+
+        // Wreck the last band of every pulse, far past inner-code repair.
+        // Note the budget is per *block* and a colour band spans several, so
+        // this has to clear `correctable × blocks` — an earlier version of this
+        // test landed exactly on that total and the band was quietly repaired.
+        let victim = grid.bands - 1;
+        let layout = band_layout(grid, palette, victim).unwrap();
+        let ruin = layout.correctable_per_block() * layout.blocks() * 3;
+        let mangled: Vec<Pulse> = pulses
             .iter()
-            .enumerate()
-            .filter(|(i, _)| i % 5 < 2)
-            .map(|(_, p)| p.clone())
+            .map(|p| damage_band(p, victim, ruin))
             .collect();
-        assert!(kept.len() * 5 <= pulses.len() * 2 + 5);
 
-        let rx = absorb_all(&kept);
-        assert_eq!(rx.finish().unwrap(), object);
+        let rx = absorb_all(&mangled);
+        assert_eq!(
+            rx.finish().unwrap(),
+            object,
+            "one ruined band should not cost the transfer"
+        );
+        assert!(
+            rx.rejected() > 0,
+            "the ruined band should have been rejected"
+        );
     }
 
-    /// With no repair symbols, losing one pulse must fail cleanly rather than
-    /// return wrong bytes.
+    /// Losing band 0 costs its symbol and the stream header, but the header
+    /// arrives again on the next pulse — so the transfer still completes.
+    #[test]
+    fn losing_the_header_band_is_survivable() {
+        let (grid, palette) = M3;
+        let object: Vec<u8> = (0..30_000u32).map(|i| (i * 11) as u8).collect();
+        let pulses = encode(&object, grid, palette, 4, 2.0).unwrap();
+        let budget = band_layout(grid, palette, 0)
+            .unwrap()
+            .correctable_per_block();
+
+        // Every third pulse loses band 0 entirely.
+        let mangled: Vec<Pulse> = pulses
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i % 3 == 0 {
+                    damage_band(p, 0, budget * 4)
+                } else {
+                    p.clone()
+                }
+            })
+            .collect();
+        assert_eq!(absorb_all(&mangled).finish().unwrap(), object);
+    }
+
+    /// With no repair symbols, loss must fail cleanly rather than return wrong
+    /// bytes.
     #[test]
     fn zero_overhead_plus_loss_fails_loudly() {
-        let object = vec![3u8; 2048];
+        let object = vec![3u8; 6000];
         let pulses = encode(&object, M1.0, M1.1, 1, 0.0).unwrap();
         let rx = absorb_all(&pulses[1..]);
         assert!(matches!(rx.finish(), Err(Error::NotConverged { .. })));
@@ -416,56 +534,42 @@ mod tests {
         assert_eq!(rx.progress().0, 1);
     }
 
-    /// Flip `count` payload cells, spread out so they land in distinct bytes.
-    fn corrupt(pulse: &Pulse, count: usize) -> Pulse {
-        let mut pulse = pulse.clone();
-        let coords: Vec<_> = pulse.grid().payload_coords().collect();
-        for i in 0..count {
-            // 8 cells apart in mono, so each flip damages a different byte and
-            // costs the inner code a full correction rather than sharing one.
-            let (x, y) = coords[(i * 8 + 40) % coords.len()];
-            let flipped = pulse.cell(x, y).unwrap() ^ 1;
-            pulse.set_cell(x, y, flipped).unwrap();
-        }
-        pulse
-    }
-
-    /// What the inner code bought: a cell error that used to cost the whole
-    /// symbol is now simply repaired (§1b).
+    /// A few cell errors are repaired by the inner code (§1b).
     #[test]
-    fn a_few_cell_errors_are_repaired_by_the_inner_code() {
+    fn a_few_cell_errors_are_repaired() {
         let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
-        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
-
+        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
         let mut rx = Receiver::new();
-        assert_eq!(rx.ingest(&corrupt(&pulses[0], budget)), Ingest::Accepted);
+        assert_eq!(
+            rx.ingest(&damage_band(&pulses[0], 0, budget)),
+            Ingest::Accepted
+        );
         assert_eq!(rx.rejected(), 0);
     }
 
-    /// Past the inner code's budget, the CRC gate takes over and drops the
-    /// pulse rather than feeding a corrupt symbol to the fountain decoder.
+    /// Past that budget the CRC gate takes over.
     #[test]
     fn errors_past_the_inner_budget_hit_the_crc_gate() {
         let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
-        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
-
+        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
         let mut rx = Receiver::new();
         assert_eq!(
-            rx.ingest(&corrupt(&pulses[0], budget * 3)),
+            rx.ingest(&damage_band(&pulses[0], 0, budget * 4)),
             Ingest::Rejected
         );
         assert_eq!(rx.rejected(), 1);
     }
 
-    /// Corruption must never reach the object. Damage every pulse past what the
-    /// inner code can repair, and the transfer must fail to converge rather
-    /// than converge onto garbage.
+    /// Corruption must never reach the object.
     #[test]
     fn corruption_never_reaches_the_object() {
-        let object = vec![0x5Au8; 4096];
-        let budget = layout(M1.0, M1.1).unwrap().correctable_per_block();
+        let object = vec![0x5Au8; 4000];
+        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
         let pulses = encode(&object, M1.0, M1.1, 1, 1.0).unwrap();
-        let mangled: Vec<Pulse> = pulses.iter().map(|p| corrupt(p, budget * 3)).collect();
+        let mangled: Vec<Pulse> = pulses
+            .iter()
+            .map(|p| damage_band(p, 0, budget * 4))
+            .collect();
 
         let rx = absorb_all(&mangled);
         assert!(!rx.is_complete());
@@ -489,8 +593,8 @@ mod tests {
         }
 
         #[test]
-        fn object_roundtrips_in_colour(data in prop::collection::vec(any::<u8>(), 0..8192)) {
-            let pulses = encode(&data, Grid::M3_COLOR, Palette::Color3, 1, 0.2).unwrap();
+        fn object_roundtrips_in_colour(data in prop::collection::vec(any::<u8>(), 0..20000)) {
+            let pulses = encode(&data, M3.0, M3.1, 1, 0.2).unwrap();
             prop_assert_eq!(absorb_all(&pulses).finish().unwrap(), data);
         }
     }

@@ -369,6 +369,63 @@ mod tests {
         }
     }
 
+    /// Bands are a bet: they cost goodput (more inner ECC, more framing, and the
+    /// smallest band sets the symbol size) and buy damage granularity. Whether
+    /// that nets out is a measurement, not an opinion.
+    ///
+    /// Measured in bytes delivered per frame *shown*, which is the only figure
+    /// that matters to someone holding a phone.
+    #[test]
+    fn banding_beats_whole_pulse_symbols_under_tear() {
+        let object: Vec<u8> = (0..40_000u32).map(|i| (i * 13) as u8).collect();
+        let palette = Palette::Color3;
+        let heavy = Channel::preset(Preset::Heavy);
+
+        let delivered_per_frame = |bands: u8, seed: u64| -> f64 {
+            let grid = Grid {
+                bands,
+                ..Grid::M3_COLOR
+            };
+            let pulses = stream::encode(&object, grid, palette, 1, 3.0).unwrap();
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut rx = Receiver::new();
+            let mut frames = 0usize;
+            for (index, pulse) in pulses.iter().enumerate() {
+                frames += 1;
+                let next = &pulses[(index + 1) % pulses.len()];
+                let image = channel::capture(
+                    &render(pulse, CELL_PX),
+                    &render(next, CELL_PX),
+                    &heavy,
+                    CELL_PX,
+                    &mut rng,
+                );
+                if let Ok(sampled) = read(&image, grid, palette) {
+                    rx.ingest(&sampled);
+                }
+                if rx.is_complete() {
+                    break;
+                }
+            }
+            assert!(rx.is_complete(), "{bands}-band run never completed");
+            object.len() as f64 / frames as f64
+        };
+
+        // Averaged: a single seed swings by 30% and would make this flaky.
+        let mean = |bands: u8| {
+            (0..3)
+                .map(|seed| delivered_per_frame(bands, 21 + seed))
+                .sum::<f64>()
+                / 3.0
+        };
+        let whole = mean(1);
+        let banded = mean(Grid::M3_COLOR.bands);
+        assert!(
+            banded > whole,
+            "banding lost: {banded:.0} vs {whole:.0} B/frame — reconsider `Grid::bands`"
+        );
+    }
+
     /// Brutal is past the cliff, and the inner code does **not** rescue it.
     ///
     /// This corrects an earlier prediction of mine. When `Preset::Brutal` was

@@ -128,8 +128,7 @@ cd web && npm test        # JS boundary round trip, no browser needed
   gap, two physical devices. Cannot be done from a terminal — needs a camera.
 - **M2** robustness. Three of the original six landed early and are struck out:
   ~~tear detect~~ (3c), ~~RS + CRC~~ (3a), ~~feedback overlay~~ (M1c). Left:
-  **per-band symbols** (a torn or glare-hit frame should cost one band, not the whole
-  pulse), **manifest stream** (filename/size/mime so the eye can name the file and
+  ~~per-band symbols~~ (landed; see below), **manifest stream** (filename/size/mime so the eye can name the file and
   show it early), **BLAKE3** replacing the placeholder CRC-32 object check, **capture
   corpus** (recorded real camera frames replayed in CI), and **decode in a worker**
   (currently on the main thread — fine for M1, janky beyond it).
@@ -149,6 +148,12 @@ cd web && npm test        # JS boundary round trip, no browser needed
   Measured mean cells misread per pulse (photometric only, 4 px/cell): mono 107.9,
   colour 888.6. Correcting that needs more ECC than a pulse has bytes.
   **The inner code protects the sparse-error regime, not this one.**
+- **Measured, per-band symbols** — §3a suggested 4–8 bands; the measured optimum is
+  **2** for colour and **1** for mono, and at 7 bands banding is *worse than none*.
+  Per-band ECC/framing is a fixed tax, and tear turns out to be partly self-mitigating:
+  bands below a tear line hold the next pulse's symbols, which are valid. The remaining
+  case for bands is **glare**, which is not self-mitigating and is not yet simulated —
+  so `Grid::bands` should be revisited once it is.
 - **Beacon is a diagnostic, not a guarantee** — a stitched frame fails the CRC gate
   anyway. The beacon earns its place by being cheap and *early* (skips RS + fountain
   work) and by being legible: "frames are tearing" is actionable by the human back

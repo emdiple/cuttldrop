@@ -218,7 +218,32 @@ whole pulse — it costs the one or two bands straddling the tear. Same for a gl
 we lose two bands, not 1650 bytes. This is the single highest-leverage structural
 decision in the format, which is why it belongs in from M2 rather than retrofitted.
 
-Suggested: 4–8 bands per pulse, ~200–400 payload bytes each.
+~~Suggested: 4–8 bands per pulse, ~200–400 payload bytes each.~~ **Measured at M2: two.**
+
+Bands cost goodput — per-band ECC and framing are a fixed tax, and the smallest band sets
+the symbol size for all of them — and buy damage granularity. Bytes delivered per frame
+shown, under `Preset::Heavy`, averaged across seeds:
+
+| bands | 1 | **2** | 3 | 4 | 5 | 7 |
+|---|---|---|---|---|---|---|
+| B/frame | 952 | **1014** | 978 | 985 | 870 | 800 |
+
+The curve rises then falls, and by seven bands banding is *worse than not banding at
+all*. Two reasons, and the second is the one this section got wrong:
+
+1. Per-band overhead scales with the band count, unconditionally.
+2. **Tear is partly self-mitigating.** Bands below the tear line carry the *next* pulse's
+   symbols, which are perfectly valid — a torn frame loses only the band straddling the
+   tear, not everything below it. So extra granularity buys far less against tear than
+   this section assumed.
+
+The stronger case for bands is **glare**, which ruins a fixed region of the frame and is
+not self-mitigating. The channel does not model glare yet, so that case is currently
+unmeasured — which means two bands is where the evidence points today, not necessarily
+where it will settle.
+
+The M1 mono profile stays at **one** band: at 211 B per pulse there is no room to pay for
+a second copy of the inner code.
 
 **Correction from M0, measured not estimated: the beacon cannot carry ~16 bytes.** §1d
 assumed a beacon holding stream ID, RaptorQ OTI, pulse counter *and* grid geometry. On

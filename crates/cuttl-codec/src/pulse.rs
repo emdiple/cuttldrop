@@ -165,6 +165,59 @@ impl Pulse {
         Ok(())
     }
 
+    /// Bytes one band carries, before framing.
+    pub fn band_capacity(&self, band: u8) -> usize {
+        self.grid.band_payload_bytes(band, self.palette)
+    }
+
+    /// Pack bytes into one band's cells, LSB first. Short input is zero-filled.
+    ///
+    /// Bands are written and read independently — that is the entire point.
+    /// Damage confined to one band's rows leaves every other band intact.
+    pub fn write_band(&mut self, band: u8, bytes: &[u8]) -> Result<()> {
+        let capacity = self.band_capacity(band);
+        if bytes.len() > capacity {
+            return Err(Error::PayloadTooLarge {
+                len: bytes.len(),
+                capacity,
+            });
+        }
+        let bits = self.palette.bits_per_cell();
+        let grid = self.grid;
+        let mut bit = 0usize;
+        for (x, y) in grid.band_payload_coords(band) {
+            let mut value = 0u8;
+            for k in 0..bits {
+                let i = bit + k as usize;
+                if i / 8 < bytes.len() && (bytes[i / 8] >> (i % 8)) & 1 == 1 {
+                    value |= 1 << k;
+                }
+            }
+            let idx = self.index(x, y);
+            self.cells[idx] = value;
+            bit += bits as usize;
+        }
+        Ok(())
+    }
+
+    /// Unpack one band's cells. Always returns [`Pulse::band_capacity`] bytes.
+    pub fn read_band(&self, band: u8) -> Vec<u8> {
+        let mut out = vec![0u8; self.band_capacity(band)];
+        let bits = self.palette.bits_per_cell();
+        let mut bit = 0usize;
+        for (x, y) in self.grid.band_payload_coords(band) {
+            let value = self.cells[self.index(x, y)];
+            for k in 0..bits {
+                let i = bit + k as usize;
+                if i / 8 < out.len() && (value >> k) & 1 == 1 {
+                    out[i / 8] |= 1 << (i % 8);
+                }
+            }
+            bit += bits as usize;
+        }
+        out
+    }
+
     /// Unpack the payload cells. Always returns [`Pulse::capacity`] bytes; the
     /// framing layer decides how many are meaningful.
     pub fn read_payload(&self) -> Vec<u8> {
@@ -242,6 +295,28 @@ mod tests {
             pulse.set_cell(10, 10, 2),
             Err(Error::CellValue { .. })
         ));
+    }
+
+    /// Each band must round-trip on its own, and writing one must not disturb
+    /// its neighbours — otherwise "independent symbol" is a lie.
+    #[test]
+    fn bands_roundtrip_independently() {
+        let (grid, palette) = (Grid::M3_COLOR, Palette::Color3);
+        let mut pulse = Pulse::new(grid, palette).unwrap();
+
+        let payloads: Vec<Vec<u8>> = (0..grid.bands)
+            .map(|b| {
+                let n = pulse.band_capacity(b);
+                (0..n).map(|i| (i * 7 + b as usize * 31) as u8).collect()
+            })
+            .collect();
+
+        for (band, bytes) in payloads.iter().enumerate() {
+            pulse.write_band(band as u8, bytes).unwrap();
+        }
+        for (band, bytes) in payloads.iter().enumerate() {
+            assert_eq!(&pulse.read_band(band as u8), bytes, "band {band}");
+        }
     }
 
     proptest! {
