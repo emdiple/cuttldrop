@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/cuttl-codec", "crates/cuttl-sim", "crates/cuttl-cli"]
-
-# cuttl-wasm arrives at M1, when there is a browser to bind to.
-# See DESIGN.md §4 for the full intended layout.
+members = [
+    "crates/cuttl-codec",
+    "crates/cuttl-sim",
+    "crates/cuttl-cli",
+    "crates/cuttl-wasm",
+]
 
 [workspace.package]
 version = "0.0.0"

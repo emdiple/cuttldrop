@@ -6,3 +6,5 @@ Cargo.lock.orig
 node_modules/
 dist/
 *.wasm.d.ts
+crates/cuttl-wasm/pkg/
+web/pkg/

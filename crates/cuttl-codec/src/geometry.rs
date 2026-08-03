@@ -47,6 +47,37 @@ pub enum Region {
     Payload,
 }
 
+/// A named grid + palette pairing.
+///
+/// Lives here rather than in each front end so the CLI, the browser skin and
+/// the browser eye cannot drift apart about what "m1" means — which is the same
+/// argument as the codec crate itself (§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// 64×36 mono — the M1 air-gap profile.
+    #[default]
+    M1,
+    /// 96×54 eight-colour — the M3 profile.
+    M3,
+}
+
+impl Profile {
+    pub const fn parts(self) -> (Grid, Palette) {
+        match self {
+            Profile::M1 => (Grid::M1_MONO, Palette::Mono1),
+            Profile::M3 => (Grid::M3_COLOR, Palette::Color3),
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "m1" => Some(Profile::M1),
+            "m3" => Some(Profile::M3),
+            _ => None,
+        }
+    }
+}
+
 /// Which of the two duplicated beacon strips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strip {

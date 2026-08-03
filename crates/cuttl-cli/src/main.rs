@@ -39,11 +39,14 @@ enum Profile {
 }
 
 impl Profile {
+    /// Delegates to `cuttl_codec::Profile`; this enum exists only because clap
+    /// needs a `ValueEnum` and the codec crate must not depend on clap.
     fn parts(self) -> (Grid, Palette) {
         match self {
-            Profile::M1 => (Grid::M1_MONO, Palette::Mono1),
-            Profile::M3 => (Grid::M3_COLOR, Palette::Color3),
+            Profile::M1 => cuttl_codec::Profile::M1,
+            Profile::M3 => cuttl_codec::Profile::M3,
         }
+        .parts()
     }
 }
 

@@ -15,15 +15,30 @@ use crate::error::{Error, Result};
 pub struct Raster<'a> {
     width: u32,
     height: u32,
+    /// Bytes per pixel: 3 for RGB, 4 for RGBA.
+    stride: usize,
     data: &'a [u8],
 }
 
 impl<'a> Raster<'a> {
     /// `data` must be exactly `width × height × 3` bytes, RGB, row-major.
     pub fn new(width: u32, height: u32, data: &'a [u8]) -> Result<Self> {
+        Self::with_stride(width, height, data, 3)
+    }
+
+    /// Borrow an RGBA buffer, ignoring alpha.
+    ///
+    /// This is what a browser hands over — `ImageData.data` and `VideoFrame`
+    /// readbacks are both RGBA — and taking it directly saves converting a
+    /// multi-megabyte frame to RGB on every capture.
+    pub fn new_rgba(width: u32, height: u32, data: &'a [u8]) -> Result<Self> {
+        Self::with_stride(width, height, data, 4)
+    }
+
+    fn with_stride(width: u32, height: u32, data: &'a [u8], stride: usize) -> Result<Self> {
         let wanted = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|n| n.checked_mul(3));
+            .and_then(|n| n.checked_mul(stride));
         if wanted != Some(data.len()) || width == 0 || height == 0 {
             return Err(Error::RasterSize {
                 width,
@@ -34,6 +49,7 @@ impl<'a> Raster<'a> {
         Ok(Self {
             width,
             height,
+            stride,
             data,
         })
     }
@@ -47,8 +63,14 @@ impl<'a> Raster<'a> {
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 3] {
-        let i = ((y.min(self.height - 1) * self.width + x.min(self.width - 1)) * 3) as usize;
-        [self.data[i], self.data[i + 1], self.data[i + 2]]
+        let offset = (y.min(self.height - 1) as usize * self.width as usize
+            + x.min(self.width - 1) as usize)
+            * self.stride;
+        [
+            self.data[offset],
+            self.data[offset + 1],
+            self.data[offset + 2],
+        ]
     }
 
     /// Rec.601 luma, fixed point.
@@ -127,6 +149,16 @@ mod tests {
             let centre = index as f64 + 0.5;
             assert_eq!(raster.bilinear(centre, 0.5)[0], want, "pixel {index}");
         }
+    }
+
+    #[test]
+    fn rgba_is_read_without_a_conversion_copy() {
+        // Two RGBA pixels with junk alpha; alpha must be ignored entirely.
+        let data = [1, 2, 3, 0, 4, 5, 6, 255];
+        let raster = Raster::new_rgba(2, 1, &data).unwrap();
+        assert_eq!(raster.pixel(0, 0), [1, 2, 3]);
+        assert_eq!(raster.pixel(1, 0), [4, 5, 6]);
+        assert!(Raster::new_rgba(2, 1, &[0; 6]).is_err());
     }
 
     #[test]

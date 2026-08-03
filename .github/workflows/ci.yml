@@ -20,6 +20,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
@@ -31,3 +32,9 @@ jobs:
       # thousands of synthetic frames per run, no browser and no camera needed.
       # From M2 this also replays the recorded capture corpus.
       - run: cargo test --workspace
+
+      # The codec must stay free of native-only dependencies: the browser runs
+      # this exact code (DESIGN.md §4). Catching a stray `std::fs` or an image
+      # crate here is far cheaper than discovering it during a browser build.
+      - name: Codec builds for the browser
+        run: cargo build -p cuttl-codec -p cuttl-wasm --target wasm32-unknown-unknown
