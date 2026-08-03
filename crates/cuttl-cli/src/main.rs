@@ -177,9 +177,10 @@ fn encode(
         cell_px
     );
     println!(
-        "      {} B/pulse payload, {} B header, <= {symbol} B/pulse symbol",
+        "      {} B/pulse payload, {} bands, <= {symbol} B/symbol, {} B/pulse goodput",
         grid.payload_bytes(palette),
-        stream::HEADER_LEN
+        grid.bands,
+        symbol as usize * grid.bands as usize
     );
     println!("      {}", output.display());
     Ok(())
