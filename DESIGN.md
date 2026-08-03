@@ -130,6 +130,19 @@ A genuine duplex mode — both devices strobing and watching each other — woul
 fountain overhead dramatically, but it reintroduces pairing, which is explicitly out of
 scope. Noted as possible v2, not proposed.
 
+**Landed, with a second audience.** The instruction line is built and works as described.
+Alongside it the eye now shows telemetry — capture fps, decode fps, goodput, elapsed,
+frames new/dup, ETA, and the camera mode the browser actually granted. That is a
+deliberate departure from "instructions, not numbers": the numbers are not for the person
+aiming the phone, they are for *us*. Every performance figure in this document is
+simulated, and the M1 observable is worthless as a boolean — "a file crossed the gap"
+settles nothing that "129 KB/s at 40 capture fps with zero duplicates" does not settle
+better. Two of the tiles are diagnostics we already knew we needed: the capture-vs-decode
+gap is the only place frames shed by a busy worker are visible at all, and the camera-mode
+string is how iOS's `frameRate` lie (R6) becomes observable rather than suspected.
+Goodput is `symbols × symbolBytes ÷ elapsed`, clocked from the first accepted *symbol*
+rather than page load, so time spent aiming is not charged against the rate.
+
 ---
 
 ## 2. Where the bottleneck actually is
@@ -559,11 +572,55 @@ data demands it. Online QDA classifier (§3b) if M3's error rates justify it.
 
 **Measured ahead of schedule (M2, sim):** the detection cliff sits between 3 and
 2 px/cell and is driven by *sampling* error, not finder detection. At 4 px/cell the
-eye locates 100% of frames up to **192×108** — 4× the M3 cell count, still inside the
-browser eye's 960 px working width — with ~10 misread cells per frame, comfortably
-within the inner-code budget. The binding constraint on density is px/cell at the
-sensor, not cell count on the screen; the 160×90 target above is evidence, not
-aspiration. Sweep: `density_sweep_prints_detection_cliff` in `cuttl-sim`.
+eye locates 100% of frames up to **192×108** — 4× the M3 cell count — with ~10 misread
+cells per frame, comfortably within the inner-code budget. The binding constraint on
+density is px/cell at the sensor, not cell count on the screen; the 160×90 target above
+is evidence, not aspiration. Sweep: `density_sweep_prints_detection_cliff`.
+
+**Landed early, on the strength of that measurement.** The grid half of M4 is done.
+`Profile` is a four-rung ladder, ordered by bitrate and equally by risk:
+
+| | grid | bits/cell | payload cells | goodput | 24 KB costs |
+|---|---|---|---|---|---|
+| m1 safe | 64×36 | 1 | 73% | 160 B/pulse | 528 pulses |
+| m2 dense | 192×108 | 1 | 91% | **2128 B/pulse** | **39 pulses** |
+| m3 colour | 96×54 | 3 | 83% | 1408 B/pulse | 56 pulses |
+| m4 dense colour | 192×108 | 3 | 91% | **6560 B/pulse** | **13 pulses** |
+
+Three things fall out of that table, none of them anticipated here.
+
+**m2 beats m3.** Density outruns colour — 39 pulses against 56 for the same file — which
+is §2's bottleneck ordering (temporal ≫ spatial ≫ colour) appearing as a measurement
+rather than an argument. It is also the *safer* lever: a mono grid asks nothing of a
+camera's white balance. The colour A/B toggle promised at M3 is now a 2×2, and the
+interesting comparison is m2-vs-m3, not colour-vs-mono.
+
+**Density pays more than its cell count.** 192×108 is 9× the cells of 64×36 but 13× the
+bytes, because registration is a *fixed* ~600 cells — four finders, two separators, two
+beacon strips — so the payload share climbs 73% → 83% → 91%. Small grids do not merely
+carry less; they spend a quarter of themselves saying where they are. This is the same
+argument that took the M1 grid from 48×27 to 64×36 (§3a), followed one step further than
+it was followed then. Pinned by `density_amortises_the_registration_tax`.
+
+**Short loops are the one new hazard, and it is not colour's fault.** A small file on a
+dense grid makes a short loop: 24 KB on m4 is 13 pulses even at 2× repair overhead.
+Below roughly **32 pulses** a single pass at 20% frame loss becomes a lottery — too few
+distinct symbols for the fountain to route around a bad frame. The mitigation needed no
+new code, because §3d already had it: the skin loops forever, so the eye simply sees the
+loop again (and `cuttl decode` replays a directory 10× for the same reason). The skin
+warns when a file comes out under 32 pulses. Pinned by
+`a_short_loop_needs_the_skin_to_repeat_itself`.
+
+**Which profile is in force is decided by the skin and *discovered* by the eye.** The
+header cannot carry it — the header lives in cells, and cells cannot be sampled until the
+grid is already known — so the eye trial-decodes each grid until one passes the CRC gate,
+then locks. Using the CRC gate as the oracle means nothing new has to be trusted: a
+mis-sampled dense grid often still finds four finders, but it cannot produce a symbol that
+checks. Reading dimensions off the finder geometry (QR's provisional-version trick) would
+break the circularity properly and remains the better long-term answer; four trial decodes
+cost a few milliseconds once and spare the human from setting a menu identically on two
+devices. The eye's working width moved 960 → 1280 to suit: 192 cols × 4 px/cell ÷ a
+70%-filled frame ≈ 1100.
 
 Speculative, flagged not decided: **ladder the inner RS strength across pulses** — some
 light, some heavy — so that whatever the channel conditions are, a workable subset gets
@@ -578,6 +635,21 @@ on the heavy pulses, so it needs M3 data before it earns a place.
 for the eye *if* iOS camera-control limits turn out to bind.
 
 ### Throughput summary — plan on the middle column
+
+Superseded in part: the pulse-rate and density sweeps have since measured two of these
+rows. Clean pulses/sec is **20** against a 30 fps camera for every profile (§3d), and the
+grids are those above. Restated with the measured numbers, and still simulator-only:
+
+| | m1 | m2 | m3 | m4 |
+|---|---|---|---|---|
+| Grid | 64×36 | 192×108 | 96×54 | 192×108 |
+| Bits/cell | 1 | 1 | 3 | 3 |
+| Clean pulses/sec | 20 | 20 | 20 | 20 |
+| **Goodput** | **3.2 KB/s** | **43 KB/s** | **28 KB/s** | **131 KB/s** |
+| 1 MB file | ~5 min | ~23 s | ~36 s | ~8 s |
+
+The original estimates, kept because the gap is instructive — every one of them was
+pessimistic about density and optimistic about how much colour would matter:
 
 | | M1 | M3 (realistic) | M4 (stretch) |
 |---|---|---|---|

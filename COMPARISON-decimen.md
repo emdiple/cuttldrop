@@ -30,7 +30,8 @@ moves rather than fashion:
 ## The divergence, and what each side buys
 
 Decimen's QR bet buys a decade-hardened detector at ~31k modules/frame and 60 fps on
-day one — hence 129 KB/s handheld against our simulated 14 KB/s colour ceiling.
+day one — hence 129 KB/s handheld against what was, when this file was written, a
+simulated 14 KB/s colour ceiling.
 Cuttldrop's custom-raster bet buys the three things QR forecloses by spec: colour
 (3 bits/cell, M3), sub-frame erasure granularity (per-band salvage of torn frames), and
 an owned detector that can be tuned past QR's model (M4). Their number de-risks our M4
@@ -94,12 +95,29 @@ density when the detector is good enough.
 | R7 | Generation counter on the eye's capture loop before any stream-restart UI ships | with M5 UI work |
 | R8 | Single-file standalone builds (sender ~small, receiver with embedded WASM) alongside the M5 PWA | M5 |
 
-The two questions their 129 KB/s raised — how fast should the skin strobe, and how
-dense can a frame get — have since been answered in simulation: goodput is linear in
-pulse rate up to **20 Hz** (the new skin default; integer ratios of the capture rate
-are a starvation hazard), and the detector holds 100% locate up to **192×108 at
-4 px/cell**, so the M4 grid is reachable. See `DESIGN.md` §3d and §5 M4 for the
-measured tables.
+## Both questions their 129 KB/s raised are now answered
+
+**How fast should the skin strobe?** Goodput is linear in pulse rate up to **20 Hz**
+against a 30 fps camera — now the skin's default. Integer ratios of the capture rate
+freeze the phase and can starve a transfer outright, which is their field note about
+dropping 60 Hz screens to 24–30 arrived at from the shutter arithmetic instead.
+
+**How dense can a frame get?** Dense enough. The profile ladder shipped: 192×108 mono
+carries 2128 B/pulse and 192×108 colour carries 6560 B/pulse, against the old default's
+160 B. At 20 Hz that is **43 KB/s and 131 KB/s** — decimen's territory, reached through
+colour and overhead amortisation rather than through QR's module count. The skin picks
+from a menu; the eye trial-decodes and locks, so density is set on one device only.
+
+Two findings worth putting next to their numbers. **Density beat colour** (39 pulses vs
+56 for the same 24 KB), so the lever we spent §1c arguing about turns out to be the
+second-best one we had. And **their 31,329-module v40 frame is only 1.5× our dense grid**
+— the gap was never physics, it was that they rented a decade-hardened detector from
+zxing on day one while ours started conservative and stayed there. See `DESIGN.md` §3d
+and §5 M4 for the measured tables.
+
+The eye also grew their instrument panel — capture fps, decode fps, goodput, elapsed,
+frames new/dup, ETA, camera mode — for the reason in `DESIGN.md` §1e: our version of
+their 129 KB/s does not exist until something on a real device measures it.
 
 The sharpest thing this comparison says is not on the list: decimen has demonstrated,
 on hardware, everything Cuttldrop has only simulated. The M1 observable — one real file

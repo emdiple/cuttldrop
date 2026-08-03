@@ -34,6 +34,7 @@ without an asterisk.
 | **pilot** | known-value chroma cell used for colour calibration |
 | **cal pulse** | payload-free pulse carrying a full-frame known calibration pattern |
 | **stream** | one transfer session |
+| **profile** | a named grid + palette pairing (`m1`…`m4`); the skin picks, the eye detects |
 
 ## Decisions (agreed 2026-08-03 — see DESIGN.md for full rationale)
 
@@ -139,9 +140,12 @@ cd web && npm test        # JS boundary round trip, no browser needed
   corpus** (recorded real camera frames replayed in CI) — hardware-gated, like the
   M1 observable.
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
-- **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder
-  experiments; adaptive compression + measured file-size ceiling (`COMPARISON-decimen.md`
-  R3–R4)
+- **M4** density — **the grid half landed early**: `Profile` is now a four-rung ladder
+  (m1 64×36 mono → m2 192×108 mono → m3 96×54 colour → m4 192×108 colour, 160 B →
+  6560 B/pulse), the skin has a density menu, and the eye auto-detects by trial decode
+  so only one device is ever set. All four deliver byte-exact through the full optical
+  path in sim. Left: glare masking, QDA + RS-ladder experiments, adaptive compression +
+  measured file-size ceiling (`COMPARISON-decimen.md` R3–R4)
 - **M5** product: multi-file, PWA, native eye shell only if iOS forces it; optional
   passphrase encryption, standalone single-file builds (`COMPARISON-decimen.md` R2, R8)
 
@@ -192,8 +196,26 @@ cd web && npm test        # JS boundary round trip, no browser needed
   period and nothing captures clean. Findings pinned; sweeps re-runnable with
   `cargo test -p cuttl-sim --release -- --ignored --nocapture`.
 - **Measured, density** — the cliff is between 3 and 2 px/cell (sampling error, not
-  detection). At 4 px/cell, 192×108 reads with ~10 misread cells/frame — the M4 grid
-  is reachable in sim; px/cell at the sensor is the binding constraint.
+  detection). At 4 px/cell, 192×108 reads with ~10 misread cells/frame; px/cell at the
+  sensor is the binding constraint, so `WORK_WIDTH` in `eye.ts` is now 1280 (192 cols ×
+  4 px ÷ a 70%-filled frame ≈ 1100).
+- **Measured, density pays twice** — 24 KB through the full channel: m1 528 pulses,
+  m2 **39**, m3 56, m4 **13**. Two findings. **m2 beats m3: density outruns colour**,
+  which is §2's ordering as a number, and it is the safer lever besides. And density
+  pays *more* than its cell count — registration is a fixed ~600 cells, so payload share
+  climbs 73% → 83% → 91% and 9× the cells buys 13× the bytes. Both pinned
+  (`the_density_ladder_delivers_end_to_end`, `density_amortises_the_registration_tax`).
+- **Measured, short loops are the dense profiles' one hazard** — a small file on a dense
+  grid makes a *short* loop (24 KB on m4 is 13 pulses), and below ~32 pulses a single
+  pass at 20% loss is a lottery: too few distinct symbols to route around a bad frame.
+  Not a colour problem. The fix already exists — the skin loops forever (§3d), the CLI
+  replays 10× — and is pinned by `a_short_loop_needs_the_skin_to_repeat_itself`. The
+  skin warns when a loop comes out under 32 pulses.
+- **Eye telemetry landed** — capture fps, decode fps, goodput, elapsed, new/dup, ETA,
+  and the camera mode the browser actually granted (R6's diagnostic). Goodput is
+  `symbols × symbolBytes ÷ elapsed`, clocked from the first *accepted symbol* rather
+  than page load, so aiming time is not charged against the rate. This is the instrument
+  the M1 observable reports through: without it "a file crossed the gap" is a boolean.
 - **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
   hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
   when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;
