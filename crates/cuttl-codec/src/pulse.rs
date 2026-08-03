@@ -109,6 +109,23 @@ impl Pulse {
                             0
                         }
                     }
+                    // Same concentric construction as the finder, three rings
+                    // narrower. The ring formula is shared deliberately: two
+                    // ways of drawing "concentric squares" is two ways to
+                    // disagree with the eye about where the centre is.
+                    Region::Alignment => {
+                        let half = crate::geometry::ALIGN_SIDE / 2;
+                        let (cx, cy) = g.alignment_centre(x, y).unwrap_or((x, y));
+                        let ring = (x as i32 - cx as i32)
+                            .abs()
+                            .max((y as i32 - cy as i32).abs())
+                            as u16;
+                        if ring == half || ring + 2 <= half {
+                            on
+                        } else {
+                            0
+                        }
+                    }
                     // Alternating along the run, giving a scale reference.
                     Region::Timing => {
                         if y % 2 == 0 {

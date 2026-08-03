@@ -4,8 +4,8 @@
 //! ┌────────────────────────────────────────────────────┐
 //! │ ◰        [ BEACON: id·OTI·pulse#·geom ]         ◱  │  ← finder + beacon strip
 //! ├────────────────────────────────────────────────────┤
-//! │ ▓ ░ ▓ ░  band 0   sym ESI·payload·RS·CRC   ░ ▓ ░ ▓ │  ← timing track both edges
-//! │ ▓ ░ ▓ ░  band 1   ...          · pilots ·  ░ ▓ ░ ▓ │
+//! │ ▓ ░ ▓ ░  band 0  ▣  sym ESI·payload·RS·CRC ▣ ░ ▓ │  ← timing track both edges
+//! │ ▓ ░ ▓ ░  band 1     ...          · pilots ·  ░ ▓ │  ← ▣ = alignment lattice
 //! ├────────────────────────────────────────────────────┤
 //! │ ◲        [ BEACON: id·OTI·pulse#·geom ]         ◳  │  ← repeated, for tear detect
 //! └────────────────────────────────────────────────────┘
@@ -43,9 +43,44 @@ pub enum Region {
     /// than gathered in a corner block, because glare is spatially varying —
     /// a deliberate divergence from JAB Code (§3b).
     Pilot,
+    /// Interior registration pattern — QR's alignment pattern, 5×5 concentric
+    /// squares on a lattice through the data region.
+    ///
+    /// Four corner finders give a homography, which is *exact* for a planar
+    /// target under a pinhole camera. These exist for the two cases where that
+    /// model is not the one in force:
+    ///
+    /// - **Rolling-shutter skew.** The sensor reads row by row over 10–30 ms,
+    ///   so a handheld camera is in a slightly different pose for each row. The
+    ///   pulse is still planar, but the projection is no longer a single
+    ///   homography — it is a different one per row, and fitting one set of
+    ///   corners to all of them leaves a residual that grows toward the middle
+    ///   of the frame.
+    ///
+    ///   Note this is *not* the tear case. A tear is two pulses joined at a
+    ///   sensor row with the grid in the same place; it is a content problem
+    ///   and the beacon already detects it. Skew is a geometry problem, it
+    ///   happens on every handheld frame rather than only on straddled ones,
+    ///   and nothing in the stack currently corrects it.
+    /// - **Lens distortion.** Barrel distortion is not projective, so no
+    ///   homography can absorb it. It bites hardest close in and at the edges,
+    ///   which is exactly where a phone is held to fill the frame with a dense
+    ///   grid.
+    ///
+    /// Deliberately **5** cells, not the finder's 7. An alignment pattern is
+    /// found by local search near a position the homography already predicts,
+    /// so it never needs the distinctive 1:1:3:1:1 run ratio that forced the
+    /// finder to 7 — and at 5 it scans as 1:1:1:1:1, the pattern
+    /// [`crate::eye`] explicitly rejects. An alignment pattern therefore cannot
+    /// be mistaken for a finder, which would otherwise wreck the corner fit.
+    Alignment,
     /// Carries actual data.
     Payload,
 }
+
+/// Side length of an interior alignment pattern, in cells. Fixed, not a knob:
+/// see [`Region::Alignment`] for why it is 5 while the finder is 7.
+pub const ALIGN_SIDE: u16 = 5;
 
 /// A named grid + palette pairing.
 ///
@@ -122,6 +157,15 @@ pub struct Grid {
     pub timing_cols: u16,
     /// A pilot every `pilot_period` cells in both axes → ~1-in-period² density.
     pub pilot_period: u16,
+    /// Spacing of the interior alignment lattice, in cells. `0` disables them.
+    ///
+    /// QR v40 spaces its alignment patterns about 26 modules apart across 177;
+    /// 32 across 192 is the same ballpark, reached the same way — close enough
+    /// that the residual between two neighbours stays small, far enough that
+    /// the 25 cells each one costs stay under 2% of the grid.
+    ///
+    /// Zero on the sparse profile on purpose. See [`Grid::M1_MONO`].
+    pub align_period: u16,
     /// Horizontal stripes the data region is cut into, each an independent
     /// fountain symbol (§3a).
     ///
@@ -170,6 +214,12 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        // No interior alignment. The data region is 62x30, so a 32-cell lattice
+        // fits one or two patterns -- too few to correct anything, while 25
+        // cells is 1.1% of a grid that already spends 27% of itself on
+        // registration. This profile buys margin by having large cells, which
+        // is the same distortion budget alignment patterns would have bought.
+        align_period: 0,
         // One band: at 211 B per pulse there is not enough room to pay for a
         // second copy of the inner code. See `bands`.
         bands: 1,
@@ -184,6 +234,11 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        // 28, not the dense profiles' 32: at 32 this grid fits a single row of
+        // patterns, leaving nothing to interpolate against vertically. 28 gives
+        // a 3x2 lattice for 2.9% of the cells; 24 would give 4x2 for 3.9%, and
+        // the extra column is not worth a further point of payload.
+        align_period: 28,
         // Two. Measured, not chosen: see `bands`.
         bands: 2,
     };
@@ -210,6 +265,7 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        align_period: 32,
         // Affordable here in a way it is not at 211 B/pulse: two copies of the
         // inner code cost under 2% of this payload. See `bands`.
         bands: 2,
@@ -230,6 +286,7 @@ impl Grid {
         separator: 1,
         timing_cols: 1,
         pilot_period: 8,
+        align_period: 32,
         bands: 2,
     };
 
@@ -239,7 +296,25 @@ impl Grid {
 
     /// Classify a cell. Saturating arithmetic throughout so a nonsensical grid
     /// yields nonsense rather than a panic; use [`Grid::validate`] to reject it.
+    ///
+    /// Alignment patterns are resolved last and only ever displace a [`Pilot`]
+    /// or a [`Payload`] cell, so adding them can never move a finder, a beacon
+    /// or a timing track — the references the eye needs *before* it can predict
+    /// where an alignment pattern should be.
+    ///
+    /// [`Pilot`]: Region::Pilot
+    /// [`Payload`]: Region::Payload
     pub fn region(&self, x: u16, y: u16) -> Region {
+        let base = self.base_region(x, y);
+        if matches!(base, Region::Pilot | Region::Payload) && self.alignment_centre(x, y).is_some()
+        {
+            return Region::Alignment;
+        }
+        base
+    }
+
+    /// Everything except alignment patterns, which are layered on top.
+    fn base_region(&self, x: u16, y: u16) -> Region {
         let zone = self.finder + self.separator;
         let in_zone_x = x < zone || x >= self.cols.saturating_sub(zone);
         let in_zone_y = y < zone || y >= self.rows.saturating_sub(zone);
@@ -268,6 +343,110 @@ impl Grid {
         } else {
             Region::Payload
         }
+    }
+
+    /// Can a 5×5 pattern centred here sit entirely on data cells?
+    ///
+    /// An alignment pattern may overwrite pilots and payload and nothing else.
+    /// Clipping one against a beacon strip or a finder separator would corrupt
+    /// the reference it collided with, so such a lattice point is simply
+    /// dropped — the eye interpolates across the gap, exactly as QR does where
+    /// its lattice would foul a finder.
+    fn alignment_fits(&self, cx: u16, cy: u16) -> bool {
+        let half = ALIGN_SIDE / 2;
+        if cx < half || cy < half {
+            return false;
+        }
+        let (x0, y0) = (cx - half, cy - half);
+        let (x1, y1) = (cx + half, cy + half);
+        if x1 >= self.cols || y1 >= self.rows {
+            return false;
+        }
+        if y0 < self.beacon_rows || y1 >= self.rows.saturating_sub(self.beacon_rows) {
+            return false;
+        }
+        if x0 < self.timing_cols || x1 >= self.cols.saturating_sub(self.timing_cols) {
+            return false;
+        }
+        let zone = self.finder + self.separator;
+        let near_x = x0 < zone || x1 >= self.cols.saturating_sub(zone);
+        let near_y = y0 < zone || y1 >= self.rows.saturating_sub(zone);
+        !(near_x && near_y)
+    }
+
+    /// The alignment centre whose pattern covers this cell, if any.
+    ///
+    /// The lattice is anchored half a period into the data region rather than
+    /// on its edge, which keeps the outermost patterns away from the beacon
+    /// strips and the timing tracks without needing a special case.
+    pub fn alignment_centre(&self, x: u16, y: u16) -> Option<(u16, u16)> {
+        let period = self.align_period;
+        if period == 0 || period < ALIGN_SIDE {
+            return None;
+        }
+        let half = ALIGN_SIDE / 2;
+        let phase = (period / 2) as i32;
+        // Only two lattice points per axis can be within half a pattern of a
+        // cell, so check the pair that brackets it rather than searching.
+        let candidates = |v: u16, origin: u16| -> [i32; 2] {
+            let rel = v as i32 - origin as i32 - phase;
+            let k = rel.div_euclid(period as i32);
+            [k, k + 1]
+        };
+        for kx in candidates(x, self.timing_cols) {
+            for ky in candidates(y, self.beacon_rows) {
+                let cx = self.timing_cols as i32 + phase + kx * period as i32;
+                let cy = self.beacon_rows as i32 + phase + ky * period as i32;
+                if cx < 0 || cy < 0 || cx > u16::MAX as i32 || cy > u16::MAX as i32 {
+                    continue;
+                }
+                let (cx, cy) = (cx as u16, cy as u16);
+                if x.abs_diff(cx) <= half && y.abs_diff(cy) <= half && self.alignment_fits(cx, cy) {
+                    return Some((cx, cy));
+                }
+            }
+        }
+        None
+    }
+
+    /// Every alignment pattern centre, in raster order, in **cell space**.
+    ///
+    /// These are the eye's interior reference points: it predicts each one
+    /// through the corner homography, finds where it actually landed, and
+    /// corrects the difference (`DESIGN.md` §3b, the same interpolate-don't-fit
+    /// argument the pilots use for colour).
+    pub fn alignment_centres(&self) -> Vec<(u16, u16)> {
+        let period = self.align_period;
+        if period == 0 || period < ALIGN_SIDE {
+            return Vec::new();
+        }
+        let phase = period / 2;
+        let mut out = Vec::new();
+        let mut cy = self.beacon_rows + phase;
+        while cy < self.rows {
+            let mut cx = self.timing_cols + phase;
+            while cx < self.cols {
+                if self.alignment_fits(cx, cy) {
+                    out.push((cx, cy));
+                }
+                cx += period;
+            }
+            cy += period;
+        }
+        out
+    }
+
+    /// Centres of alignment patterns *and* finders together — every fixed point
+    /// the eye can measure in a frame. Finders come first, in the order
+    /// [`Grid::finder_centres`] uses.
+    pub fn registration_centres(&self) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = self.finder_centres().to_vec();
+        out.extend(
+            self.alignment_centres()
+                .into_iter()
+                .map(|(x, y)| (x as f64 + 0.5, y as f64 + 0.5)),
+        );
+        out
     }
 
     /// Payload cells in raster order. This ordering *is* the wire format — skin
@@ -407,6 +586,7 @@ mod tests {
                 Region::Beacon,
                 Region::Timing,
                 Region::Pilot,
+                Region::Alignment,
                 Region::Payload,
             ] {
                 counted += (0..grid.rows)

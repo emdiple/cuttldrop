@@ -18,7 +18,7 @@ it.
 
 | | |
 |---|---|
-| Codec, fountain layer, FEC stack | done, 99 tests |
+| Codec, fountain layer, FEC stack | done, 102 tests |
 | Manifest + mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
 | CLI (`cuttl encode` / `cuttl decode`) | done |
@@ -97,6 +97,16 @@ concentric-square finders, found by scanning for the 1:1:3:1:1 run-length ratio,
 four correspondences into a homography. Perspective is exact for a planar target under a
 pinhole camera — it is the *easy* part of the problem.
 
+What a homography *cannot* represent is anything non-projective: lens barrel distortion,
+and the pose drift of a handheld camera across a rolling shutter's 10–30 ms readout. That
+error is harmless until it exceeds half a cell and catastrophic immediately after, with
+nothing in between — measured, 12 misread cells per frame becomes 2208 across one step of
+the sweep. So the dense grids carry an interior lattice of QR-style **alignment
+patterns**, 5×5 rather than the finder's 7 so they can never be mistaken for one. The eye
+predicts each through the corner fit, finds where it actually landed, and interpolates
+the difference. Costs 2.2% of the grid, buys a 1.5× wider distortion tolerance, and turns
+that 2208 back into 2.
+
 **The hard part is time.** Rolling shutter reads a sensor row by row over 10–30 ms, so a
 capture that straddles a pulse flip is stitched from two different frames. Each pulse
 carries a duplicated counter in strips top and bottom; if they disagree, the frame was
@@ -119,9 +129,9 @@ overhead.
 | Profile | Grid | Bits/cell | Payload cells | Goodput | At 20 Hz |
 |---|---|---|---|---|---|
 | M1 — safe | 64 × 36 | 1 | 73% | 160 B/pulse | 3.2 KB/s |
-| M2 — dense | 192 × 108 | 1 | 91% | **2128 B/pulse** | 43 KB/s |
-| M3 — colour | 96 × 54 | 3 | 83% | 1408 B/pulse | 28 KB/s |
-| M4 — dense colour | 192 × 108 | 3 | 91% | **6560 B/pulse** | 131 KB/s |
+| M2 — dense | 192 × 108 | 1 | 89% | **2064 B/pulse** | 41 KB/s |
+| M3 — colour | 96 × 54 | 3 | 80% | 1360 B/pulse | 27 KB/s |
+| M4 — dense colour | 192 × 108 | 3 | 89% | **6336 B/pulse** | 127 KB/s |
 
 The skin picks one; the eye works out which by trying each grid until one passes the
 CRC gate, so density is a menu on one device only.
