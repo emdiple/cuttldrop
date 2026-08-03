@@ -217,6 +217,15 @@ cd web && npm test        # JS boundary round trip, no browser needed
   `symbols × symbolBytes ÷ elapsed`, clocked from the first *accepted symbol* rather
   than page load, so aiming time is not charged against the rate. This is the instrument
   the M1 observable reports through: without it "a file crossed the gap" is a boolean.
+- **Measured, wasm size vs decode speed — the release profile stays speed-tuned.**
+  The 351 KB / 195 KB-gzip artifact is not wasm-opt's fault: `-O`/`-Os`/`-Oz`/`-O3`/`-O4`
+  span 0.3%, so the level wasm-pack picks is irrelevant. `lto = "fat"` and `strip`
+  buy nothing either (wasm-bindgen has already stripped). The *only* lever is
+  `opt-level = "z"`, worth 195 → 178 KB gzip — and it costs **2.3×** on the eye
+  pipeline (1.76 s → 4.08 s on `the_density_ladder_delivers_end_to_end`). That is a
+  one-time 19 KB download against every frame of every transfer, on the one device
+  where decode fps is already a measured constraint. Declined. Re-open only if a
+  profile-guided or feature-trimmed build changes the trade, not by re-running these.
 - **Four ways an iPhone eye fails silently**, all now closed. (1) `mediaDevices` is
   absent outside a secure context, so a LAN address gives no camera at all — hence
   `npm run cert`, and the page now *says* this instead of printing a raw `TypeError`.
