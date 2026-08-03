@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Cuttldrop &mdash; eye</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body class="eye">
+    <video id="camera" playsinline muted></video>
+    <div class="readout">
+      <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <p id="progress" class="detail">0 / &mdash; symbols</p>
+      <p id="counters" class="counters"></p>
+      <a id="download" hidden download>Save file</a>
+    </div>
+    <script type="module" src="./src/eye.ts"></script>
+  </body>
+</html>
