@@ -93,7 +93,9 @@ file.addEventListener("change", async () => {
   const bytes = new Uint8Array(await chosen.arrayBuffer());
   const streamId = (Math.random() * 0xffffffff) >>> 0;
   try {
-    skin = new Skin(bytes, PROFILE, streamId, OVERHEAD);
+    // Name and mime ride in the manifest, so the eye can display and save the
+    // file as itself rather than as received.bin (§3c).
+    skin = new Skin(bytes, chosen.name, chosen.type, PROFILE, streamId, OVERHEAD);
   } catch (error) {
     detail.textContent = `Could not encode: ${error}`;
     return;

@@ -60,23 +60,35 @@ pub struct Skin {
 impl Skin {
     /// Encode a file into a looping pulse sequence.
     ///
-    /// `overhead` is repair symbols per source symbol. The skin loops forever,
-    /// so this only bounds how long the loop is before it repeats — but a
-    /// longer loop means a receiver that missed a frame waits less time for a
-    /// *different* one rather than the same one again.
+    /// `name` and `mime` ride in the manifest so the far end can display and
+    /// save the file as itself; pass what the `File` object says. `overhead` is
+    /// repair symbols per source symbol. The skin loops forever, so this only
+    /// bounds how long the loop is before it repeats — but a longer loop means
+    /// a receiver that missed a frame waits less time for a *different* one
+    /// rather than the same one again.
     #[wasm_bindgen(constructor)]
     pub fn new(
         object: &[u8],
+        name: &str,
+        mime: &str,
         profile: &str,
         stream_id: u32,
         overhead: f32,
     ) -> Result<Skin, JsValue> {
-        Self::create(object, profile, stream_id, overhead).map_err(|e| JsValue::from_str(&e))
+        Self::create(object, name, mime, profile, stream_id, overhead)
+            .map_err(|e| JsValue::from_str(&e))
     }
 
-    fn create(object: &[u8], profile: &str, stream_id: u32, overhead: f32) -> Result<Skin, String> {
+    fn create(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        profile: &str,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<Skin, String> {
         let (grid, palette) = profile_of(profile)?.parts();
-        let pulses = stream::encode(object, grid, palette, stream_id, overhead)
+        let pulses = stream::encode_named(object, name, mime, grid, palette, stream_id, overhead)
             .map_err(|e| e.to_string())?;
         Ok(Self { pulses, grid })
     }
@@ -193,6 +205,29 @@ impl Eye {
         self.unlocatable
     }
 
+    /// Filename from the manifest, already sanitised for a download attribute —
+    /// or `undefined` before the first manifest pulse. Arrives within
+    /// `MANIFEST_PERIOD` pulses of looking, usually long before the file (§3c).
+    #[wasm_bindgen(getter, js_name = fileName)]
+    pub fn file_name(&self) -> Option<String> {
+        self.receiver.manifest().map(|m| m.safe_name())
+    }
+
+    /// Mime type from the manifest; empty if the sender did not know,
+    /// `undefined` before the first manifest pulse.
+    #[wasm_bindgen(getter, js_name = fileMime)]
+    pub fn file_mime(&self) -> Option<String> {
+        self.receiver.manifest().map(|m| m.mime.clone())
+    }
+
+    /// Exact incoming file size in bytes, or `undefined` until the first pulse
+    /// is understood. An `f64` because JS numbers are doubles; RFC 6330 caps
+    /// transfers far below 2^53, so the value is always exact.
+    #[wasm_bindgen(getter, js_name = expectedBytes)]
+    pub fn expected_bytes(&self) -> Option<f64> {
+        self.receiver.expected_len().map(|n| n as f64)
+    }
+
     #[wasm_bindgen(getter, js_name = isComplete)]
     pub fn is_complete(&self) -> bool {
         self.receiver.is_complete()
@@ -200,8 +235,8 @@ impl Eye {
 
     /// The reconstructed file, or `undefined` if it is not ready.
     ///
-    /// Verified against the object CRC before it is handed back — an unverified
-    /// file is never returned (§3f).
+    /// Verified against the manifest's BLAKE3 hash before it is handed back —
+    /// an unverified file is never returned (§3f).
     #[wasm_bindgen(js_name = takeObject)]
     pub fn take_object(&self) -> Option<Vec<u8>> {
         self.receiver.finish().ok()
@@ -217,29 +252,39 @@ mod tests {
     #[test]
     fn skin_to_eye_roundtrips_without_a_browser() {
         let object: Vec<u8> = (0..9000u32).map(|i| (i * 37) as u8).collect();
-        let skin = Skin::create(&object, "m1", 5, 0.5).unwrap();
+        let skin =
+            Skin::create(&object, "ink.bin", "application/octet-stream", "m1", 5, 0.5).unwrap();
         let mut eye = Eye::create("m1").unwrap();
 
         let (w, h) = (skin.cols(), skin.rows());
         for index in 0..skin.pulse_count() {
             let rgba = skin.pulse_rgba(index);
-            if eye.ingest(&rgba, w, h) == Outcome::Completed {
+            let outcome = eye.ingest(&rgba, w, h);
+            if index == 0 {
+                // Pulse 0 carries the manifest: the eye knows what it is
+                // receiving before it has received anything.
+                assert_eq!(eye.file_name().as_deref(), Some("ink.bin"));
+                assert_eq!(eye.expected_bytes(), Some(object.len() as f64));
+                assert!(!eye.is_complete());
+            }
+            if outcome == Outcome::Completed {
                 break;
             }
         }
         assert!(eye.is_complete());
         assert_eq!(eye.take_object().unwrap(), object);
+        assert_eq!(eye.file_mime().as_deref(), Some("application/octet-stream"));
     }
 
     #[test]
     fn unknown_profiles_are_rejected() {
-        assert!(Skin::create(&[1, 2, 3], "m9", 1, 0.0).is_err());
+        assert!(Skin::create(&[1, 2, 3], "f", "", "m9", 1, 0.0).is_err());
         assert!(Eye::create("").is_err());
     }
 
     #[test]
     fn pulse_rgba_is_grid_sized_and_opaque() {
-        let skin = Skin::create(&[7u8; 500], "m1", 1, 0.0).unwrap();
+        let skin = Skin::create(&[7u8; 500], "f", "", "m1", 1, 0.0).unwrap();
         let rgba = skin.pulse_rgba(0);
         assert_eq!(rgba.len() as u32, skin.cols() * skin.rows() * 4);
         assert!(rgba.chunks_exact(4).all(|px| px[3] == 255));
@@ -248,7 +293,7 @@ mod tests {
     /// Indexing wraps, because the skin loops forever.
     #[test]
     fn pulse_index_wraps() {
-        let skin = Skin::create(&[1u8; 300], "m1", 1, 0.0).unwrap();
+        let skin = Skin::create(&[1u8; 300], "f", "", "m1", 1, 0.0).unwrap();
         let count = skin.pulse_count();
         assert_eq!(skin.pulse_rgba(0), skin.pulse_rgba(count));
     }
