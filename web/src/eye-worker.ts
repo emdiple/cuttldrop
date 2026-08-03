@@ -28,6 +28,8 @@ function status(outcome: Outcome, decoder: Eye): FromWorker {
     fileName: decoder.fileName,
     fileMime: decoder.fileMime,
     expectedBytes: decoder.expectedBytes,
+    symbolBytes: decoder.symbolBytes,
+    profile: decoder.profile,
   };
 }
 

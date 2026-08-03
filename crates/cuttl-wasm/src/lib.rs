@@ -19,7 +19,7 @@
 //! borrows it as a `Raster`. No conversion pass over a multi-megabyte frame,
 //! and no allocation per capture beyond what the decoder itself needs.
 
-use cuttl_codec::{Grid, Ingest, Palette, Profile, Pulse, Raster, Receiver, eye, stream};
+use cuttl_codec::{Grid, Ingest, Profile, Pulse, Raster, Receiver, eye, stream};
 use wasm_bindgen::prelude::*;
 
 /// What happened to one captured frame.
@@ -136,8 +136,8 @@ impl Skin {
 /// The receiving side: absorbs camera frames until the file falls out.
 #[wasm_bindgen]
 pub struct Eye {
-    grid: Grid,
-    palette: Palette,
+    /// The profile in force, or `None` while still being worked out.
+    locked: Option<Profile>,
     receiver: Receiver,
     unlocatable: u32,
 }
@@ -150,22 +150,47 @@ impl Eye {
     }
 
     fn create(profile: &str) -> Result<Eye, String> {
-        let (grid, palette) = profile_of(profile)?.parts();
+        // `"auto"` means no profile is fixed yet: `locked` stays `None` and the
+        // first understood frame decides. Anything else pins one immediately.
+        let locked = match profile {
+            "auto" => None,
+            name => Some(profile_of(name)?),
+        };
         Ok(Self {
-            grid,
-            palette,
+            locked,
             receiver: Receiver::new(),
             unlocatable: 0,
         })
     }
 
     /// Feed one captured frame, RGBA, as `ImageData.data` provides it.
+    ///
+    /// With no profile locked, every known grid is tried in turn and the first
+    /// one that yields a pulse the receiver *accepts* is locked in for the rest
+    /// of the stream. This is deliberately trial decoding rather than a field
+    /// in the header: the header lives in cells, and cells cannot be sampled
+    /// until the grid is already known. Reading the grid's dimensions off the
+    /// finder geometry would break that circularity properly and is the better
+    /// answer eventually; trying four grids costs a few milliseconds once and
+    /// spares the human from setting a menu identically on two devices.
     pub fn ingest(&mut self, rgba: &[u8], width: u32, height: u32) -> Outcome {
         let Ok(raster) = Raster::new_rgba(width, height, rgba) else {
             self.unlocatable += 1;
             return Outcome::Unlocatable;
         };
-        let Ok(pulse) = eye::read(&raster, self.grid, self.palette) else {
+
+        if self.locked.is_none() {
+            match self.detect(&raster) {
+                Some(outcome) => return outcome,
+                None => {
+                    self.unlocatable += 1;
+                    return Outcome::Unlocatable;
+                }
+            }
+        }
+
+        let (grid, palette) = self.locked.unwrap_or_default().parts();
+        let Ok(pulse) = eye::read(&raster, grid, palette) else {
             self.unlocatable += 1;
             return Outcome::Unlocatable;
         };
@@ -176,6 +201,40 @@ impl Eye {
             Ingest::Rejected => Outcome::Rejected,
             Ingest::Torn => Outcome::Torn,
         }
+    }
+
+    /// Try every profile against one frame; lock the first that *accepts*.
+    ///
+    /// Acceptance, not merely "read without error", is the test. A dense grid
+    /// sampled at the wrong pitch still finds four finders often enough to
+    /// produce cells; what it cannot do is produce cells whose CRC passes. The
+    /// gate that already exists to keep corrupt symbols out of the fountain is
+    /// exactly the right oracle here, so nothing new has to be trusted.
+    ///
+    /// Returns `None` if no profile got anywhere, leaving the eye unlocked to
+    /// try again on the next frame.
+    fn detect(&mut self, raster: &Raster<'_>) -> Option<Outcome> {
+        for profile in Profile::ALL {
+            let (grid, palette) = profile.parts();
+            let Ok(pulse) = eye::read(raster, grid, palette) else {
+                continue;
+            };
+            let ingest = self.receiver.ingest(&pulse);
+            if matches!(ingest, Ingest::Accepted | Ingest::Completed) {
+                self.locked = Some(profile);
+                return Some(match ingest {
+                    Ingest::Completed => Outcome::Completed,
+                    _ => Outcome::Accepted,
+                });
+            }
+        }
+        None
+    }
+
+    /// The profile in force, or `undefined` while the eye is still searching.
+    #[wasm_bindgen(getter)]
+    pub fn profile(&self) -> Option<String> {
+        self.locked.map(|p| p.name().to_string())
     }
 
     /// Symbols absorbed so far. Honest and monotonic — not a guessed percentage.
@@ -228,6 +287,18 @@ impl Eye {
         self.receiver.expected_len().map(|n| n as f64)
     }
 
+    /// Object bytes each accepted symbol is worth, or `undefined` until the
+    /// first pulse is understood.
+    ///
+    /// The eye's goodput readout is `symbols × symbolBytes ÷ elapsed`. Without
+    /// this the page would have to divide `expectedBytes` by `needed` and hope
+    /// the padding rounded its way; RaptorQ's symbol size is a fact, so it is
+    /// reported as one.
+    #[wasm_bindgen(getter, js_name = symbolBytes)]
+    pub fn symbol_bytes(&self) -> Option<u32> {
+        self.receiver.symbol_len().map(|n| n as u32)
+    }
+
     #[wasm_bindgen(getter, js_name = isComplete)]
     pub fn is_complete(&self) -> bool {
         self.receiver.is_complete()
@@ -274,6 +345,32 @@ mod tests {
         assert!(eye.is_complete());
         assert_eq!(eye.take_object().unwrap(), object);
         assert_eq!(eye.file_mime().as_deref(), Some("application/octet-stream"));
+    }
+
+    /// The eye works out the profile for itself, for every profile there is.
+    ///
+    /// This is what keeps a density change from being a two-device chore: the
+    /// skin picks, the eye follows. The assertion that it locks onto the *same*
+    /// profile matters more than that it completes — a dense grid misread as a
+    /// sparse one could in principle limp along, and it must not.
+    #[test]
+    fn the_eye_locks_onto_whichever_profile_the_skin_chose() {
+        let object: Vec<u8> = (0..40000u32).map(|i| (i * 91 + i / 7) as u8).collect();
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let skin = Skin::create(&object, "auto.bin", "", name, 5, 0.5).unwrap();
+            let mut eye = Eye::create("auto").unwrap();
+            assert_eq!(eye.profile(), None, "{name}: locked before seeing anything");
+
+            let (w, h) = (skin.cols(), skin.rows());
+            for index in 0..skin.pulse_count() {
+                if eye.ingest(&skin.pulse_rgba(index), w, h) == Outcome::Completed {
+                    break;
+                }
+            }
+            assert_eq!(eye.profile().as_deref(), Some(name), "{name}: locked wrong");
+            assert_eq!(eye.take_object().unwrap(), object, "{name}: bad object");
+        }
     }
 
     #[test]

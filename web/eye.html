@@ -13,6 +13,20 @@
       <div class="bar"><div id="bar-fill"></div></div>
       <p id="progress" class="detail">0 / &mdash; symbols</p>
       <p id="counters" class="counters"></p>
+      <!--
+        Instrumentation, not decoration. Every performance number this project
+        owns is simulated; these tiles are how the M1 air-gap run reports back
+        what a real sensor actually did (DESIGN.md §5).
+      -->
+      <div class="tiles">
+        <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
+        <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
+        <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
+        <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
+        <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
+        <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
+      </div>
+      <p id="camera-mode" class="footnote">camera &mdash;</p>
       <a id="download" hidden download>Save file</a>
     </div>
     <script type="module" src="./src/eye.ts"></script>

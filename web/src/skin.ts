@@ -5,7 +5,6 @@
 
 import init, { Skin } from "../pkg/cuttl_wasm.js";
 
-const PROFILE = "m1";
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
 const OVERHEAD = 2.0;
@@ -14,6 +13,7 @@ const file = document.querySelector<HTMLInputElement>("#file")!;
 const detail = document.querySelector<HTMLParagraphElement>("#detail")!;
 const start = document.querySelector<HTMLButtonElement>("#start")!;
 const rate = document.querySelector<HTMLInputElement>("#rate")!;
+const profile = document.querySelector<HTMLSelectElement>("#profile")!;
 const rateValue = document.querySelector<HTMLOutputElement>("#rate-value")!;
 const setup = document.querySelector<HTMLDivElement>("#setup")!;
 const display = document.querySelector<HTMLCanvasElement>("#pulse")!;
@@ -84,6 +84,12 @@ rate.addEventListener("input", () => {
   if (skin) status.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
 });
 
+// Changing density re-encodes: the grid decides how much fits in a pulse, so
+// there is nothing to reuse. Cheap enough to do on every change.
+profile.addEventListener("change", () => {
+  file.dispatchEvent(new Event("change"));
+});
+
 file.addEventListener("change", async () => {
   const chosen = file.files?.[0];
   if (!chosen) return;
@@ -95,7 +101,7 @@ file.addEventListener("change", async () => {
   try {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
-    skin = new Skin(bytes, chosen.name, chosen.type, PROFILE, streamId, OVERHEAD);
+    skin = new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
   } catch (error) {
     detail.textContent = `Could not encode: ${error}`;
     return;
@@ -106,6 +112,12 @@ file.addEventListener("change", async () => {
   detail.textContent =
     `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
     `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
+  // A short loop is the one thing that can starve a transfer outright: the
+  // fountain has too few distinct symbols to route around a bad frame. The
+  // skin repeats forever so it recovers, but slowly — worth saying.
+  if (skin.pulseCount < 32) {
+    detail.textContent += " · short loop for this density, expect repeats";
+  }
   start.disabled = false;
 });
 

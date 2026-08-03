@@ -9,20 +9,30 @@
 import { Outcome } from "../pkg/cuttl_wasm.js";
 import type { FromWorker, ToWorker } from "./protocol.js";
 
-const PROFILE = "m1";
+// "auto": the eye works the density out from the first frame it understands,
+// so a density change on the skin needs no matching change here.
+const PROFILE = "auto";
 
 /**
  * Working resolution for decoding.
  *
- * Not the camera's resolution: 64 columns need only ~4 px/cell to be
- * resolvable (§2), so 960 px across is already 15 px/cell — generous. Decoding
- * scans every row and column, so halving the working size quarters that cost
- * for no loss in what can actually be read.
+ * Not the camera's resolution — decoding scans every row and column, so this is
+ * the single biggest lever on CPU cost. It is set by the *densest* profile, not
+ * the default one, because the eye auto-detects and must be able to read
+ * whatever the skin chose.
+ *
+ * The arithmetic: 192 columns need ~4 px/cell (the measured cliff is between 3
+ * and 2), and a handheld frame is rarely more than ~70% filled by the sending
+ * screen, so the budget is `192 × 4 ÷ 0.7 ≈ 1100`. 1280 leaves a little room
+ * above that. At the 64-column default the same width is a luxurious 14 px/cell.
  */
-const WORK_WIDTH = 960;
+const WORK_WIDTH = 1280;
 
 /** Frames to look back over when deciding what to tell the human. */
 const HINT_WINDOW = 30;
+
+/** Seconds of history the frame-rate readouts average over. */
+const RATE_WINDOW = 2;
 
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
@@ -30,6 +40,16 @@ const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
 const barFill = document.querySelector<HTMLDivElement>("#bar-fill")!;
 const download = document.querySelector<HTMLAnchorElement>("#download")!;
+const cameraMode = document.querySelector<HTMLParagraphElement>("#camera-mode")!;
+const tile = (name: string) => document.querySelector<HTMLElement>(`#t-${name}`)!;
+const tiles = {
+  capture: tile("capture"),
+  decode: tile("decode"),
+  goodput: tile("goodput"),
+  elapsed: tile("elapsed"),
+  newdup: tile("newdup"),
+  eta: tile("eta"),
+};
 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
@@ -44,6 +64,59 @@ const recent: Outcome[] = [];
 let last: Extract<FromWorker, { kind: "status" }> | null = null;
 let busy = false;
 let done = false;
+
+/**
+ * Rolling event rate over the last [`RATE_WINDOW`] seconds.
+ *
+ * Two of these run: one on captures, one on decodes. The *gap* between them is
+ * the load the worker shed — frames dropped by the `busy` flag are invisible
+ * everywhere else, and "capture 40, decode 12" is the difference between a
+ * camera problem and a CPU problem.
+ */
+class Rate {
+  private readonly stamps: number[] = [];
+
+  mark(now: number): void {
+    this.stamps.push(now);
+    while (this.stamps.length > 0 && now - this.stamps[0] > RATE_WINDOW * 1000) {
+      this.stamps.shift();
+    }
+  }
+
+  /** Per second, or null before there is enough history to divide by. */
+  perSecond(now: number): number | null {
+    if (this.stamps.length < 2) return null;
+    const span = now - this.stamps[0];
+    return span > 0 ? ((this.stamps.length - 1) / span) * 1000 : null;
+  }
+}
+
+const captureRate = new Rate();
+const decodeRate = new Rate();
+let newFrames = 0;
+let dupFrames = 0;
+/**
+ * When the transfer began — the first frame that yielded a *symbol*, not page
+ * load and not the first capture.
+ *
+ * Aiming time is not transfer time. Starting the clock at page load would
+ * charge every second spent lining up the phone against the goodput figure,
+ * which is precisely the number we are trying to measure honestly.
+ */
+let firstSymbolAt: number | null = null;
+
+function formatRate(bytesPerSecond: number): string {
+  if (bytesPerSecond >= 1e6) return `${(bytesPerSecond / 1e6).toFixed(2)} MB/s`;
+  if (bytesPerSecond >= 1e3) return `${(bytesPerSecond / 1e3).toFixed(1)} KB/s`;
+  return `${Math.round(bytesPerSecond)} B/s`;
+}
+
+function formatSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "—";
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+}
 
 /**
  * Ask the camera to stop helping.
@@ -84,6 +157,49 @@ function advise(): string {
   return "Reading";
 }
 
+/**
+ * Fill the telemetry tiles.
+ *
+ * Goodput is `symbols × symbolBytes ÷ elapsed`, which needs saying plainly: a
+ * fountain delivers no file at all until it converges, so there is no such
+ * thing as "bytes received so far". What there is, is a count of symbols that
+ * passed the CRC gate, each worth exactly `symbolBytes` of the object. The
+ * surplus above K is real work but not useful bytes, so the total is clamped
+ * to the file size — an honest average, not a headline.
+ */
+let baseCameraMode = "";
+
+function meter(now: number): void {
+  // Which grid the eye settled on, once it has. Worth showing: it is the only
+  // confirmation that the density chosen on the *other* device took effect.
+  if (last?.profile && baseCameraMode) {
+    cameraMode.textContent = `${baseCameraMode} · profile ${last.profile}`;
+  }
+  const capture = captureRate.perSecond(now);
+  const decode = decodeRate.perSecond(now);
+  tiles.capture.textContent = capture === null ? "—" : capture.toFixed(1);
+  tiles.decode.textContent = decode === null ? "—" : decode.toFixed(1);
+  tiles.newdup.textContent = `${newFrames}/${dupFrames}`;
+
+  if (firstSymbolAt === null || !last) {
+    tiles.elapsed.textContent = "—";
+    return;
+  }
+  const elapsed = (now - firstSymbolAt) / 1000;
+  tiles.elapsed.textContent = formatSeconds(elapsed);
+
+  const { symbols, needed, symbolBytes, expectedBytes } = last;
+  if (!symbolBytes || elapsed <= 0) return;
+
+  const delivered = Math.min(symbols * symbolBytes, expectedBytes ?? Infinity);
+  const goodput = delivered / elapsed;
+  tiles.goodput.textContent = formatRate(goodput);
+
+  const remaining = Math.max(0, needed - symbols) * symbolBytes;
+  tiles.eta.textContent =
+    remaining === 0 ? "—" : goodput > 0 ? formatSeconds(remaining / goodput) : "—";
+}
+
 function render(): void {
   if (!last) return;
   const { symbols, needed, torn, rejected, unlocatable, fileName, expectedBytes } = last;
@@ -111,7 +227,11 @@ function finish(bytes: Uint8Array, name: string, mime: string): void {
 }
 
 function capture(): void {
-  if (busy || done) return;
+  if (done) return;
+  // Counted even when dropped: this is the camera's rate, and a frame the
+  // worker was too busy to take still arrived.
+  captureRate.mark(performance.now());
+  if (busy) return;
 
   workCtx.drawImage(video, 0, 0, work.width, work.height);
   const frame = workCtx.getImageData(0, 0, work.width, work.height);
@@ -153,7 +273,19 @@ async function start(): Promise<void> {
 
   video.srcObject = stream;
   await video.play();
-  await steady(stream.getVideoTracks()[0]);
+  const track = stream.getVideoTracks()[0];
+  await steady(track);
+
+  // What the camera *granted*, not what we asked for. iOS answers
+  // `frameRate: {ideal: 60}` with 30 and says nothing about it, so the only way
+  // to know the sender's pulse rate is sane is to print what actually arrived.
+  const settings = track.getSettings();
+  const fps = settings.frameRate ? `@${Math.round(settings.frameRate)}` : "";
+  cameraMode.textContent =
+    settings.width && settings.height
+      ? `camera ${settings.width}×${settings.height}${fps} · decoding at ${WORK_WIDTH} px wide`
+      : "camera — resolution unreported";
+  baseCameraMode = cameraMode.textContent;
 
   const aspect = video.videoHeight / video.videoWidth || 9 / 16;
   work.width = WORK_WIDTH;
@@ -171,13 +303,22 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
     case "error":
       hint.textContent = message.message;
       break;
-    case "status":
+    case "status": {
       busy = false;
       last = message;
+      const now = performance.now();
+      decodeRate.mark(now);
+      if (message.outcome === Outcome.Duplicate) dupFrames += 1;
+      if (message.outcome === Outcome.Accepted || message.outcome === Outcome.Completed) {
+        newFrames += 1;
+        firstSymbolAt ??= now;
+      }
       recent.push(message.outcome);
       if (recent.length > HINT_WINDOW) recent.shift();
       render();
+      meter(now);
       break;
+    }
     case "complete":
       finish(message.bytes, message.fileName, message.fileMime);
       break;

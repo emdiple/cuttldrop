@@ -28,5 +28,9 @@ export type FromWorker =
       fileName?: string;
       fileMime?: string;
       expectedBytes?: number;
+      /** Object bytes one symbol is worth — the goodput readout's multiplier. */
+      symbolBytes?: number;
+      /** The grid the eye locked onto, once auto-detection has settled. */
+      profile?: string;
     }
   | { kind: "complete"; bytes: Uint8Array; fileName: string; fileMime: string };
