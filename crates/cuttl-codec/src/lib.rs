@@ -17,7 +17,7 @@
 //! - [`fountain`] — outer RaptorQ erasure code (§1a, §3c) — **landed**
 //! - [`stream`] — framing + CRC gate over the fountain (§3c) — **landed**
 //! - [`fec`] — *inner* Reed–Solomon, below the CRC gate (§1b) — **landed**
-//! - `beacon` — ECC-heavy header in the reserved strips (§3a) — M1
+//! - [`beacon`] — repetition-coded header in the reserved strips (§3a) — **landed**
 //! - `manifest` — filename/size/mime/BLAKE3 as its own stream (§3c) — M2
 //!
 //! The two FEC layers are not interchangeable and the distinction is the one
@@ -28,6 +28,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod beacon;
 pub mod error;
 pub mod fec;
 pub mod fountain;
@@ -36,8 +37,9 @@ pub mod palette;
 pub mod pulse;
 pub mod stream;
 
+pub use beacon::Beacon;
 pub use error::{Error, Result};
-pub use geometry::{Grid, Region};
+pub use geometry::{Grid, Region, Strip};
 pub use palette::Palette;
 pub use pulse::Pulse;
 pub use stream::{Ingest, Receiver};

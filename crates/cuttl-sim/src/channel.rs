@@ -53,6 +53,11 @@ pub struct Channel {
     /// Unlike every other field here it changes where cells are, not what
     /// colour they read as.
     pub warp: f32,
+    /// Probability that a capture is stitched from two pulses by the rolling
+    /// shutter. Only meaningful through [`capture`].
+    pub tear: f32,
+    /// Probability that the exposure straddles a pulse flip and integrates both.
+    pub blend: f32,
 }
 
 /// Named severities, so the CLI and tests agree on what "heavy" means.
@@ -87,6 +92,8 @@ impl Channel {
                 blur_cells: 0.0,
                 noise: 0.0,
                 warp: 0.0,
+                tear: 0.0,
+                blend: 0.0,
             },
             // A good phone, held reasonably still, in a well-lit room.
             Preset::Light => Self {
@@ -97,6 +104,8 @@ impl Channel {
                 blur_cells: 0.12,
                 noise: 0.015,
                 warp: 0.03,
+                tear: 0.10,
+                blend: 0.05,
             },
             // A cheap camera, slightly soft, room lights on, screen at an
             // angle.
@@ -114,6 +123,8 @@ impl Channel {
                 blur_cells: 0.25,
                 noise: 0.035,
                 warp: 0.08,
+                tear: 0.30,
+                blend: 0.15,
             },
             // Past the cliff. See the enum docs — this is where the missing
             // inner code stops being a theoretical concern.
@@ -125,6 +136,8 @@ impl Channel {
                 blur_cells: 0.45,
                 noise: 0.06,
                 warp: 0.12,
+                tear: 0.55,
+                blend: 0.35,
             },
         }
     }
@@ -138,14 +151,81 @@ impl Channel {
 /// Rows sum to 1 so overall brightness is preserved and only *separation* is lost.
 const MIXING: [[f32; 3]; 3] = [[0.72, 0.20, 0.08], [0.15, 0.70, 0.15], [0.08, 0.22, 0.70]];
 
-/// Push an image through the channel. `cell_px` sets the scale for `blur_cells`.
+/// Push one frame through the channel. `cell_px` sets the scale for `blur_cells`.
 pub fn apply(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl Rng) -> RgbImage {
     if channel.is_identity() {
         return image.clone();
     }
-    // Geometry first: everything below is per-pixel and does not care where the
-    // grid ended up, whereas warping an already-blurred frame would blur twice.
-    let image = &warp(image, channel.warp, rng);
+    let transform = warp_transform(image.dimensions(), channel.warp, rng);
+    let warped = warp_with(image, transform.as_ref());
+    photometric(&warped, channel, cell_px, rng)
+}
+
+/// Capture two consecutive pulses as a single frame.
+///
+/// This is the temporal half of the channel, and it is the bottleneck the whole
+/// design bends around (§2). Two things happen when a capture does not line up
+/// with a pulse:
+///
+/// - **Rolling-shutter tear** — the sensor reads row by row over 10–33 ms, so a
+///   mid-readout flip stitches the top of one pulse to the bottom of the next.
+/// - **Exposure straddle** — a long exposure spanning the flip integrates both,
+///   giving a ghosted blend of the two.
+///
+/// Note the ordering, which is a correctness point rather than a preference:
+/// the tear line is horizontal in **sensor** space, not screen space, so both
+/// pulses are warped *first* and stitched afterwards. Compositing before the
+/// warp would bend the tear line along with the image, which no rolling shutter
+/// does. Both frames share one transform — the camera does not move between the
+/// first sensor row and the last.
+pub fn capture(
+    current: &RgbImage,
+    next: &RgbImage,
+    channel: &Channel,
+    cell_px: u32,
+    rng: &mut impl Rng,
+) -> RgbImage {
+    if channel.is_identity() {
+        return current.clone();
+    }
+    let transform = warp_transform(current.dimensions(), channel.warp, rng);
+    let a = warp_with(current, transform.as_ref());
+    let b = warp_with(next, transform.as_ref());
+    photometric(&composite(&a, &b, channel, rng), channel, cell_px, rng)
+}
+
+/// Stitch or blend two already-warped frames.
+fn composite(a: &RgbImage, b: &RgbImage, channel: &Channel, rng: &mut impl Rng) -> RgbImage {
+    let (w, h) = a.dimensions();
+    if h > 2 && rng.random::<f32>() < channel.tear {
+        let line = rng.random_range(1..h - 1);
+        let mut out = a.clone();
+        for y in line..h {
+            for x in 0..w {
+                out.put_pixel(x, y, *b.get_pixel(x, y));
+            }
+        }
+        return out;
+    }
+    if rng.random::<f32>() < channel.blend {
+        let alpha = rng.random_range(0.25f32..0.75);
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (p, q) = (a.get_pixel(x, y).0, b.get_pixel(x, y).0);
+                let mut px = [0u8; 3];
+                for (c, value) in px.iter_mut().enumerate() {
+                    *value = (p[c] as f32 * alpha + q[c] as f32 * (1.0 - alpha)) as u8;
+                }
+                out.put_pixel(x, y, Rgb(px));
+            }
+        }
+        return out;
+    }
+    a.clone()
+}
+
+fn photometric(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl Rng) -> RgbImage {
     let (w, h) = image.dimensions();
     let mut buf = vec![0f32; (w * h * 3) as usize];
 
@@ -195,17 +275,16 @@ pub fn apply(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl R
     out
 }
 
-/// Project the frame onto a quad inside itself, leaving a dark surround — a
-/// screen photographed at an angle, from somewhere that is not dead centre.
+/// Choose a projection of the frame onto a quad inside itself — a screen
+/// photographed at an angle, from somewhere that is not dead centre.
 ///
-/// Destination pixels are mapped *back* through the inverse homography and
-/// bilinearly sampled, which is the standard way round: it guarantees every
-/// output pixel gets a value, where forward-mapping would leave holes.
-fn warp(image: &RgbImage, amount: f32, rng: &mut impl Rng) -> RgbImage {
+/// Returns the *inverse* map, because destination pixels are sampled backwards
+/// through it. That is the standard direction: it gives every output pixel a
+/// value, where forward-mapping leaves holes.
+fn warp_transform((w, h): (u32, u32), amount: f32, rng: &mut impl Rng) -> Option<Homography> {
     if amount <= 0.0 {
-        return image.clone();
+        return None;
     }
-    let (w, h) = image.dimensions();
     let (fw, fh) = (w as f64, h as f64);
     let span = fw.min(fh);
     let inset = 0.05 * span;
@@ -218,13 +297,16 @@ fn warp(image: &RgbImage, amount: f32, rng: &mut impl Rng) -> RgbImage {
         (jitter(), fh - jitter()),
         (fw - jitter(), fh - jitter()),
     ];
+    Homography::from_correspondences(source, target).and_then(|forward| forward.inverse())
+}
 
-    let Some(inverse) =
-        Homography::from_correspondences(source, target).and_then(|forward| forward.inverse())
-    else {
+/// Resample a frame through an inverse transform, leaving a dark surround.
+fn warp_with(image: &RgbImage, inverse: Option<&Homography>) -> RgbImage {
+    let Some(inverse) = inverse else {
         return image.clone();
     };
-
+    let (w, h) = image.dimensions();
+    let (fw, fh) = (w as f64, h as f64);
     let mut out = RgbImage::new(w, h);
     for y in 0..h {
         for x in 0..w {

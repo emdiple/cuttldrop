@@ -47,6 +47,13 @@ pub enum Region {
     Payload,
 }
 
+/// Which of the two duplicated beacon strips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strip {
+    Top,
+    Bottom,
+}
+
 /// Cell grid layout for a pulse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grid {
@@ -157,6 +164,22 @@ impl Grid {
     /// Whole bytes carried by one pulse, before any framing overhead.
     pub fn payload_bytes(&self, palette: Palette) -> usize {
         (self.payload_bits(palette) / 8) as usize
+    }
+
+    /// Cells of one beacon strip, in raster order.
+    ///
+    /// The two strips carry the *same* bytes. That duplication is the whole
+    /// rolling-shutter tear detector (§3a): if a frame is stitched from two
+    /// different pulses, the counters disagree and the frame is thrown away.
+    pub fn beacon_coords(&self, strip: Strip) -> impl Iterator<Item = (u16, u16)> {
+        let g = *self;
+        let rows: Vec<u16> = match strip {
+            Strip::Top => (0..g.beacon_rows).collect(),
+            Strip::Bottom => (g.rows.saturating_sub(g.beacon_rows)..g.rows).collect(),
+        };
+        rows.into_iter()
+            .flat_map(move |y| (0..g.cols).map(move |x| (x, y)))
+            .filter(move |&(x, y)| g.region(x, y) == Region::Beacon)
     }
 
     /// Centres of the four finders in **cell space**, ordered top-left,
