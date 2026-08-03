@@ -1,8 +1,9 @@
 # Cuttldrop vs. decimen-optical-transfer
 
 Repo: <https://github.com/bashalarmistalt/decimen-optical-transfer> (MIT)
-Reviewed: 2026-08-03, against its README. Summarised in `DESIGN.md` §8; this file is
-the working comparison and the roadmap items adopted from it.
+Reviewed: 2026-08-03, first against its README and then **at source level** (see
+"Read at source level" below). Summarised in `DESIGN.md` §8; this file is the working
+comparison and the roadmap items adopted from it.
 
 Decimen is the same thesis as Cuttldrop — file transfer as light, screen to camera, no
 network path, no pairing — built in one night on the opposite foundational bet: it
@@ -89,7 +90,7 @@ density when the detector is good enough.
 | R1 | State the confidentiality trade-off in README and eye/skin UI — no network ≠ private | immediate, docs |
 | R2 | Optional passphrase encryption (XChaCha20-Poly1305, key never on the wire; manifest gains a flag) | M5 |
 | R3 | Adaptive compression before encode, applied only when it shrinks the object; flagged in the manifest | M4 |
-| R4 | Measure and document the practical file-size ceiling (wasm memory, multi-source-block RaptorQ); sim test at 64 MB | M4 |
+| R4 | Measure and document the practical file-size ceiling (wasm memory, multi-source-block RaptorQ); sim test at 64 MB. Also check the OTI's own field widths and refuse *before* streaming, as their `frame-capacity.ts` does | M4 |
 | R5 | Measure real display refresh from rAF timestamps instead of the hardcoded 60 in `skin.ts` | M1 polish |
 | R6 | iOS camera probe: exact `frameRate`/width constraints with fallback, per decimen's findings | M1 (already planned; now with specifics) |
 | R7 | Generation counter on the eye's capture loop before any stream-restart UI ships | with M5 UI work |
@@ -118,6 +119,51 @@ and §5 M4 for the measured tables.
 The eye also grew their instrument panel — capture fps, decode fps, goodput, elapsed,
 frames new/dup, ETA, camera mode — for the reason in `DESIGN.md` §1e: our version of
 their 129 KB/s does not exist until something on a real device measures it.
+
+## Read at source level
+
+The README comparison above stands. Reading the code adds five things it could not.
+
+**Their per-cell density is *lower* than ours, in both palettes.** Post-ECC,
+application-visible bytes over total cells:
+
+| | grid | cells | delivered | bits/cell |
+|---|---|---|---|---|
+| decimen | QR v40, ECC L | 177×177 = 31,329 | 2,933 B (2,953 − 20 B header) | 0.754 |
+| m2 | 192×108 mono | 20,736 | 2,128 B | **0.821** |
+| m4 | 192×108 colour | 20,736 | 6,560 B | **2.531** |
+
+So the density gap was never about extracting more from a cell — we beat QR v40-L by
+1.09× in mono while carrying *heavier* inner ECC than level L. Their frame wins on
+having 1.5× more cells in it, and loses to m4 outright. This retires the "our QR is
+low density" question: the answer was cell count and a conservative default, not
+information theory.
+
+**They use `qrcode`'s low-level matrix API, not its renderers.** `QRCode.create(segs,
+opts)` → `qr.modules.data`, then their own 35-line rasteriser paints one module per
+pixel into a `Uint32Array` viewed as `ImageData`, integer-scaled with smoothing off.
+Same shape as our `pulseRgba` path. Two details worth having: **`version` is captured
+from frame 0 and pinned** for the rest of the stream, or the symbol resizes mid-flight
+as payload entropy shifts; and **`maskPattern: 4` is fixed**, skipping QR's 8-mask
+scoring pass on every frame — at 60 fps that is real time. We have no equivalent cost
+because we have no masking, which is one place owning the symbol layer is simply
+cheaper.
+
+**QR gives them frame self-description for free, and that is a real advantage.** The
+version lives in the symbol's format info, so their receiver learns the grid size from
+the grid. Our profile auto-detect trial-decodes four grids because our header lives in
+cells that cannot be sampled until the grid is known. It works, but it is a workaround
+for something their spec hands them. The finder-geometry estimate (`cols ≈ 7 ×
+grid_px / finder_px`) is the principled fix and is now clearly worth doing.
+
+**`k` is a u16 in their frame header**, so a stream is capped at 65,535 source blocks —
+at 500 B/frame the true ceiling is ~30 MB, not the advertised 64 MB. `frame-capacity.ts`
+catches this before streaming and names the setting that fixes it. Our OTI has the same
+class of limit and we check nothing. → folded into R4.
+
+**`@vitejs/plugin-basic-ssl`** is how they solve the phone-camera secure-context
+problem — one devDependency against our `scripts/cert.sh`. Still self-signed, so Safari
+still warns; not obviously better, but worth knowing it exists.
 
 The sharpest thing this comparison says is not on the list: decimen has demonstrated,
 on hardware, everything Cuttldrop has only simulated. The M1 observable — one real file
