@@ -1,6 +1,7 @@
 {
   "name": "cuttldrop-web",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "wasm": "wasm-pack build ../crates/cuttl-wasm --target web --out-dir ../../web/pkg --release",

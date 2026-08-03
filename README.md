@@ -18,7 +18,7 @@ it.
 
 | | |
 |---|---|
-| Codec, fountain layer, FEC stack | done, 89 tests |
+| Codec, fountain layer, FEC stack | done, 99 tests |
 | Manifest + mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
 | CLI (`cuttl encode` / `cuttl decode`) | done |
@@ -175,3 +175,11 @@ storage, the right reference for how dense a raster can get before the optics gi
 **JAB Code** (ISO/IEC 23634:2022) — the polychrome symbology line; adjacent but built for
 a single static read, which changes the economics completely. `DESIGN.md` §9 covers what
 transfers from that work and what does not.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+The copyright appendix ships as the ASF distributes it, with the template placeholders
+unfilled — naming a copyright holder is a decision for whoever owns the work, not a
+detail to be inherited from a build tool's warning.

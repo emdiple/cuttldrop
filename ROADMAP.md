@@ -170,9 +170,10 @@ Recorded real camera frames replayed in CI — M2's last outstanding item. Needs
 
 ## Housekeeping
 
-26. **No LICENSE file**, despite `license = "MIT OR Apache-2.0"` in every Cargo.toml.
-    wasm-pack warns on every build. Needs a decision on the text, so it is not something
-    to take unilaterally.
+26. ~~No LICENSE file~~ — **done 2026-08-04.** Apache-2.0, and `Cargo.toml` narrowed
+    from `MIT OR Apache-2.0` to match. The copyright appendix ships as the ASF
+    distributes it, with the `[yyyy] [name of copyright owner]` template unfilled;
+    naming a copyright holder is the owner's call, not a maintenance detail.
 
 ---
 
