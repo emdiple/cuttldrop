@@ -623,6 +623,17 @@ Proposed, pending ruling:
 
 - **txqr** (divan) — animated QR + fountain coding, Go. Closest conceptual relative, and
   the only one that shares our temporal dimension.
+- **decimen-optical-transfer** (bashalarmistalt, 2026) — the txqr thesis rebuilt on the
+  modern browser stack: animated B/W QR (up to v40, EC level L) + hand-rolled LT with
+  robust soliton, zxing-cpp WASM decoding in workers fed by `requestVideoFrameCallback`,
+  SHA-256 verify, self-describing per-frame header for mid-stream join. Claims
+  **~129 KB/s handheld** on real phones. Two data points worth taking seriously: real
+  cameras evidently resolve ~30k modules/frame at speed behind a mature detector — which
+  de-risks our M4 density direction — and brute temporal redundancy (60 fps, fountain
+  absorbs every straddled frame whole) works without any tear salvage when spatial
+  density is that high. What it deliberately does not test is our layer: stock QR is
+  binary by spec, whole-frame erasure granularity, and detection strength is rented from
+  zxing rather than owned — the three constraints this project exists to remove.
 - **Twibright Optar** — paper-based optical storage, Golay-based ECC on a plain
   black/white raster. The right reference for "how dense can a raster get before the
   optics give up."

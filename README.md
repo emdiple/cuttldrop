@@ -146,7 +146,10 @@ cd web && npm test         # JS boundary round trip, no browser needed
 ## Prior art
 
 **txqr** (divan) — animated QR plus fountain coding; the closest relative, and the only
-one that shares the temporal dimension. **Twibright Optar** — paper-based optical
+one that shares the temporal dimension. **decimen-optical-transfer** — the same thesis
+on the modern browser stack (animated QR + LT codes + zxing WASM), with a real-device
+~129 KB/s claim; it rents its symbol layer from QR, which is exactly the layer this
+project builds. **Twibright Optar** — paper-based optical
 storage, the right reference for how dense a raster can get before the optics give up.
 **JAB Code** (ISO/IEC 23634:2022) — the polychrome symbology line; adjacent but built for
 a single static read, which changes the economics completely. `DESIGN.md` §9 covers what
