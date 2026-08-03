@@ -187,7 +187,14 @@ Don't solve it now; do design so the capture layer is swappable.
 
 **Geometry.** 16:9 grid to match both screens. Four corner finders (three identical
 concentric-square, one distinct for orientation disambiguation — QR's trick, and it
-works). Alternating-cell timing tracks down both vertical edges and across the beacon
+works).
+
+**Measured at M0 step 3b: the finder must be 7 cells, not 5.** Detection scans for the
+run-length ratio through a finder's centre. A 7-wide concentric square gives QR's
+1:1:3:1:1; a 5-wide one gives 1:1:1:1:1, which random payload produces constantly. Each
+finder also needs a blank separator ring, or payload cells of the same polarity merge
+with the outer ring and the ratio test fails. That is a fixed ~256-cell cost per pulse,
+which is why the M1 grid grew from 48×27 to 64×36 — see §5. Alternating-cell timing tracks down both vertical edges and across the beacon
 strips: these validate the homography and let us detect scale/skew drift cheaply.
 
 **Perspective.** Four corner correspondences → 8-DOF homography via DLT. That is *exact*
@@ -453,9 +460,14 @@ because we can ask "does the simulator reproduce it?" Skipping it means debuggin
 bugs through a camera lens. **Don't skip it.**
 
 **M1 — Air gap crossed. Pathetic bitrate, real file.**
-B/W only. 48×27 cells. ~6 pulses/sec. Two browser tabs, then two laptops.
+B/W only. 64×36 cells. ~6 pulses/sec. Two browser tabs, then two laptops.
 
-> **Observable:** a real 20 KB file crosses the gap in ~35 s. **~0.8 KB/s.**
+> **Observable:** a real 20 KB file crosses the gap in ~20 s. **~1 KB/s.**
+
+The grid was 48×27 in this plan until M0 step 3b measured what registration actually
+costs. Finders plus separators are ~256 cells whatever the grid size, so on a 48×27
+frame they were a quarter of everything. Enlarging amortises the fixed cost and more
+than pays for itself: measured goodput went **64 → 160 B/pulse**.
 
 **M2 — Robustness. The milestone where it stops being a demo.**
 Per-band symbols, dual beacons + tear detection, inner RS, CRC gating, manifest stream,
@@ -500,11 +512,11 @@ for the eye *if* iOS camera-control limits turn out to bind.
 
 | | M1 | M3 (realistic) | M4 (stretch) |
 |---|---|---|---|
-| Grid | 48×27 | 96×54 | 160×90 |
+| Grid | 64×36 | 96×54 | 160×90 |
 | Bits/cell | 1 | 3 | 3 |
 | Clean pulses/sec | 6 | 12 | 15 |
-| **Goodput** | **0.8 KB/s** | **13 KB/s** | **45 KB/s** |
-| 1 MB file | 20 min | ~80 s | ~23 s |
+| **Goodput** | **~1 KB/s** | **13 KB/s** | **45 KB/s** |
+| 1 MB file | ~17 min | ~80 s | ~23 s |
 
 One free lever not in the table: **laptop→phone beats phone→phone substantially.** A 15"
 screen at 40 cm fills the camera frame with far more resolvable cells than a 6" one.

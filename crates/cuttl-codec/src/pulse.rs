@@ -124,7 +124,7 @@ impl Pulse {
                         let py = (y - g.beacon_rows) / g.pilot_period;
                         ((px + py) % self.palette.levels() as u16) as u8
                     }
-                    Region::Beacon | Region::Payload => 0,
+                    Region::Separator | Region::Beacon | Region::Payload => 0,
                 };
                 let i = self.index(x, y);
                 self.cells[i] = value;

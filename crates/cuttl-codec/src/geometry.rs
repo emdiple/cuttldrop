@@ -25,6 +25,14 @@ pub enum Region {
     /// Corner registration pattern — concentric squares, QR-style. Deliberately
     /// boring geometry: HCCB died of alignment fragility, not of colour (§9).
     Finder,
+    /// Blank ring on the inner sides of each finder.
+    ///
+    /// Not decoration. Finder detection works by scanning for the run-length
+    /// ratio 1:1:3:1:1 across a finder's centre. Without a blank ring, payload
+    /// cells of the same polarity as the finder's outer ring merge with it, the
+    /// outermost run measures long, and the ratio test fails. QR calls this the
+    /// separator and it is load-bearing for exactly this reason.
+    Separator,
     /// Top and bottom header strip. Duplicated so a pulse-counter mismatch
     /// between the two detects rolling-shutter tear (§3a).
     Beacon,
@@ -46,8 +54,16 @@ pub struct Grid {
     pub rows: u16,
     /// Height of each of the two beacon strips.
     pub beacon_rows: u16,
-    /// Side length of each corner finder square. Odd values give a centre cell.
+    /// Side length of each corner finder square.
+    ///
+    /// Must be odd, and in practice must be 7: the detector scans for the run
+    /// ratio 1:1:3:1:1 through a finder's centre, and only a 7-wide concentric
+    /// square produces it. A 5-wide one reads 1:1:1:1:1, which is not
+    /// distinctive against random payload — that was the reason the M1 grid
+    /// grew from 48×27, see [`Grid::M1_MONO`].
     pub finder: u16,
+    /// Blank ring on the inner sides of each finder. See [`Region::Separator`].
+    pub separator: u16,
     /// Width of each of the two vertical timing tracks.
     pub timing_cols: u16,
     /// A pilot every `pilot_period` cells in both axes → ~1-in-period² density.
@@ -55,13 +71,19 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// The M1 profile: 48×27 mono. Pathetic bitrate on purpose — this is the
-    /// grid that has to cross a real air gap first (§5, M1).
+    /// The M1 profile: 64×36 mono.
+    ///
+    /// Was 48×27 through M0 steps 1–3a, while nothing had to *find* the grid.
+    /// Registration is a fixed cost — four 7×7 finders plus separators is ~324
+    /// cells however big the grid is — and on a 48×27 frame that is a quarter
+    /// of everything. Enlarging amortises it; the original 48 was arbitrary
+    /// anyway, and a camera resolving 3–4 px/cell handles 64 columns trivially.
     pub const M1_MONO: Self = Self {
-        cols: 48,
-        rows: 27,
+        cols: 64,
+        rows: 36,
         beacon_rows: 3,
-        finder: 5,
+        finder: 7,
+        separator: 1,
         timing_cols: 1,
         pilot_period: 8,
     };
@@ -72,6 +94,7 @@ impl Grid {
         rows: 54,
         beacon_rows: 3,
         finder: 7,
+        separator: 1,
         timing_cols: 1,
         pilot_period: 8,
     };
@@ -83,10 +106,17 @@ impl Grid {
     /// Classify a cell. Saturating arithmetic throughout so a nonsensical grid
     /// yields nonsense rather than a panic; use [`Grid::validate`] to reject it.
     pub fn region(&self, x: u16, y: u16) -> Region {
-        let in_finder_x = x < self.finder || x >= self.cols.saturating_sub(self.finder);
-        let in_finder_y = y < self.finder || y >= self.rows.saturating_sub(self.finder);
-        if in_finder_x && in_finder_y {
-            return Region::Finder;
+        let zone = self.finder + self.separator;
+        let in_zone_x = x < zone || x >= self.cols.saturating_sub(zone);
+        let in_zone_y = y < zone || y >= self.rows.saturating_sub(zone);
+        if in_zone_x && in_zone_y {
+            let in_finder_x = x < self.finder || x >= self.cols.saturating_sub(self.finder);
+            let in_finder_y = y < self.finder || y >= self.rows.saturating_sub(self.finder);
+            return if in_finder_x && in_finder_y {
+                Region::Finder
+            } else {
+                Region::Separator
+            };
         }
         if y < self.beacon_rows || y >= self.rows.saturating_sub(self.beacon_rows) {
             return Region::Beacon;
@@ -129,9 +159,28 @@ impl Grid {
         (self.payload_bits(palette) / 8) as usize
     }
 
+    /// Centres of the four finders in **cell space**, ordered top-left,
+    /// top-right, bottom-left, bottom-right.
+    ///
+    /// Cell `(i, j)` covers `[i, i+1) × [j, j+1)`, so a centre lands on a `.5`.
+    /// These are the fixed points the eye matches its detected finder centres
+    /// against to solve the homography (§3a) — the whole registration story
+    /// reduces to four correspondences.
+    pub fn finder_centres(&self) -> [(f64, f64); 4] {
+        let half = (self.finder as f64 - 1.0) / 2.0 + 0.5;
+        let (right, bottom) = (self.cols as f64 - half, self.rows as f64 - half);
+        [(half, half), (right, half), (half, bottom), (right, bottom)]
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.pilot_period == 0 {
             return Err(Error::ZeroPilotPeriod);
+        }
+        // Odd and at least 7, so the centre scan reads 1:1:3:1:1.
+        if self.finder < 7 || self.finder.is_multiple_of(2) {
+            return Err(Error::BadFinder {
+                finder: self.finder,
+            });
         }
         if self.payload_cells() == 0 {
             return Err(Error::GridTooSmall {
@@ -155,6 +204,7 @@ mod tests {
             let mut counted = 0u32;
             for region in [
                 Region::Finder,
+                Region::Separator,
                 Region::Beacon,
                 Region::Timing,
                 Region::Pilot,
@@ -192,7 +242,10 @@ mod tests {
     #[test]
     fn profile_capacities_are_in_the_expected_ballpark() {
         let m1 = Grid::M1_MONO.payload_bytes(Palette::Mono1);
-        assert!((90..=140).contains(&m1), "M1 mono payload was {m1} B/pulse");
+        assert!(
+            (180..=260).contains(&m1),
+            "M1 mono payload was {m1} B/pulse"
+        );
 
         let m3 = Grid::M3_COLOR.payload_bytes(Palette::Color3);
         assert!(

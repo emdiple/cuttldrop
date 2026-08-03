@@ -85,16 +85,20 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
 
 - **M0 step 1** ✅ lossless `cuttl encode | decode` round-trip
 - **M0 step 2** ✅ RaptorQ fountain + photometric channel. `--distort heavy --loss 0.6`
-  decodes byte-identical. Goodput 80 B/pulse at 48×27 mono, 1598 B/pulse at 96×54 colour.
-- **M0 step 3a** ✅ inner Reed–Solomon below the CRC gate. Goodput 64 B/pulse at 48×27
-  mono, 1480 B/pulse at 96×54 colour — RS costs ~20% at M1, ~7% at M3.
-- **M0 step 3b** geometric + temporal distortion (perspective warp, rolling-shutter tear,
-  exposure blend) — needs finder detection + homography so the eye *locates* the grid
-  rather than being told where it is. **Blocked on a decision**: `M1_MONO` uses a 5×5
-  finder, whose centre scan-line ratio is 1:1:1:1:1 — not distinctive against random
-  payload. QR-style detection wants 1:1:3:1:1, which needs a 7×7 finder plus a quiet
-  separator, costing ~10% more payload. Decide before building detection on top.
-- **M1** air gap crossed: B/W 48×27, two devices, real file, ~0.8 KB/s
+  decodes byte-identical.
+- **M0 step 3a** ✅ inner Reed–Solomon below the CRC gate.
+- **M0 step 3b** ✅ perspective warp + finder detection + homography. The eye now
+  *locates* the grid rather than being told where it is (`cuttl_sim::read`).
+  **`M1_MONO` grew 48×27 → 64×36** and the finder 5×5 → 7×7 plus a separator ring:
+  a 5-wide finder scans as 1:1:1:1:1, which random payload produces constantly, so
+  detection needs QR's 1:1:3:1:1 and that needs 7 cells. Registration is a fixed
+  ~256-cell cost, so the grid grew to amortise it — and more than paid for itself:
+  goodput went 64 → 160 B/pulse at M1.
+- **M0 step 3c** temporal distortion: rolling-shutter tear and the exposure blend
+  between consecutive pulses. Both need two pulses in flight, and tear needs the
+  beacon (pulse counter, duplicated top and bottom) to tell a torn frame from a
+  clean one — so the beacon comes first.
+- **M1** air gap crossed: B/W 64×36, two devices, real file
 - **M2** robustness: bands, tear detect, RS+CRC, manifest stream, BLAKE3, feedback overlay, capture corpus in CI
 - **M3** colour: pilots, cal pulses, equalisation, A/B toggle → real colour-gain number
 - **M4** density: smaller cells, faster pulses, glare masking; QDA + RS-ladder experiments
@@ -109,14 +113,13 @@ cargo run --release -p cuttl-cli -- decode pulses/ -o out.bin
   was forked from, 255-byte blocks, byte symbols, no_std.
 - **Corrected prediction, M0 step 3a** — `brutal` was expected to start decoding once
   RS landed. It did not, and the test that pinned that expectation now records why.
-  Measured mean cells misread per pulse: mono 33.1, colour 638.7. Correcting 33 byte
-  errors needs ~66 of a pulse's 114 bytes as ECC — less room left for payload than
-  the header takes. **The inner code protects the sparse-error regime, not this one.**
-- **Open, M0 step 3a** — the regime RS actually protects is *not yet simulated*.
-  Photometric distortion gives mono exactly 0 errors/pulse below the cliff and 33
-  above it, with no middle ground, so RS currently costs 20% of M1 goodput and buys
-  nothing measurable. Sparse errors arrive with mis-registration in step 3b; re-check
-  `ECC_LEN` against that data before treating 16 as settled.
+  Measured mean cells misread per pulse (photometric only, 4 px/cell): mono 107.9,
+  colour 888.6. Correcting that needs more ECC than a pulse has bytes.
+  **The inner code protects the sparse-error regime, not this one.**
+- **Open, M0 step 3b** — photometric distortion still shows no middle ground: mono
+  gets 0 errors/pulse below the cliff and ~108 above it. The sparse-error regime RS
+  protects comes from *sub-cell sampling error under perspective*, which now exists.
+  Re-check `ECC_LEN` against warp-driven error rates before treating 16 as settled.
 - **Measured, M0 step 2** — photometric distortion barely touches mono. At `Heavy` the
   cell error rate is ~3e-6 and zero pulses are lost; the same preset costs colour ~1.5%
   of pulses. Mono's decision margin is simply enormous. The photometric channel earns

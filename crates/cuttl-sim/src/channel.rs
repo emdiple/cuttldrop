@@ -15,14 +15,19 @@
 //!    behind cross-module colour interference (§1c).
 //! 5. **Noise** — sensor shot and read noise.
 //!
-//! ## Not modelled yet — M0 step 3
+//! Before all of those comes **perspective warp** — the one geometric stage,
+//! applied first because it decides *where* cells are rather than what colour
+//! they read as. Warping an already-blurred frame would blur it twice.
 //!
-//! Perspective warp, rolling-shutter tear, and the exposure blend between
-//! consecutive pulses. All three are *geometric* or *temporal*, and each needs
-//! the eye to locate the grid rather than being told where it is — finder
-//! detection and a homography. Frame loss is not modelled here either: it is
-//! the caller dropping whole pulses, which needs no image processing at all.
+//! ## Not modelled yet
+//!
+//! Rolling-shutter tear and the exposure blend between consecutive pulses.
+//! Both are *temporal*: they need two pulses in flight at once, and tear needs
+//! the beacon (a pulse counter, duplicated top and bottom) before a torn frame
+//! can be told apart from a clean one. Frame loss is not modelled here either —
+//! that is the caller dropping whole pulses, which needs no image processing.
 
+use crate::geom::Homography;
 use image::{Rgb, RgbImage};
 use rand::{Rng, RngExt};
 
@@ -41,6 +46,13 @@ pub struct Channel {
     pub blur_cells: f32,
     /// Gaussian noise sigma, in units of full scale.
     pub noise: f32,
+    /// Perspective warp: each corner is pulled inward by a random fraction of
+    /// the frame, up to this much, on top of a fixed 5% inset.
+    ///
+    /// This is what forces the eye to *locate* the grid rather than assume it.
+    /// Unlike every other field here it changes where cells are, not what
+    /// colour they read as.
+    pub warp: f32,
 }
 
 /// Named severities, so the CLI and tests agree on what "heavy" means.
@@ -53,8 +65,9 @@ pub struct Channel {
 /// collapses to nothing — measured, 100% rejection.
 ///
 /// That is the empirical argument for the inner Reed–Solomon layer (§1b), and
-/// `brutal_is_currently_unsurvivable` pins it so the day RS lands, the test
-/// fails and tells us how much it bought.
+/// `brutal_stays_unsurvivable_even_with_rs` pins it, and records why the
+/// inner code did not rescue it: ~33 misread cells per pulse is far past what
+/// any affordable ECC can absorb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     None,
@@ -73,6 +86,7 @@ impl Channel {
                 vignette: 0.0,
                 blur_cells: 0.0,
                 noise: 0.0,
+                warp: 0.0,
             },
             // A good phone, held reasonably still, in a well-lit room.
             Preset::Light => Self {
@@ -82,6 +96,7 @@ impl Channel {
                 vignette: 0.15,
                 blur_cells: 0.12,
                 noise: 0.015,
+                warp: 0.03,
             },
             // A cheap camera, slightly soft, room lights on, screen at an
             // angle.
@@ -98,6 +113,7 @@ impl Channel {
                 vignette: 0.30,
                 blur_cells: 0.25,
                 noise: 0.035,
+                warp: 0.08,
             },
             // Past the cliff. See the enum docs — this is where the missing
             // inner code stops being a theoretical concern.
@@ -108,6 +124,7 @@ impl Channel {
                 vignette: 0.35,
                 blur_cells: 0.45,
                 noise: 0.06,
+                warp: 0.12,
             },
         }
     }
@@ -126,6 +143,9 @@ pub fn apply(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl R
     if channel.is_identity() {
         return image.clone();
     }
+    // Geometry first: everything below is per-pixel and does not care where the
+    // grid ended up, whereas warping an already-blurred frame would blur twice.
+    let image = &warp(image, channel.warp, rng);
     let (w, h) = image.dimensions();
     let mut buf = vec![0f32; (w * h * 3) as usize];
 
@@ -171,6 +191,68 @@ pub fn apply(image: &RgbImage, channel: &Channel, cell_px: u32, rng: &mut impl R
             }
             out.put_pixel(x, y, Rgb(px));
         }
+    }
+    out
+}
+
+/// Project the frame onto a quad inside itself, leaving a dark surround — a
+/// screen photographed at an angle, from somewhere that is not dead centre.
+///
+/// Destination pixels are mapped *back* through the inverse homography and
+/// bilinearly sampled, which is the standard way round: it guarantees every
+/// output pixel gets a value, where forward-mapping would leave holes.
+fn warp(image: &RgbImage, amount: f32, rng: &mut impl Rng) -> RgbImage {
+    if amount <= 0.0 {
+        return image.clone();
+    }
+    let (w, h) = image.dimensions();
+    let (fw, fh) = (w as f64, h as f64);
+    let span = fw.min(fh);
+    let inset = 0.05 * span;
+    let mut jitter = || inset + rng.random_range(0.0..amount as f64) * span;
+
+    let source = [(0.0, 0.0), (fw, 0.0), (0.0, fh), (fw, fh)];
+    let target = [
+        (jitter(), jitter()),
+        (fw - jitter(), jitter()),
+        (jitter(), fh - jitter()),
+        (fw - jitter(), fh - jitter()),
+    ];
+
+    let Some(inverse) =
+        Homography::from_correspondences(source, target).and_then(|forward| forward.inverse())
+    else {
+        return image.clone();
+    };
+
+    let mut out = RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = inverse.apply(x as f64 + 0.5, y as f64 + 0.5);
+            if sx < 0.0 || sy < 0.0 || sx >= fw || sy >= fh {
+                continue; // dark surround
+            }
+            out.put_pixel(x, y, Rgb(bilinear(image, sx, sy)));
+        }
+    }
+    out
+}
+
+/// Bilinear sample, clamped at the edges.
+pub(crate) fn bilinear(image: &RgbImage, x: f64, y: f64) -> [u8; 3] {
+    let (w, h) = image.dimensions();
+    let x = x.clamp(0.0, w as f64 - 1.0);
+    let y = y.clamp(0.0, h as f64 - 1.0);
+    let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+
+    let mut out = [0u8; 3];
+    for (c, value) in out.iter_mut().enumerate() {
+        let p = |px: u32, py: u32| image.get_pixel(px, py).0[c] as f64;
+        let top = p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx;
+        let bottom = p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx;
+        *value = (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8;
     }
     out
 }

@@ -226,11 +226,11 @@ fn decode(
         let cell_px = image.width() / grid.cols as u32;
         let image = cuttl_sim::channel::apply(&image, &channel, cell_px.max(1), &mut rng);
 
-        match cuttl_sim::sample(&image, grid, palette) {
+        match cuttl_sim::read(&image, grid, palette) {
             Ok(pulse) => {
                 rx.ingest(&pulse);
             }
-            // A frame the eye cannot geometrically resolve is an erasure, not a
+            // A frame whose finders the eye cannot find is an erasure, not a
             // failure — the same treatment a CRC reject gets (§1b).
             Err(_) => unreadable += 1,
         }
