@@ -8,3 +8,6 @@ dist/
 *.wasm.d.ts
 crates/cuttl-wasm/pkg/
 web/pkg/
+# Dev TLS, made by `npm run cert`. Local to one machine and it holds a private
+# key — regenerating it is one command.
+web/.cert/

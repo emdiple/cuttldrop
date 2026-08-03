@@ -53,12 +53,17 @@ survives, and fails loudly rather than returning a corrupt file.
 ### In a browser
 
 ```sh
-cd web && npm install && npm run dev
+cd web && npm install && npm run cert && npm run dev
 ```
 
-Open `/skin.html` on the sending device and `/eye.html` on the receiving one. Camera
-access needs https or localhost, so a phone will want the dev server tunnelled or served
-over TLS.
+Open `/skin.html` on the sending device and `/eye.html` on the receiving one.
+
+`npm run cert` is not optional if either device is a phone. `navigator.mediaDevices`
+does not exist outside a secure context — `localhost` counts, the `https://192.168.x.x`
+a phone uses to reach your laptop does not — so without TLS the eye page loads,
+looks fine, and has no camera. The cert is self-signed, so Safari warns once per
+device: *Show Details → visit this website*. For no warning at all, use `mkcert` and
+install its root on the phone.
 
 ## How it works
 
