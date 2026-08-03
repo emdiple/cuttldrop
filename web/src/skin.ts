@@ -18,6 +18,9 @@ const rateValue = document.querySelector<HTMLOutputElement>("#rate-value")!;
 const setup = document.querySelector<HTMLDivElement>("#setup")!;
 const display = document.querySelector<HTMLCanvasElement>("#pulse")!;
 const status = document.querySelector<HTMLDivElement>("#status")!;
+const statusText = document.querySelector<HTMLSpanElement>("#status-text")!;
+const size = document.querySelector<HTMLInputElement>("#size")!;
+const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: Skin | null = null;
 let index = 0;
@@ -27,6 +30,15 @@ const grid = document.createElement("canvas");
 const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
 const displayCtx = display.getContext("2d")!;
 
+/** Largest whole pixels-per-cell that still fits the entire pulse on screen. */
+function maxScale(): number {
+  if (!skin) return 1;
+  return Math.max(
+    1,
+    Math.floor(Math.min(window.innerWidth / skin.cols, window.innerHeight / skin.rows)),
+  );
+}
+
 /**
  * Size the canvas to an *integer* multiple of the grid.
  *
@@ -34,13 +46,22 @@ const displayCtx = display.getContext("2d")!;
  * upscaling gives some cells one more pixel than others, so the eye's run-length
  * ratios stop being clean 1:1:3:1:1 and finder detection gets harder for no
  * reason. An integer scale makes every cell identical.
+ *
+ * It is also why the size control counts *pixels per cell* rather than a
+ * percentage: a percentage slider would offer positions that round to the same
+ * scale, so most of its travel would do nothing visible. Here every notch is a
+ * different grid, and the number shown is the one that governs whether the eye
+ * can resolve a cell at all — the measured floor is 4 px/cell at the sensor.
  */
 function resize(): void {
   if (!skin) return;
-  const scale = Math.max(
-    1,
-    Math.floor(Math.min(window.innerWidth / skin.cols, window.innerHeight / skin.rows)),
-  );
+  const limit = maxScale();
+  size.max = String(limit);
+  // Keep the chosen scale when it still fits, clamp it when the window shrinks.
+  const scale = Math.min(limit, Math.max(1, Number(size.value) || limit));
+  size.value = String(scale);
+  size.disabled = limit <= 1;
+  sizeValue.value = `${scale} px/cell · ${skin.cols * scale}×${skin.rows * scale}`;
   display.width = skin.cols * scale;
   display.height = skin.rows * scale;
   // Set after every resize: the context resets its state when the canvas is
@@ -81,7 +102,14 @@ function loop(): void {
 
 rate.addEventListener("input", () => {
   rateValue.value = rate.value;
-  if (skin) status.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+  if (skin) statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+});
+
+// Resize repaints from the same pulse index, so dragging the slider never
+// costs the eye a frame of the loop.
+size.addEventListener("input", () => {
+  resize();
+  paint();
 });
 
 // Changing density re-encodes: the grid decides how much fits in a pulse, so
@@ -126,7 +154,9 @@ start.addEventListener("click", () => {
   setup.hidden = true;
   display.hidden = false;
   status.hidden = false;
-  status.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+  statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+  // Start filling the screen; the slider only ever goes down from here.
+  size.value = String(maxScale());
   resize();
   paint();
   loop();
