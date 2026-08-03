@@ -46,7 +46,7 @@ pub mod stream;
 pub use beacon::Beacon;
 pub use error::{Error, Result};
 pub use geom::Homography;
-pub use geometry::{Grid, Region, Strip};
+pub use geometry::{Grid, Profile, Region, Strip};
 pub use palette::Palette;
 pub use pulse::Pulse;
 pub use raster::Raster;
