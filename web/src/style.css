@@ -89,6 +89,23 @@ h1 {
   gap: 1rem;
 }
 
+/*
+ * The way out of either side. Both pages are entered directly by URL as often
+ * as from the landing page — the two devices are told an address, not handed a
+ * link — so browser history is not a reliable back button and this is a real
+ * link home rather than `history.back()`.
+ */
+.back {
+  align-self: flex-start;
+  color: var(--dim);
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.back:hover {
+  color: var(--accent);
+}
+
 .file input {
   display: block;
   margin-bottom: 0.4rem;
@@ -180,6 +197,15 @@ body.skin:has(#pulse:not([hidden])) {
 
 .overlay output {
   font-variant-numeric: tabular-nums;
+}
+
+/* Padded to a thumb-sized target: on the skin this is the stop button. */
+.overlay .back {
+  align-self: auto;
+  margin: -0.3rem -0.4rem -0.3rem 0;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 /* ---------- eye ---------- */

@@ -8,6 +8,7 @@
   </head>
   <body class="skin">
     <div id="setup" class="panel">
+      <a class="back" href="./">&larr; Cuttldrop</a>
       <h1>Skin</h1>
       <label class="file">
         <input type="file" id="file" />
@@ -50,6 +51,12 @@
         <input type="range" id="size" min="1" max="1" value="1" />
         <output id="size-value"></output>
       </label>
+      <!--
+        Reachable while strobing, because the setup panel is not. Following it
+        ends the send — which is the only way to stop one, the loop being
+        endless by design (DESIGN.md §3d).
+      -->
+      <a class="back" href="./">Stop</a>
     </div>
     <script type="module" src="./src/skin.ts"></script>
   </body>
