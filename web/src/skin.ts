@@ -4,6 +4,7 @@
 // things a browser does better: reading a file, sizing a canvas, and pacing.
 
 import init, { Skin } from "../pkg/cuttl_wasm.js";
+import { ScreenAwake } from "./platform.js";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
@@ -24,6 +25,13 @@ const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: Skin | null = null;
 let index = 0;
+
+/**
+ * On this side the screen *is* the transmitter, so a display timeout does not
+ * merely inconvenience the user — it stops the send, silently, with the page
+ * still apparently running. The eye just sees the stream stop.
+ */
+const awake = new ScreenAwake();
 
 /** Off-screen canvas at *grid* resolution; the display is a scaled blit of it. */
 const grid = document.createElement("canvas");
@@ -160,6 +168,7 @@ start.addEventListener("click", () => {
   resize();
   paint();
   loop();
+  void awake.acquire();
 });
 
 window.addEventListener("resize", () => {
