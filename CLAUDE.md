@@ -279,6 +279,37 @@ cd web && npm test        # JS boundary round trip, no browser needed
   shape mismatch is a *portrait* phone giving a 9:16 frame — the answer is to hold the
   eye landscape, not to reshape the format.
 - **Adopted from decimen's field notes** (`COMPARISON-decimen.md` R5–R7): `skin.ts`
-  hardcodes `refreshRate = 60` — measure it from rAF timestamps; iOS delivers 30 fps
-  when asked for `{ideal: 60}` so the M1 probe needs exact constraints with fallback;
-  the eye's capture loop needs a generation counter before any stream-restart UI ships.
+  hardcodes `refreshRate = 60` — measure it from rAF timestamps (**still open**).
+  ~~iOS delivers 30 fps when asked for `{ideal: 60}`~~ and ~~the capture loop needs a
+  generation counter~~ both landed — see below.
+- **iPhone camera handling, modelled on decimen's** (`web/src/platform.ts`, new). Six
+  things, each a silent failure rather than an error:
+  1. **`frameRate: {exact}` first, `{ideal}` as fallback.** iOS accepts `{ideal: 60}`,
+     delivers 30, and reports success — an `exact` constraint is the only one that
+     *rejects* rather than quietly substituting, so the fallback has to exist for
+     cameras that genuinely cannot hit the number. We ask for **30**, not 60: the
+     measured optimum is 20 Hz against 30 fps, and asking higher on a phone tends to
+     buy a lower-resolution sensor mode instead of more frames.
+  2. **Capture width matched to `WORK_WIDTH` (1280), not maximised.** Anything above it
+     is downscaled away; 1920 selects a slower mode for no gain where it counts.
+  3. **`getUserMedia` failures classified**, not printed raw — `NotAllowedError`
+     (permission), `NotReadableError` (another app holds the camera), `NotFound`/
+     `Overconstrained`. Each names the action that fixes it.
+  4. **Retry releases the stream first.** A start that failed after `srcObject` was set
+     left a live camera nobody read; on iOS a second `getUserMedia` over that is itself
+     one of the ways `NotReadableError` happens.
+  5. **Generation counter on the capture loop** (R7) — now genuinely live, because the
+     retry path above makes a second successful `start()` reachable. Two loops racing
+     the `busy` flag double captures and halve decode rate, which reads as a camera
+     fault.
+  6. **Wake locks at both ends**, re-acquired on `visibilitychange` because the lock is
+     dropped when the page hides and *not* restored. On the skin this is not comfort:
+     the screen **is** the transmitter, so a display timeout stops the send with the
+     page still apparently running.
+  Also: capabilities are **probed, never sniffed** — the one UA test (`isMobileWebKit`)
+  is quarantined and used only for quirks with no observable signal. Continuous
+  autofocus is applied where offered; a hunting lens is the top decode killer.
+- **The dev-server certificate warning is not a bug.** `npm run cert` now prefers
+  `mkcert` when installed (signed by a local root → no warning once the root is on the
+  phone) and falls back to openssl (signed by nobody → each device warns once, tap
+  through). Both give a genuine secure context, which is all `mediaDevices` requires.

@@ -96,9 +96,8 @@ decimen shows `v0.2.0 · ed4cbcf` on the page. When the M1 session reports "38 K
 
 ## Tier 1 — measured or adopted, not session-blocking
 
-### 5. iOS `frameRate: {exact}` first, `ideal` fallback (R6) · size S
-Their field note: iOS silently answers `{ideal: 60}` with 30. They confirm exact
-constraints work at 1280 wide. Directly feeds the iPhone-as-eye decision (§11).
+### 5. ~~iOS `frameRate: {exact}` first, `ideal` fallback (R6)~~ — **done 2026-08-05**
+Landed with the rest of the camera work; see item 28. We ask for 30, not their 60.
 
 ### 6. Measure display refresh from rAF timestamps (R5) · size S
 `skin.ts` still hardcodes `refreshRate = 60`. A 120 Hz ProMotion phone and a 60 Hz
@@ -134,7 +133,7 @@ this project gives you is **no network**, not privacy.
 | # | Item | Why it waits |
 |---|---|---|
 | 11 | Decode worker pool | **Downgraded 2026-08-04.** A verified 8 ms/frame means one worker keeps up with a 30 fps camera. The earlier "several-fold multiplier" claim came from a native benchmark that was timing a *failing* decode. Revisit if a phone disagrees. |
-| 12 | Capture-loop generation counter (R7) | Not live: the current "Try again" path cannot double-pump, because every failure returns before `pump()`. Required before any real stream-restart UI. |
+| 12 | ~~Capture-loop generation counter (R7)~~ | **Done 2026-08-05**, and it stopped being theoretical on the way: `offerRetry` makes a second successful `start()` reachable, which is exactly the double-pump the note predicted. |
 | 13 | Finder-geometry dimension estimate | `cols ≈ 7 × grid_px / finder_px` breaks the header/grid circularity properly and retires trial decode (`DESIGN.md` §3d). Also removes most of item 3's cost. QR gets this free from its format info; we chose to owe it. **Now cheaper than it was**: the interior alignment lattice gives a second, denser scale reference, so the estimate has more than four points to work from. |
 | 14 | Worker count + capture width as bring-up knobs | Diagnostics, not configuration — deliberately unlike the density slider we refused. Only worth it if item 11 or the first session says so. |
 | 15 | ~~Display-size slider~~ + restart button | **Slider done 2026-08-04** — in the strobing overlay, counted in whole px/cell because the canvas must stay an integer multiple of the grid. The restart button is still blocked on item 12. |
@@ -184,6 +183,15 @@ Recorded real camera frames replayed in CI — M2's last outstanding item. Needs
     reference than four corners), and the residual field it measures is exactly what a
     glare detector would want, since glare shows up as anchors that fail their contrast
     gate in a region.
+
+28. **iPhone camera handling** — exact/ideal frame-rate negotiation, classified
+    `getUserMedia` errors, retry that releases the stream, capture-loop generation
+    counter, wake locks at both ends, probed (never sniffed) capabilities. Closes
+    items 5 and 12 and the R6/R7 field notes. New shared module `web/src/platform.ts`.
+
+    Still open from that cluster: **item 6**, measuring real display refresh from rAF
+    timestamps. `skin.ts` still hardcodes 60, which is wrong in both directions — a
+    120 Hz ProMotion phone and a 60 Hz laptop.
 
 ## Housekeeping
 

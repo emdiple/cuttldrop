@@ -8,6 +8,7 @@
 
 import { Outcome } from "../pkg/cuttl_wasm.js";
 import type { FromWorker, ToWorker } from "./protocol.js";
+import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.js";
 
 // "auto": the eye works the density out from the first frame it understands,
 // so a density change on the skin needs no matching change here.
@@ -51,6 +52,8 @@ const tiles = {
   newdup: tile("newdup"),
   eta: tile("eta"),
 };
+
+const awake = new ScreenAwake();
 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
@@ -122,26 +125,17 @@ function formatSeconds(seconds: number): string {
 /**
  * Ask the camera to stop helping.
  *
- * Autofocus hunting and auto-exposure both fight a strobing screen. Support for
- * these constraints is patchy and iOS Safari grants almost none of them (§2), so
- * every one is attempted separately and failure is ignored — a camera that
- * refuses still works, just less well.
+ * Autofocus hunting and auto-exposure both fight a strobing screen. Support is
+ * patchy and iOS Safari grants almost none of it, so each is attempted
+ * separately and failure is ignored — a camera that refuses still works, just
+ * less well. Continuous focus is the one that matters most: a lens hunting
+ * between frames blurs whole captures, and the target is never still.
  */
 async function steady(track: MediaStreamTrack): Promise<void> {
-  const capabilities = track.getCapabilities?.() as Record<string, unknown> | undefined;
-  if (!capabilities) return;
-
-  const wanted: Record<string, unknown>[] = [];
-  const supports = (key: string, value: string) =>
-    Array.isArray(capabilities[key]) && (capabilities[key] as string[]).includes(value);
-
-  if (supports("focusMode", "continuous")) wanted.push({ focusMode: "continuous" });
-  if (supports("whiteBalanceMode", "manual")) wanted.push({ whiteBalanceMode: "manual" });
-  if (supports("exposureMode", "manual")) wanted.push({ exposureMode: "manual" });
-
-  for (const constraint of wanted) {
-    await track.applyConstraints({ advanced: [constraint] }).catch(() => {});
-  }
+  const caps = probeCamera(track);
+  if (caps.continuousFocus) await tryConstraint(track, { focusMode: "continuous" });
+  if (caps.manualWhiteBalance) await tryConstraint(track, { whiteBalanceMode: "manual" });
+  if (caps.manualExposure) await tryConstraint(track, { exposureMode: "manual" });
 }
 
 /** Turn recent outcomes into one instruction (§1e — the human is the back channel). */
@@ -216,6 +210,11 @@ function render(): void {
 
 function finish(bytes: Uint8Array, name: string, mime: string): void {
   done = true;
+  // The file is here and verified; holding the camera and the wake lock past
+  // that point drains the battery and leaves the indicator light on for no
+  // reason. `done` already stopped the capture loop.
+  releaseCamera();
+  void awake.release();
   const blob = new Blob([bytes as BlobPart], {
     type: mime || "application/octet-stream",
   });
@@ -265,10 +264,22 @@ function capture(): void {
   );
 }
 
-function pump(): void {
+/**
+ * Which camera session the capture loop belongs to.
+ *
+ * Every `pump` carries the generation it started in and stops the moment that
+ * stops being current. Without it, a second successful `start()` — which the
+ * retry path now makes reachable — leaves the first loop running against a
+ * dead video element, and the two race for the `busy` flag: captures double,
+ * decode rate halves, and the readouts blame the camera. decimen shipped this
+ * bug and fixed it with the same counter (R7).
+ */
+let captureGen = 0;
+
+function pump(gen: number): void {
   const step = () => {
+    if (done || gen !== captureGen) return;
     capture();
-    if (done) return;
     // `requestVideoFrameCallback` fires once per *decoded* video frame, which
     // is what we actually want to sample. Where it is missing (Safari before
     // 15.4, some others) the paint clock is a workable stand-in.
@@ -300,20 +311,82 @@ function unavailable(): string | null {
   return "This browser exposes no camera API.";
 }
 
+/**
+ * Frame rate to ask the camera for.
+ *
+ * 30, not 60. The measured pulse-rate optimum is 20 Hz against a 30 fps camera,
+ * and asking for more on a phone tends to buy a lower-resolution sensor mode
+ * rather than more frames — the wrong trade when px/cell is the binding
+ * constraint.
+ */
+const WANT_FPS = 30;
+
+/** Let go of the camera. Called on completion and on every failed start. */
+function releaseCamera(): void {
+  const stream = video.srcObject as MediaStream | null;
+  stream?.getTracks().forEach((track) => track.stop());
+  video.srcObject = null;
+}
+
+/**
+ * Put the page back where a second attempt can succeed.
+ *
+ * A start that fails halfway leaves a live `MediaStream` nobody is reading. On
+ * a phone that is a camera the user cannot get back without reloading — and on
+ * iOS a second `getUserMedia` while the first stream is open is one of the ways
+ * `NotReadableError` happens. So retry always releases first.
+ */
+function offerRetry(message: string): void {
+  releaseCamera();
+  hint.textContent = message;
+  begin.hidden = false;
+  begin.disabled = false;
+  begin.textContent = "Try again";
+}
+
+/**
+ * Open the camera, `exact` frame rate first and `ideal` as the fallback.
+ *
+ * The two-step is decimen's field note (R6) and it is not defensive coding: iOS
+ * accepts `frameRate: {ideal: 60}`, delivers 30, and reports success. An
+ * `exact` constraint is the only way to find out whether the mode is real —
+ * it *rejects* instead of quietly substituting, which is why the fallback then
+ * has to exist for every camera that genuinely cannot hit the number.
+ */
+async function openCamera(): Promise<MediaStream> {
+  const base: MediaTrackConstraints = {
+    facingMode: { ideal: "environment" },
+    // Matched to the decode width rather than maximised. Anything above
+    // WORK_WIDTH is downscaled away, and asking for 1920 on a phone often
+    // selects a mode that is slower without being sharper where it counts.
+    width: { ideal: WORK_WIDTH },
+    height: { ideal: Math.round((WORK_WIDTH * 9) / 16) },
+  };
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { ...base, frameRate: { exact: WANT_FPS } },
+    });
+  } catch {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { ...base, frameRate: { ideal: WANT_FPS } },
+    });
+  }
+}
+
 async function start(): Promise<void> {
   const blocked = unavailable();
   if (blocked) {
-    hint.textContent = blocked;
+    offerRetry(blocked);
     return;
   }
 
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 } },
-    });
+    stream = await openCamera();
   } catch (error) {
-    hint.textContent = `No camera: ${error}`;
+    offerRetry(cameraError(error));
     return;
   }
 
@@ -324,25 +397,31 @@ async function start(): Promise<void> {
   try {
     await video.play();
   } catch (error) {
-    hint.textContent = `Camera opened but would not play: ${error}`;
+    offerRetry(`Camera opened but would not play: ${error}`);
     return;
   }
   begin.hidden = true;
   const track = stream.getVideoTracks()[0];
   await steady(track);
+  // The camera is the only thing on this page that matters, and a display
+  // timeout stops it dead with no message at all.
+  void awake.acquire();
 
-  // What the camera *granted*, not what we asked for. iOS answers
-  // `frameRate: {ideal: 60}` with 30 and says nothing about it, so the only way
-  // to know the sender's pulse rate is sane is to print what actually arrived.
+  // What the camera *granted*, not what we asked for. This is why the exact/
+  // ideal dance above exists, and printing the gap is what makes it visible:
+  // a 30 fps request answered with 15 means the sender's pulse rate is wrong
+  // for this device, and nothing else on the page would ever say so.
   const settings = track.getSettings();
-  const fps = settings.frameRate ? `@${Math.round(settings.frameRate)}` : "";
+  const granted = Math.round(settings.frameRate ?? 0);
+  const fps = granted ? `@${granted} fps${granted === WANT_FPS ? "" : ` (asked ${WANT_FPS})`}` : "";
   cameraMode.textContent =
     settings.width && settings.height
       ? `camera ${settings.width}×${settings.height}${fps} · decoding at ${WORK_WIDTH} px wide`
       : "camera — resolution unreported";
   baseCameraMode = cameraMode.textContent;
 
-  pump();
+  captureGen += 1;
+  pump(captureGen);
 }
 
 /**
