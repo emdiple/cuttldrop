@@ -38,13 +38,21 @@ const grid = document.createElement("canvas");
 const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
 const displayCtx = display.getContext("2d")!;
 
+/**
+ * Height the status overlay owns at the bottom of the screen, in px.
+ *
+ * Kept out of the pulse's budget: the overlay is fixed and the canvas would
+ * otherwise grow underneath it, hiding cells behind the size slider — which at
+ * the bottom edge is where the second beacon strip lives. Must match
+ * `--overlay-room` in style.css, which reserves the same band for layout.
+ */
+const OVERLAY_ROOM = 56;
+
 /** Largest whole pixels-per-cell that still fits the entire pulse on screen. */
 function maxScale(): number {
   if (!skin) return 1;
-  return Math.max(
-    1,
-    Math.floor(Math.min(window.innerWidth / skin.cols, window.innerHeight / skin.rows)),
-  );
+  const room = Math.max(1, window.innerHeight - OVERLAY_ROOM);
+  return Math.max(1, Math.floor(Math.min(window.innerWidth / skin.cols, room / skin.rows)));
 }
 
 /**
