@@ -11,6 +11,19 @@
   box-sizing: border-box;
 }
 
+/*
+ * `hidden` must actually hide.
+ *
+ * The attribute is styled by the UA sheet as `display: none`, which *any* author
+ * `display` rule outranks — so `.panel { display: flex }` quietly defeated
+ * `setup.hidden = true` and the setup panel stayed on screen through a transfer,
+ * pushing the pulse down under the overlay. Every element this app toggles has a
+ * display rule of its own, so the guard belongs here rather than in each one.
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -169,7 +182,15 @@ body.skin:has(#pulse:not([hidden])) {
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 0.85rem;
+  justify-content: center;
+  /*
+   * Wrap to a second line rather than squeeze. Without this a phone-width screen
+   * shrank the status text to one word per line, turning the pill into a tall
+   * column down the middle of the pulse. Wrapping is safe now that the pulse is
+   * sized from the overlay's *measured* height.
+   */
+  flex-wrap: wrap;
+  gap: 0.3rem 0.85rem;
   max-width: calc(100vw - 1.5rem);
   padding: 0.3rem 0.8rem;
   border-radius: 999px;
@@ -201,6 +222,14 @@ body.skin:has(#pulse:not([hidden])) {
 
 .overlay output {
   font-variant-numeric: tabular-nums;
+}
+
+/* Least important thing in the pill, so it is the one that gets truncated. */
+#status-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Padded to a thumb-sized target: on the skin this is the stop button. */

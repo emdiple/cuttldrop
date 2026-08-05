@@ -144,7 +144,7 @@ function loop(): void {
 
 rate.addEventListener("input", () => {
   rateValue.value = rate.value;
-  if (skin) statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+  if (skin) statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
 });
 
 // Resize repaints from the same pulse index, so dragging the slider never
@@ -179,6 +179,14 @@ file.addEventListener("change", async () => {
 
   grid.width = skin.cols;
   grid.height = skin.rows;
+  // A re-encode is a different grid and a different loop length. If one is
+  // already on screen, refit it: the display canvas is still sized for the old
+  // profile, and blitting the new grid into it would stretch every cell.
+  index = 0;
+  if (!display.hidden) {
+    statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
+    refit();
+  }
   detail.textContent =
     `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
     `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
@@ -196,7 +204,7 @@ start.addEventListener("click", () => {
   setup.hidden = true;
   display.hidden = false;
   status.hidden = false;
-  statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses in the loop`;
+  statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
   // Start filling the screen; the slider only ever goes down from here.
   size.value = String(maxScale());
   resize();
