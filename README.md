@@ -64,6 +64,12 @@ does not exist outside a secure context — `localhost` counts, the `https://192
 a phone uses to reach your laptop does not — so without TLS the eye page loads,
 looks fine, and has no camera.
 
+Open the address Vite prints under `Network:`, **with the `https://` on the front**. A
+bare `192.168.x.x:5173` makes the browser try http, which this server does not speak —
+the empty reply looks exactly like "the server isn't on the network". The dev server
+warns if the certificate no longer covers the current address, which happens whenever the
+machine changes network: a phone hotspot hands out a fresh lease every reconnect.
+
 **The certificate warning is expected.** A self-signed cert is signed by nobody, so the
 browser correctly says so: *Show Details → visit this website* on Safari, *Advanced →
 Proceed* on Chrome, once per device. It has no bearing on the camera — a secure context

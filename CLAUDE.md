@@ -309,6 +309,14 @@ cd web && npm test        # JS boundary round trip, no browser needed
   Also: capabilities are **probed, never sniffed** — the one UA test (`isMobileWebKit`)
   is quarantined and used only for quirks with no observable signal. Continuous
   autofocus is applied where offered; a hunting lens is the top decode killer.
+- **"Can't see the app on the network" is almost never the network.** Two causes, both
+  silent. The server is https-only, so a bare `172.20.10.3:5173` makes the browser try
+  http, get an empty reply, and report a connection failure — the scheme has to be typed.
+  And the cert is bound to *addresses*, which move: a phone hotspot re-leases on every
+  reconnect, so a cert made an hour ago names a machine that has since become a different
+  one. `vite.config.ts` now compares the cert's SANs against the live interfaces at
+  listen time and warns; silent when they match. `--host` is redundant — the config has
+  always set `host: true`.
 - **The dev-server certificate warning is not a bug.** `npm run cert` now prefers
   `mkcert` when installed (signed by a local root → no warning once the root is on the
   phone) and falls back to openssl (signed by nobody → each device warns once, tap
