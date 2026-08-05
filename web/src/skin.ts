@@ -39,20 +39,42 @@ const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
 const displayCtx = display.getContext("2d")!;
 
 /**
- * Height the status overlay owns at the bottom of the screen, in px.
+ * The viewport the user can actually see.
  *
- * Kept out of the pulse's budget: the overlay is fixed and the canvas would
- * otherwise grow underneath it, hiding cells behind the size slider — which at
- * the bottom edge is where the second beacon strip lives. Must match
- * `--overlay-room` in style.css, which reserves the same band for layout.
+ * `innerHeight` is the wrong number on a phone: mobile Safari counts the strip
+ * under a retracted URL bar, so a canvas sized to it is taller than the screen
+ * and its bottom rows — the *second beacon strip* — sit off the visible area or
+ * under the overlay. `visualViewport` is what is on the glass.
  */
-const OVERLAY_ROOM = 56;
+function viewport(): { width: number; height: number } {
+  const vv = window.visualViewport;
+  return {
+    width: Math.floor(vv?.width ?? window.innerWidth),
+    height: Math.floor(vv?.height ?? window.innerHeight),
+  };
+}
+
+/**
+ * Height the status overlay owns at the bottom, measured rather than assumed.
+ *
+ * A constant here was wrong in both directions: the overlay grows with the OS
+ * text size and with the range control's native height, and it sits above the
+ * home-indicator inset on an iPhone. Measuring from the overlay's own top edge
+ * folds its height, its bottom offset and the safe-area inset into one number
+ * that cannot drift from what is on screen.
+ */
+function overlayRoom(): number {
+  if (status.hidden) return 0;
+  const box = status.getBoundingClientRect();
+  return Math.max(0, Math.ceil(viewport().height - box.top));
+}
 
 /** Largest whole pixels-per-cell that still fits the entire pulse on screen. */
 function maxScale(): number {
   if (!skin) return 1;
-  const room = Math.max(1, window.innerHeight - OVERLAY_ROOM);
-  return Math.max(1, Math.floor(Math.min(window.innerWidth / skin.cols, room / skin.rows)));
+  const view = viewport();
+  const room = Math.max(1, view.height - overlayRoom());
+  return Math.max(1, Math.floor(Math.min(view.width / skin.cols, room / skin.rows)));
 }
 
 /**
@@ -71,6 +93,10 @@ function maxScale(): number {
  */
 function resize(): void {
   if (!skin) return;
+  // Publish the measured reserve so the CSS that *centres* the pulse and the
+  // arithmetic that *sizes* it agree by construction. The stylesheet's value is
+  // only ever the starting guess, used for the frame before the first measure.
+  document.body.style.setProperty("--overlay-room", `${overlayRoom()}px`);
   const limit = maxScale();
   size.max = String(limit);
   // Keep the chosen scale when it still fits, clamp it when the window shrinks.
@@ -179,9 +205,27 @@ start.addEventListener("click", () => {
   void awake.acquire();
 });
 
-window.addEventListener("resize", () => {
+function refit(): void {
   resize();
   paint();
-});
+}
+
+window.addEventListener("resize", refit);
+window.addEventListener("orientationchange", refit);
+// The URL bar sliding in and out changes the visible height without firing a
+// window resize on iOS; without this the pulse keeps the size it had when the
+// bar was hidden and runs under the overlay.
+window.visualViewport?.addEventListener("resize", refit);
+
+// The overlay's own height moves with the OS text size and with how wide the
+// numbers in it are. Refit only when its *height* changes: it is re-laid-out on
+// every scale change, and reacting to width would be a loop.
+let lastRoom = -1;
+new ResizeObserver(() => {
+  const room = overlayRoom();
+  if (room === lastRoom) return;
+  lastRoom = room;
+  refit();
+}).observe(status);
 
 await init();

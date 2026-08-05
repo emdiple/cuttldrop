@@ -142,8 +142,11 @@ button:disabled {
  *
  * `--overlay-room` is the one number: the padding here keeps the canvas clear of
  * the overlay, and `maxScale()` in skin.ts subtracts the same amount so the
- * largest scale on the slider is one that actually fits above it. Change it in
- * both places or the two disagree at the top of the slider's travel.
+ * largest scale on the slider is one that actually fits above it. skin.ts
+ * *measures* the overlay and overwrites this value on every fit — the number
+ * below is only the guess used for the first frame, and is deliberately the
+ * pessimistic direction: too much room costs one px/cell, too little hides the
+ * bottom beacon strip.
  */
 body.skin:has(#pulse:not([hidden])) {
   --overlay-room: 3.5rem;
@@ -160,7 +163,8 @@ body.skin:has(#pulse:not([hidden])) {
 
 .overlay {
   position: fixed;
-  bottom: 0.75rem;
+  /* Clear of the home indicator, which would otherwise sit on the slider. */
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
