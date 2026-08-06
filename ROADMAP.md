@@ -193,6 +193,18 @@ Recorded real camera frames replayed in CI — M2's last outstanding item. Needs
     timestamps. `skin.ts` still hardcodes 60, which is wrong in both directions — a
     120 Hz ProMotion phone and a 60 Hz laptop.
 
+29. ~~Both screens were phone-shaped at every width~~ — **done 2026-08-06.** Above
+    `62rem` each is now a two-column shell with a resident panel: skin controls left of
+    the pulse, eye readout right of the preview. Below it, unchanged — one thing at a
+    time, chrome floating. Neither page scrolls at any width (`100svh` +
+    `overflow: hidden`, panels scroll internally).
+
+    The load-bearing change is that the pulse is fitted to a measured `#stage` element
+    instead of viewport-minus-chrome arithmetic, so one `maxScale()` serves both layouts
+    and cannot disagree with what CSS did. Verified over CDP at 1440×900 and 390×844:
+    pulse inside the stage, no overlap with the controls, no page scroll, 16 px/cell and
+    6 px/cell respectively.
+
 ## Housekeeping
 
 26. ~~No LICENSE file~~ — **done 2026-08-04.** Apache-2.0, and `Cargo.toml` narrowed
