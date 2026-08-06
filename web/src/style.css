@@ -120,6 +120,19 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Subordinate to the primary action: this is the bring-up path, not the point
+ * of the page. Quiet enough that a phone user never reads it as the way in. */
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--edge);
+  color: var(--dim);
+  font-weight: 500;
+}
+
+button.secondary:disabled {
+  opacity: 0.5;
+}
+
 input[type="range"] {
   accent-color: var(--accent);
 }

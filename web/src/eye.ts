@@ -37,6 +37,7 @@ const RATE_WINDOW = 2;
 
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
 const begin = document.querySelector<HTMLButtonElement>("#begin")!;
+const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
@@ -342,6 +343,8 @@ function offerRetry(message: string): void {
   begin.hidden = false;
   begin.disabled = false;
   begin.textContent = "Try again";
+  beginScreen.hidden = !hasScreenCapture;
+  beginScreen.disabled = false;
 }
 
 /**
@@ -375,7 +378,28 @@ async function openCamera(): Promise<MediaStream> {
   }
 }
 
-async function start(): Promise<void> {
+/**
+ * Capture a window or screen instead of a camera.
+ *
+ * This is how the browser half gets tested without a second device: put the
+ * skin in its own window, share that window here, and every stage downstream is
+ * the one that runs for real — rVFC pacing, the transferred-buffer hop to the
+ * worker, locate, homography, sampling, RS, the CRC gate, the fountain, BLAKE3.
+ *
+ * What it deliberately does *not* test is the optics: no perspective, no
+ * rolling-shutter tear, no glare, no lens blur, no auto-exposure fighting a
+ * strobing panel. Those are exactly the things `cuttl-sim` models and the M1
+ * observable exists to measure. A pass here means the software is right; it
+ * says nothing about whether a camera can read the screen.
+ */
+async function openScreen(): Promise<MediaStream> {
+  return await navigator.mediaDevices.getDisplayMedia({
+    audio: false,
+    video: { frameRate: { ideal: WANT_FPS } },
+  });
+}
+
+async function start(source: () => Promise<MediaStream> = openCamera): Promise<void> {
   const blocked = unavailable();
   if (blocked) {
     offerRetry(blocked);
@@ -384,7 +408,7 @@ async function start(): Promise<void> {
 
   let stream: MediaStream;
   try {
-    stream = await openCamera();
+    stream = await source();
   } catch (error) {
     offerRetry(cameraError(error));
     return;
@@ -401,6 +425,7 @@ async function start(): Promise<void> {
     return;
   }
   begin.hidden = true;
+  beginScreen.hidden = true;
   const track = stream.getVideoTracks()[0];
   await steady(track);
   // The camera is the only thing on this page that matters, and a display
@@ -414,10 +439,13 @@ async function start(): Promise<void> {
   const settings = track.getSettings();
   const granted = Math.round(settings.frameRate ?? 0);
   const fps = granted ? `@${granted} fps${granted === WANT_FPS ? "" : ` (asked ${WANT_FPS})`}` : "";
+  // Say which source this is. A screen-capture run has no optics in it, and a
+  // goodput number from one must never be quoted as if a camera produced it.
+  const kind = source === openScreen ? "screen" : "camera";
   cameraMode.textContent =
     settings.width && settings.height
-      ? `camera ${settings.width}×${settings.height}${fps} · decoding at ${WORK_WIDTH} px wide`
-      : "camera — resolution unreported";
+      ? `${kind} ${settings.width}×${settings.height}${fps} · decoding at ${WORK_WIDTH} px wide`
+      : `${kind} — resolution unreported`;
   baseCameraMode = cameraMode.textContent;
 
   captureGen += 1;
@@ -437,18 +465,29 @@ const ready = new Promise<void>((resolve) => {
   workerReady = resolve;
 });
 
-begin.addEventListener("click", () => {
-  begin.disabled = true;
-  begin.textContent = "Starting…";
-  hint.textContent = "Opening the camera…";
-  void ready.then(start).then(() => {
-    // Still visible means start() bailed and wrote its reason into the hint.
-    if (!begin.hidden) {
-      begin.disabled = false;
-      begin.textContent = "Try again";
-    }
+/** Present on desktop, absent on every iOS browser. */
+const hasScreenCapture =
+  typeof navigator.mediaDevices?.getDisplayMedia === "function";
+beginScreen.hidden = !hasScreenCapture;
+
+function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>, opening: string) {
+  button.addEventListener("click", () => {
+    begin.disabled = true;
+    beginScreen.disabled = true;
+    button.textContent = "Starting…";
+    hint.textContent = opening;
+    void ready.then(() => start(source)).then(() => {
+      // Still visible means start() bailed and wrote its reason into the hint.
+      if (!begin.hidden) {
+        begin.disabled = false;
+        begin.textContent = "Try again";
+      }
+    });
   });
-});
+}
+
+wire(begin, openCamera, "Opening the camera…");
+wire(beginScreen, openScreen, "Pick the window showing the skin…");
 
 worker.onmessage = (event: MessageEvent<FromWorker>) => {
   const message = event.data;

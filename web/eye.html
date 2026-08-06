@@ -40,6 +40,12 @@
         and is the difference between working and silently not.
       -->
       <button id="begin">Start camera</button>
+      <!--
+        The whole browser pipeline without a second device: share the skin's
+        window and the eye reads it as if it were a camera. Hidden where
+        getDisplayMedia does not exist, which is every browser on iOS.
+      -->
+      <button id="begin-screen" class="secondary" hidden>Read a window instead</button>
       <div class="bar"><div id="bar-fill"></div></div>
       <p id="progress" class="detail">0 / &mdash; symbols</p>
       <a id="download" hidden download>Save file</a>

@@ -77,6 +77,28 @@ is a secure context once the connection is accepted. If you have `mkcert` instal
 `npm run cert` uses it instead and prints how to install its root on the phone, after
 which there is no warning at all.
 
+### Without a second device
+
+Three of the four test surfaces need no camera and no network at all.
+
+```sh
+cargo test --workspace                    # 99 tests, the full synthetic optical channel
+cargo run --release -p cuttl-cli -- encode f.pdf -o pulses/ && \
+cargo run --release -p cuttl-cli -- decode pulses/ -o out.pdf --distort heavy --loss 0.5
+cd web && npm test                        # file -> WASM skin -> WASM eye -> file, in Node
+```
+
+The fourth is the browser, and it has a one-machine mode. Open `/skin.html` in its own
+window, open `/eye.html` in another, and press **Read a window instead** — the eye takes
+a `getDisplayMedia` stream in place of a camera and reads the skin's window directly.
+Everything downstream is the real path: rVFC pacing, the transferred-buffer hop to the
+worker, locate, homography, sampling, Reed-Solomon, the CRC gate, the fountain, BLAKE3.
+
+What it does **not** exercise is the optics — no perspective, no rolling-shutter tear,
+no glare, no lens blur, no auto-exposure fighting a strobing panel. A pass means the
+software is right. It is not the M1 observable and a goodput figure from it must never
+be quoted as one, which is why the readout says `screen` rather than `camera`.
+
 ## How it works
 
 The interesting part is not the picture, it is what is underneath it. This is a
