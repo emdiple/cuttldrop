@@ -699,6 +699,66 @@ mod tests {
         }
     }
 
+    /// End-to-end goodput for every profile, through the *timed* shutter model.
+    ///
+    /// This is the measurement the README table did not have. Its "At 20 Hz"
+    /// column was arithmetic — goodput per pulse times the pulse rate — which
+    /// silently assumes every capture lands clean. The timed model does not
+    /// assume that: tear and blend emerge from pulse period versus shutter
+    /// timing, so what comes out is the rate a receiver actually sustains,
+    /// including the frames it loses.
+    ///
+    /// Object size scales with the profile so every run is a comparable ~120
+    /// pulse loop. A fixed byte count would put m4 into the short-loop regime
+    /// that `a_short_loop_needs_the_skin_to_repeat_itself` exists to warn about,
+    /// and measure that instead of density.
+    #[test]
+    #[ignore = "measurement tool; the operating point is pinned by faster_strobing_*"]
+    fn profile_sweep_prints_goodput_by_profile() {
+        const TARGET_PULSES: usize = 120;
+        // Clear of 30 Hz: at the capture rate the phase relationship freezes and
+        // the transfer is a lottery — see phase_lock_at_the_capture_rate_*.
+        // 30 is included deliberately: it *is* the capture rate, and watching it
+        // starve here is the same hazard phase_lock_* pins, seen per profile.
+        let rates = [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0];
+
+        println!("\nprofile   object  B/pulse   goodput by pulse rate");
+        for profile in Profile::ALL {
+            let (grid, palette) = profile.parts();
+            // encode() applies overhead 3.0, so the loop is ~4K pulses long.
+            let per_pulse = grid.payload_bytes(palette);
+            let len = (TARGET_PULSES / 4).max(1) * per_pulse;
+            let object: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(29) ^ (i >> 5)) as u8).collect();
+
+            let mut cells = String::new();
+            for &hz in &rates {
+                let mut rates_seen = Vec::new();
+                let mut torn_seen = 0u32;
+                for seed in 0..3u64 {
+                    if let Some((secs, torn, _)) =
+                        timed_transfer(&object, grid, palette, hz, 240.0, 300 + seed)
+                    {
+                        rates_seen.push(object.len() as f64 / secs / 1024.0);
+                        torn_seen += torn;
+                    }
+                }
+                if rates_seen.is_empty() {
+                    cells += "      starved";
+                } else {
+                    let mean = rates_seen.iter().sum::<f64>() / rates_seen.len() as f64;
+                    cells += &format!("  {mean:>7.1} KB/s t{:<4}", torn_seen / 3);
+                }
+            }
+            println!(
+                "{:>7}  {:>7}  {:>7}  {cells}",
+                profile.name(),
+                object.len(),
+                per_pulse
+            );
+        }
+        println!("(columns: {rates:?} Hz; t = mean torn frames per run)");
+    }
+
     /// The rate sweep's headline, pinned: 20 pulses/s beats the old 10 Hz
     /// default handily. If this fails, either the shutter model or the codec
     /// regressed in a way that changes the recommended operating point — and

@@ -160,12 +160,22 @@ privacy. Optional passphrase encryption is on the roadmap (`COMPARISON-decimen.m
 Measured, not estimated. Goodput is payload bytes per pulse after every layer of
 overhead.
 
-| Profile | Grid | Bits/cell | Payload cells | Goodput | At 20 Hz |
-|---|---|---|---|---|---|
-| M1 — safe | 64 × 36 | 1 | 73% | 160 B/pulse | 3.2 KB/s |
-| M2 — dense | 192 × 108 | 1 | 89% | **2064 B/pulse** | 41 KB/s |
-| M3 — colour | 96 × 54 | 3 | 80% | 1360 B/pulse | 27 KB/s |
-| M4 — dense colour | 192 × 108 | 3 | 89% | **6336 B/pulse** | 127 KB/s |
+| Profile | Grid | Bits/cell | Payload cells | Goodput | At 20 Hz | At 25 Hz |
+|---|---|---|---|---|---|---|
+| M1 — safe | 64 × 36 | 1 | 73% | 160 B/pulse | 2.7 KB/s | 2.6 KB/s |
+| M2 — dense | 192 × 108 | 1 | 89% | **2064 B/pulse** | 37.4 KB/s | **43.7 KB/s** |
+| M3 — colour | 96 × 54 | 3 | 80% | 1360 B/pulse | 24.7 KB/s | 28.3 KB/s |
+| M4 — dense colour | 192 × 108 | 3 | 89% | **6336 B/pulse** | 114.2 KB/s | **130.2 KB/s** |
+
+The last two columns are measured *end to end* through the timed shutter model — a
+30 fps camera with phone shutter timing watching a screen flipping at the stated rate,
+with every torn and rejected frame charged against the total. They are not goodput
+multiplied by pulse rate. That arithmetic runs 9–16% optimistic, because it assumes
+every capture lands clean and none do. Reproduce with:
+
+```sh
+cargo test -p cuttl-sim --release -- --ignored --nocapture profile_sweep
+```
 
 The skin picks one; the eye works out which by trying each grid until one passes the
 CRC gate, so density is a menu on one device only.
@@ -177,10 +187,16 @@ number. And **the payload column is why**: registration costs the same four find
 whatever the grid, so a 9× cell count buys 13× the bytes. Small grids do not merely
 carry less, they spend a quarter of themselves saying where they are.
 
-20 Hz is the measured optimum against a 30 fps camera, and 4 px/cell at the sensor is
-the measured floor — the cliff is between 3 and 2. Every figure here comes out of the
-simulator. Nothing in this table has met a real camera yet, which is exactly what the
-eye's goodput readout exists to settle.
+**25 Hz, not 20, is the peak for the dense profiles** — worth 15% on both M2 and M4, and
+enough to clear what the old arithmetic promised. The 20 Hz figure was measured on M1
+alone, where the two rates sit inside the noise of each other. Stay clear of 30: that is
+the capture rate, the phase relationship freezes there, and goodput drops while torn
+frames roughly triple. Past 35 the shutter window approaches the pulse period and the
+whole thing collapses.
+
+4 px/cell at the sensor is the measured floor — the cliff is between 3 and 2. Every
+figure here comes out of the simulator. Nothing in this table has met a real camera yet,
+which is exactly what the eye's goodput readout exists to settle.
 
 ## Layout
 
