@@ -7,35 +7,60 @@
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body class="eye">
-    <video id="camera" playsinline muted autoplay></video>
-    <div class="readout">
-      <a class="back" href="./">&larr; Cuttldrop</a>
-      <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+    <!--
+      The camera fills the screen and everything else floats over it. The human
+      is aiming a lens at a moving target from arm's length, so the preview is
+      the primary control surface and the numbers are secondary.
+    -->
+    <div class="stage">
+      <video id="camera" playsinline muted autoplay></video>
+
       <!--
-        iOS wants a user gesture behind getUserMedia and play(); a page-load
-        prompt is the one a phone is likeliest to refuse. One tap costs nothing
-        and is the difference between working and silently not.
+        Framing guide. The binding constraint is px/cell at the sensor, and the
+        only lever the human has over it is how much of the frame the sending
+        screen fills. Saying "fill this box" is more actionable than saying
+        MOVE CLOSER after the fact.
       -->
-      <button id="begin">Start camera</button>
-      <div class="bar"><div id="bar-fill"></div></div>
-      <p id="progress" class="detail">0 / &mdash; symbols</p>
-      <p id="counters" class="counters"></p>
-      <!--
-        Instrumentation, not decoration. Every performance number this project
-        owns is simulated; these tiles are how the M1 air-gap run reports back
-        what a real sensor actually did (DESIGN.md §5).
-      -->
-      <div class="tiles">
-        <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
-        <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
-        <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
-        <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
-        <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
-        <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
+      <div class="aim" aria-hidden="true"><span></span></div>
+
+      <a class="back over" href="./">&larr; Cuttldrop</a>
+
+      <div class="readout">
+        <!-- The back channel (§1e). Largest thing on the page, deliberately. -->
+        <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+        <!--
+          iOS wants a user gesture behind getUserMedia and play(); a page-load
+          prompt is the one a phone is likeliest to refuse. One tap costs nothing
+          and is the difference between working and silently not.
+        -->
+        <button id="begin">Start camera</button>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="progress" class="detail">0 / &mdash; symbols</p>
+        <a id="download" hidden download>Save file</a>
+
+        <!--
+          Instrumentation, not decoration. Every performance number this project
+          owns is simulated; these tiles are how the M1 air-gap run reports back
+          what a real sensor actually did (DESIGN.md §5). Folded away because
+          they are for the operator of an experiment, not for someone moving a
+          photo between two phones.
+        -->
+        <details class="details">
+          <summary>Measurements</summary>
+          <div class="tiles">
+            <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
+            <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
+            <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
+            <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
+            <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
+            <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
+          </div>
+          <p id="counters" class="counters"></p>
+          <p id="camera-mode" class="footnote">camera &mdash;</p>
+        </details>
       </div>
-      <p id="camera-mode" class="footnote">camera &mdash;</p>
-      <a id="download" hidden download>Save file</a>
     </div>
+
     <script type="module" src="./src/eye.ts"></script>
   </body>
 </html>

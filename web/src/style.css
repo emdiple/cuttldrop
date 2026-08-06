@@ -1,9 +1,24 @@
+/*
+ * Two screens with opposite jobs.
+ *
+ * The skin's screen *is* the transmitter, so its design rule is subtractive:
+ * during a send, anything lit that is not payload is emissive area inside the
+ * receiving camera's frame, competing with the pulse for auto-exposure. The
+ * controls are therefore summoned, not resident.
+ *
+ * The eye's screen is the only feedback channel that exists (§1e — the human is
+ * the back channel), so its rule is the opposite: one instruction, large enough
+ * to read at arm's length while aiming, with the instrumentation folded away.
+ */
+
 :root {
   --ink: #e9e6df;
   --dim: #8b8880;
   --bg: #0b0c0e;
   --edge: #23252a;
   --accent: #4fd6b8;
+  --warn: #e8b44f;
+  --tap: 44px; /* smallest comfortable touch target */
   color-scheme: dark;
 }
 
@@ -16,9 +31,9 @@
  *
  * The attribute is styled by the UA sheet as `display: none`, which *any* author
  * `display` rule outranks — so `.panel { display: flex }` quietly defeated
- * `setup.hidden = true` and the setup panel stayed on screen through a transfer,
- * pushing the pulse down under the overlay. Every element this app toggles has a
- * display rule of its own, so the guard belongs here rather than in each one.
+ * `setup.hidden = true` and the setup panel stayed on screen through a transfer.
+ * Every element this app toggles has a display rule of its own, so the guard
+ * belongs here rather than in each one.
  */
 [hidden] {
   display: none !important;
@@ -30,111 +45,57 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 h1 {
   margin: 0;
-  font-size: 1.6rem;
-  letter-spacing: -0.01em;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
 }
 
+.tagline,
 .detail,
 .hint,
 .footnote,
 .counters {
-  color: var(--dim);
-  font-size: 0.85rem;
-  margin: 0;
-}
-
-/* ---------- landing ---------- */
-
-.landing {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: 4rem 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.tagline {
   margin: 0;
   color: var(--dim);
-}
-
-.landing nav {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  padding: 1rem 1.1rem;
-  border: 1px solid var(--edge);
-  border-radius: 10px;
-  text-decoration: none;
-  color: inherit;
-  transition: border-color 120ms ease;
-}
-
-.card:hover {
-  border-color: var(--accent);
-}
-
-.card span {
-  color: var(--dim);
-  font-size: 0.85rem;
-}
-
-/* ---------- skin ---------- */
-
-.panel {
-  max-width: 30rem;
-  margin: 0 auto;
-  padding: 3rem 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-/*
- * The way out of either side. Both pages are entered directly by URL as often
- * as from the landing page — the two devices are told an address, not handed a
- * link — so browser history is not a reliable back button and this is a real
- * link home rather than `history.back()`.
- */
-.back {
-  align-self: flex-start;
-  color: var(--dim);
-  font-size: 0.85rem;
-  text-decoration: none;
-}
-
-.back:hover {
-  color: var(--accent);
-}
-
-.file input {
-  display: block;
-  margin-bottom: 0.4rem;
-}
-
-.slider {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
   font-size: 0.9rem;
 }
 
+.footnote,
+.counters {
+  font-size: 0.8rem;
+}
+
+/*
+ * The way out of either side. Both pages are entered directly by URL as often as
+ * from the landing page — the two devices are told an address, not handed a link
+ * — so browser history is not a reliable back button and this is a real link
+ * home rather than `history.back()`.
+ */
+.back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--dim);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.back:hover,
+.back:focus-visible {
+  color: var(--accent);
+}
+
 button {
-  padding: 0.6rem 1rem;
+  min-height: var(--tap);
+  padding: 0.7rem 1.1rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--accent);
   color: #06231d;
   font: inherit;
@@ -148,18 +109,105 @@ button:disabled {
   cursor: not-allowed;
 }
 
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+/* ---------- landing ---------- */
+
+.landing {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem calc(4rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.landing nav {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 120ms ease;
+}
+
+.card:hover,
+.card:focus-visible {
+  border-color: var(--accent);
+}
+
+.card span {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+/* ---------- skin: composing ---------- */
+
+.panel {
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem calc(2rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+}
+
+/*
+ * A field is a stack: name, control, consequence. The consequence line is the
+ * point — none of these settings has a right answer, and there is no back
+ * channel to discover one with, so each has to say what it trades away.
+ */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.field .label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.field select,
+.field input[type="file"] {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: #14161a;
+  color: inherit;
+  font: inherit;
+}
+
+.field input[type="range"] {
+  width: 100%;
+  min-height: var(--tap);
+}
+
+/* ---------- skin: sending ---------- */
+
 /*
  * The pulse canvas is the payload — nothing may overlap or tint it, and that
- * includes the status overlay. The overlay is fixed to the bottom, so the pulse
- * is centred in what is left above it rather than in the whole viewport.
+ * includes the controls. They are fixed to the bottom, so the pulse is centred
+ * in what is left above them rather than in the whole viewport.
  *
- * `--overlay-room` is the one number: the padding here keeps the canvas clear of
- * the overlay, and `maxScale()` in skin.ts subtracts the same amount so the
- * largest scale on the slider is one that actually fits above it. skin.ts
- * *measures* the overlay and overwrites this value on every fit — the number
- * below is only the guess used for the first frame, and is deliberately the
- * pessimistic direction: too much room costs one px/cell, too little hides the
- * bottom beacon strip.
+ * `--overlay-room` is the one number: the padding here keeps the canvas clear,
+ * and `maxScale()` in skin.ts subtracts the same amount so the largest scale on
+ * the slider is one that actually fits. skin.ts *measures* the controls and
+ * overwrites this on every fit — the value below is only the guess used for the
+ * first frame, and it errs high: too much room costs one px/cell, too little
+ * hides the bottom beacon strip.
  */
 body.skin:has(#pulse:not([hidden])) {
   --overlay-room: 3.5rem;
@@ -184,25 +232,21 @@ body.skin:has(#pulse:not([hidden])) {
   align-items: center;
   justify-content: center;
   /*
-   * Wrap to a second line rather than squeeze. Without this a phone-width screen
-   * shrank the status text to one word per line, turning the pill into a tall
-   * column down the middle of the pulse. Wrapping is safe now that the pulse is
-   * sized from the overlay's *measured* height.
+   * Wrap rather than squeeze. Without this a phone-width screen shrank the
+   * status text to one word per line, turning the pill into a tall column down
+   * the middle of the pulse. Safe now that the pulse is sized from the measured
+   * height of this element.
    */
   flex-wrap: wrap;
   gap: 0.3rem 0.85rem;
   max-width: calc(100vw - 1.5rem);
-  padding: 0.3rem 0.8rem;
+  padding: 0.3rem 0.9rem;
   border-radius: 999px;
-  background: #0009;
+  background: #000000cc;
   color: var(--dim);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
 }
 
-/*
- * The overlay sits over the pulse at full size, so it must stay small and
- * must not react to a drag that was aimed at the slider.
- */
 .overlay .size {
   display: flex;
   align-items: center;
@@ -211,9 +255,9 @@ body.skin:has(#pulse:not([hidden])) {
 }
 
 .overlay .size input[type="range"] {
-  width: 6rem;
+  width: 7rem;
+  min-height: 0;
   margin: 0;
-  accent-color: var(--accent);
 }
 
 .overlay .size input[type="range"]:disabled {
@@ -232,21 +276,25 @@ body.skin:has(#pulse:not([hidden])) {
   text-overflow: ellipsis;
 }
 
-/* Padded to a thumb-sized target: on the skin this is the stop button. */
 .overlay .back {
   align-self: auto;
-  margin: -0.3rem -0.4rem -0.3rem 0;
-  padding: 0.3rem 0.4rem;
-  font-size: 0.75rem;
+  min-height: 0;
+  margin: -0.35rem -0.5rem -0.35rem 0;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
   white-space: nowrap;
 }
 
 /* ---------- eye ---------- */
 
 body.eye {
-  display: grid;
-  grid-template-rows: 1fr auto;
+  overflow: hidden;
+}
+
+.stage {
+  position: relative;
   height: 100%;
+  background: #000;
 }
 
 #camera {
@@ -254,27 +302,76 @@ body.eye {
   height: 100%;
   object-fit: cover;
   background: #000;
-  min-height: 0;
 }
 
+.back.over {
+  position: absolute;
+  top: max(0.5rem, env(safe-area-inset-top));
+  left: 0.75rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: #000000a6;
+  color: var(--ink);
+}
+
+/*
+ * Framing guide, shown only while the camera is live and dropped once the file
+ * has landed. 16:9 because the grid is (and that is load-bearing — a square
+ * grid inside a 16:9 frame is limited by height and yields 1.33× fewer px/cell).
+ */
+.aim {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  pointer-events: none;
+}
+
+body.eye:has(#begin[hidden]) .aim {
+  display: grid;
+}
+
+body.eye:has(#download:not([hidden])) .aim {
+  display: none;
+}
+
+.aim span {
+  width: min(86vw, 150vh);
+  aspect-ratio: 16 / 9;
+  border: 2px dashed #ffffff59;
+  border-radius: 6px;
+}
+
+/*
+ * Floats over the camera rather than taking a row of its own: squeezing the
+ * preview makes aiming harder, and aiming is the whole job.
+ */
 .readout {
-  padding: 1rem 1.25rem calc(1rem + env(safe-area-inset-bottom));
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  border-top: 1px solid var(--edge);
+  gap: 0.6rem;
+  max-height: 70%;
+  overflow-y: auto;
+  padding: 0.9rem 1.1rem calc(0.9rem + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, #000000f2 55%, #000000b8 80%, #0000);
 }
 
 .hint-large {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.25rem;
   font-weight: 600;
+  line-height: 1.3;
+  text-wrap: balance;
 }
 
 .bar {
-  height: 4px;
+  height: 5px;
   border-radius: 999px;
-  background: var(--edge);
+  background: #ffffff26;
   overflow: hidden;
 }
 
@@ -285,14 +382,40 @@ body.eye {
   transition: width 200ms ease;
 }
 
+#download {
+  align-self: flex-start;
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 1.1rem;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #06231d;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.details summary {
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  color: var(--dim);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.details > *:not(summary) {
+  margin-top: 0.5rem;
+}
+
 /*
- * Telemetry tiles. Auto-fit rather than a fixed column count: the eye runs
- * portrait on a phone and landscape on a laptop, and the tiles should reflow
- * instead of forcing the readout to scroll over the camera.
+ * Auto-fit rather than a fixed column count: the eye runs portrait on a phone
+ * and landscape on a laptop, and the tiles should reflow instead of forcing the
+ * readout to scroll over the camera.
  */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 0.4rem;
 }
 
@@ -308,24 +431,14 @@ body.eye {
 
 .tile span {
   color: var(--dim);
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .tile b {
-  font: 600 0.95rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 1rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-#download {
-  align-self: flex-start;
-  padding: 0.5rem 0.9rem;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #06231d;
-  font-weight: 600;
-  text-decoration: none;
 }

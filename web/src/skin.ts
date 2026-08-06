@@ -25,6 +25,8 @@ const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: Skin | null = null;
 let index = 0;
+/** True until the size slider is deliberately moved; see `resize`. */
+let pinnedToMax = true;
 
 /**
  * On this side the screen *is* the transmitter, so a display timeout does not
@@ -99,8 +101,11 @@ function resize(): void {
   document.body.style.setProperty("--overlay-room", `${overlayRoom()}px`);
   const limit = maxScale();
   size.max = String(limit);
+  // Until the slider is touched, track the largest that fits. Otherwise hiding
+  // the controls would free up room the pulse never reclaims — the default has
+  // to follow the space available, and only a deliberate choice should pin it.
   // Keep the chosen scale when it still fits, clamp it when the window shrinks.
-  const scale = Math.min(limit, Math.max(1, Number(size.value) || limit));
+  const scale = pinnedToMax ? limit : Math.min(limit, Math.max(1, Number(size.value) || limit));
   size.value = String(scale);
   size.disabled = limit <= 1;
   sizeValue.value = `${scale} px/cell · ${skin.cols * scale}×${skin.rows * scale}`;
@@ -150,6 +155,7 @@ rate.addEventListener("input", () => {
 // Resize repaints from the same pulse index, so dragging the slider never
 // costs the eye a frame of the loop.
 size.addEventListener("input", () => {
+  pinnedToMax = false;
   resize();
   paint();
 });
@@ -203,20 +209,70 @@ start.addEventListener("click", () => {
   if (!skin) return;
   setup.hidden = true;
   display.hidden = false;
-  status.hidden = false;
-  statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
-  // Start filling the screen; the slider only ever goes down from here.
-  size.value = String(maxScale());
-  resize();
-  paint();
   loop();
   void awake.acquire();
+  // Shown once so the controls are discoverable, then they get out of the way.
+  summon(FIRST_MS);
 });
 
 function refit(): void {
   resize();
   paint();
 }
+
+/* ---------- summoned controls ---------- */
+
+/**
+ * How long the controls stay up. Longer the first time, because that showing is
+ * the only thing that teaches they exist.
+ */
+const IDLE_MS = 4000;
+const FIRST_MS = 9000;
+
+let dismiss = 0;
+let taught = false;
+
+/**
+ * Show the controls and start their timer.
+ *
+ * Summoned rather than resident because during a send this screen is the
+ * transmitter: a lit pill beside the pulse is emissive area inside the receiving
+ * camera's frame, and auto-exposure meters the whole frame. Showing them
+ * *shrinks* the pulse to fit above them instead of covering it — the bottom rows
+ * are the second beacon strip, and occluding those turns detected tears back
+ * into silent CRC failures.
+ */
+function summon(hold = IDLE_MS): void {
+  if (!skin) return;
+  status.hidden = false;
+  statusText.textContent = taught
+    ? `${rate.value} Hz · ${skin.pulseCount} pulses`
+    : `${rate.value} Hz · tap the pulse for these controls`;
+  refit();
+  window.clearTimeout(dismiss);
+  dismiss = window.setTimeout(() => {
+    taught = true;
+    status.hidden = true;
+    refit();
+  }, hold);
+}
+
+// Tapping the pulse toggles; tapping the controls only restarts their timer, so
+// an adjustment is never interrupted halfway through.
+display.addEventListener("pointerdown", () => {
+  if (status.hidden) {
+    summon();
+  } else {
+    window.clearTimeout(dismiss);
+    taught = true;
+    status.hidden = true;
+    refit();
+  }
+});
+
+status.addEventListener("pointerdown", () => summon());
+size.addEventListener("input", () => summon());
+rate.addEventListener("input", () => summon());
 
 window.addEventListener("resize", refit);
 window.addEventListener("orientationchange", refit);
