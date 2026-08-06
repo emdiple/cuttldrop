@@ -10,39 +10,49 @@
     <div id="setup" class="panel">
       <a class="back" href="./">&larr; Cuttldrop</a>
       <h1>Skin</h1>
-      <label class="file">
+      <p class="tagline">Turn a file into light. Point this screen at the other device.</p>
+
+      <label class="field file">
+        <span class="label">File</span>
         <input type="file" id="file" />
-        <span>Choose a file to send</span>
       </label>
-      <p id="detail" class="detail"></p>
+      <p id="detail" class="detail">Nothing chosen yet.</p>
+
       <!--
         Ordered by bitrate, which is also the order of risk. The eye works the
         choice out for itself, so this menu exists on one device only.
       -->
-      <label class="slider">
-        Density
+      <label class="field">
+        <span class="label">Density</span>
         <select id="profile">
           <option value="m1" selected>Safe &mdash; 64&times;36 mono, 160 B/pulse</option>
           <option value="m2">Dense &mdash; 192&times;108 mono, 2.3 KB/pulse</option>
           <option value="m3">Colour &mdash; 96&times;54, 1.4 KB/pulse</option>
           <option value="m4">Dense colour &mdash; 192&times;108, 7.1 KB/pulse</option>
         </select>
+        <span class="hint">Denser is faster and less forgiving. Start safe; move up once it works.</span>
       </label>
-      <label class="slider">
-        Pulse rate <output id="rate-value">20</output> Hz
+
+      <label class="field">
+        <span class="label">Pulse rate <output id="rate-value">20</output> Hz</span>
         <input type="range" id="rate" min="1" max="30" value="20" />
+        <span class="hint">
+          No back channel exists, so nothing adapts this for you. If the eye reports
+          tearing, slow it down.
+        </span>
       </label>
-      <p class="hint">
-        No back channel exists, so nothing adapts this for you. If the eye reports
-        tearing, slow it down.
-      </p>
+
       <button id="start" disabled>Start strobing</button>
     </div>
+
     <canvas id="pulse" hidden></canvas>
+
     <!--
-      Size lives here, not in the setup panel: it is the one control you want
-      while the phone is already aimed, and every notch is a whole pixel per
-      cell, so no two positions render the same grid.
+      Controls, not a status bar. They are hidden while sending and summoned by a
+      tap, because anything permanently lit beside the pulse is emissive area in
+      the receiving camera's frame — it pulls auto-exposure away from the thing
+      being read. Summoning them shrinks the pulse to fit rather than covering
+      it, so the bottom beacon strip is never occluded.
     -->
     <div id="status" class="overlay" hidden>
       <span id="status-text"></span>
@@ -51,13 +61,9 @@
         <input type="range" id="size" min="1" max="1" value="1" />
         <output id="size-value"></output>
       </label>
-      <!--
-        Reachable while strobing, because the setup panel is not. Following it
-        ends the send — which is the only way to stop one, the loop being
-        endless by design (DESIGN.md §3d).
-      -->
       <a class="back" href="./">Stop</a>
     </div>
+
     <script type="module" src="./src/skin.ts"></script>
   </body>
 </html>

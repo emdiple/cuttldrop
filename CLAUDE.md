@@ -309,6 +309,20 @@ cd web && npm test        # JS boundary round trip, no browser needed
   Also: capabilities are **probed, never sniffed** — the one UA test (`isMobileWebKit`)
   is quarantined and used only for quirks with no observable signal. Continuous
   autofocus is applied where offered; a hunting lens is the top decode killer.
+- **The two screens have opposite UI rules, and the skin's is optical, not aesthetic.**
+  On the skin the screen *is* the transmitter, so anything lit that is not payload is
+  emissive area inside the receiving camera's frame, competing with the pulse for
+  auto-exposure. Chrome during a send is therefore **summoned, not resident**: the
+  controls appear on a tap and retire after a few seconds. When they do appear they
+  *shrink* the pulse rather than covering it — the bottom rows are the second beacon
+  strip, and occluding those turns detected tears back into silent CRC failures. On the
+  eye the screen is the only feedback channel that exists (§1e), so the rule inverts:
+  one instruction in large type over a full-bleed preview, a 16:9 aim frame (the human's
+  only lever on px/cell is how much of the frame the sender fills), and the telemetry
+  folded into a disclosure — it is instrumentation for the M1 observable, not for someone
+  moving a photo between two phones. Also: `[hidden]` needs `!important` in this
+  codebase. The UA sheet's `display: none` loses to any author `display` rule, so
+  `.panel { display: flex }` silently defeated `setup.hidden = true`.
 - **"Can't see the app on the network" is almost never the network.** Two causes, both
   silent. The server is https-only, so a bare `172.20.10.3:5173` makes the browser try
   http, get an empty reply, and report a connection failure — the scheme has to be typed.
