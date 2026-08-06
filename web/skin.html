@@ -45,14 +45,26 @@
       <button id="start" disabled>Start strobing</button>
     </div>
 
-    <canvas id="pulse" hidden></canvas>
+    <!--
+      The pulse lives in a stage rather than loose in the body, because the stage
+      is what `maxScale()` measures. On a phone it is the whole screen; on a
+      laptop it is whatever is left beside the panel. Measuring a box beats
+      arithmetic over viewport minus chrome — the script never has to know which
+      layout it is in.
+    -->
+    <div id="stage">
+      <p id="stage-hint" class="hint">The pulse appears here.</p>
+      <canvas id="pulse" hidden></canvas>
+    </div>
 
     <!--
-      Controls, not a status bar. They are hidden while sending and summoned by a
-      tap, because anything permanently lit beside the pulse is emissive area in
-      the receiving camera's frame — it pulls auto-exposure away from the thing
-      being read. Summoning them shrinks the pulse to fit rather than covering
-      it, so the bottom beacon strip is never occluded.
+      Controls. On a laptop they dock to the foot of the panel and stay put. On a
+      phone they are summoned by a tap and retire, because there anything
+      permanently lit beside the pulse is emissive area inside the receiving
+      camera's frame — it pulls auto-exposure away from the thing being read. A
+      laptop has room to put them outside the pulse entirely, so the trade does
+      not arise. Either way they *shrink* the pulse rather than cover it: the
+      bottom rows are the second beacon strip.
     -->
     <div id="status" class="overlay" hidden>
       <span id="status-text"></span>

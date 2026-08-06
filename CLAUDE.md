@@ -312,10 +312,13 @@ cd web && npm test        # JS boundary round trip, no browser needed
 - **The two screens have opposite UI rules, and the skin's is optical, not aesthetic.**
   On the skin the screen *is* the transmitter, so anything lit that is not payload is
   emissive area inside the receiving camera's frame, competing with the pulse for
-  auto-exposure. Chrome during a send is therefore **summoned, not resident**: the
-  controls appear on a tap and retire after a few seconds. When they do appear they
-  *shrink* the pulse rather than covering it — the bottom rows are the second beacon
-  strip, and occluding those turns detected tears back into silent CRC failures. On the
+  auto-exposure. Chrome during a send is therefore **summoned, not resident** *on a
+  narrow screen*: the controls appear on a tap and retire after a few seconds. When they
+  do appear they *shrink* the pulse rather than covering it — the bottom rows are the
+  second beacon strip, and occluding those turns detected tears back into silent CRC
+  failures. **Above 62rem the rule lapses and the panel is resident**, because the
+  argument was never tidiness: at that width the controls sit *outside* the pulse, on a
+  surround the receiving camera is not pointed at, so residency costs no exposure. On the
   eye the screen is the only feedback channel that exists (§1e), so the rule inverts:
   one instruction in large type over a full-bleed preview, a 16:9 aim frame (the human's
   only lever on px/cell is how much of the frame the sender fills), and the telemetry
@@ -323,6 +326,16 @@ cd web && npm test        # JS boundary round trip, no browser needed
   moving a photo between two phones. Also: `[hidden]` needs `!important` in this
   codebase. The UA sheet's `display: none` loses to any author `display` rule, so
   `.panel { display: flex }` silently defeated `setup.hidden = true`.
+- **Both screens are a two-column shell above 62rem and a single stack below, and neither
+  page ever scrolls.** Body is `100svh` — the *small* viewport, so a mobile URL bar
+  sliding in cannot make the page taller than the glass — with `overflow: hidden`; the
+  panels scroll inside themselves. The pulse is fitted to a measured `#stage` element
+  rather than to viewport-minus-chrome arithmetic: the stage is the whole screen on a
+  phone and the column beside the panel on a laptop, so one `maxScale()` serves both and
+  cannot disagree with what CSS actually did. The refit `ResizeObserver` watches the
+  stage *and* the controls but is guarded on a size signature, because `resize()` is
+  upstream of both (it publishes `--overlay-room`, which pads the body, which resizes the
+  stage) — without the guard that path rings instead of settling.
 - **"Can't see the app on the network" is almost never the network.** Two causes, both
   silent. The server is https-only, so a bare `172.20.10.3:5173` makes the browser try
   http, get an empty reply, and report a connection failure — the scheme has to be typed.

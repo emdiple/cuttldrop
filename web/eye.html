@@ -24,41 +24,46 @@
       <div class="aim" aria-hidden="true"><span></span></div>
 
       <a class="back over" href="./">&larr; Cuttldrop</a>
+    </div>
 
-      <div class="readout">
-        <!-- The back channel (§1e). Largest thing on the page, deliberately. -->
-        <p id="hint" class="hint-large">Point this camera at the sending screen</p>
-        <!--
-          iOS wants a user gesture behind getUserMedia and play(); a page-load
-          prompt is the one a phone is likeliest to refuse. One tap costs nothing
-          and is the difference between working and silently not.
-        -->
-        <button id="begin">Start camera</button>
-        <div class="bar"><div id="bar-fill"></div></div>
-        <p id="progress" class="detail">0 / &mdash; symbols</p>
-        <a id="download" hidden download>Save file</a>
+    <!--
+      A sibling of the stage, not a child of it: on a laptop this becomes a
+      permanent side panel in its own column, and on a phone it floats back over
+      the bottom of the preview.
+    -->
+    <div class="readout">
+      <!-- The back channel (§1e). Largest thing on the page, deliberately. -->
+      <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+      <!--
+        iOS wants a user gesture behind getUserMedia and play(); a page-load
+        prompt is the one a phone is likeliest to refuse. One tap costs nothing
+        and is the difference between working and silently not.
+      -->
+      <button id="begin">Start camera</button>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <p id="progress" class="detail">0 / &mdash; symbols</p>
+      <a id="download" hidden download>Save file</a>
 
-        <!--
-          Instrumentation, not decoration. Every performance number this project
-          owns is simulated; these tiles are how the M1 air-gap run reports back
-          what a real sensor actually did (DESIGN.md §5). Folded away because
-          they are for the operator of an experiment, not for someone moving a
-          photo between two phones.
-        -->
-        <details class="details">
-          <summary>Measurements</summary>
-          <div class="tiles">
-            <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
-            <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
-            <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
-            <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
-            <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
-            <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
-          </div>
-          <p id="counters" class="counters"></p>
-          <p id="camera-mode" class="footnote">camera &mdash;</p>
-        </details>
-      </div>
+      <!--
+        Instrumentation, not decoration. Every performance number this project
+        owns is simulated; these tiles are how the M1 air-gap run reports back
+        what a real sensor actually did (DESIGN.md §5). Folded away because they
+        are for the operator of an experiment, not for someone moving a photo
+        between two phones.
+      -->
+      <details class="details">
+        <summary>Measurements</summary>
+        <div class="tiles">
+          <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
+          <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
+          <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
+          <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
+          <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
+          <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
+        </div>
+        <p id="counters" class="counters"></p>
+        <p id="camera-mode" class="footnote">camera &mdash;</p>
+      </details>
     </div>
 
     <script type="module" src="./src/eye.ts"></script>

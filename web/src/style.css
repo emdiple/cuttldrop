@@ -9,6 +9,16 @@
  * The eye's screen is the only feedback channel that exists (§1e — the human is
  * the back channel), so its rule is the opposite: one instruction, large enough
  * to read at arm's length while aiming, with the instrumentation folded away.
+ *
+ * Both pages then split by *width*, not by device:
+ *
+ *   narrow  — one thing at a time, chrome floating over the work, page fills the
+ *             screen exactly and never scrolls; panels scroll inside themselves.
+ *   wide    — a resident side panel beside the work, as any modular app has. The
+ *             optical argument for hiding chrome does not apply here, because at
+ *             this width the panel sits *outside* the pulse rather than over it.
+ *
+ * `--shell` is the breakpoint and the panel width in one place.
  */
 
 :root {
@@ -19,6 +29,7 @@
   --accent: #4fd6b8;
   --warn: #e8b44f;
   --tap: 44px; /* smallest comfortable touch target */
+  --panel: clamp(19rem, 26vw, 24rem);
   color-scheme: dark;
 }
 
@@ -151,7 +162,21 @@ input[type="range"] {
   font-size: 0.85rem;
 }
 
-/* ---------- skin: composing ---------- */
+/* ---------- skin ---------- */
+
+/*
+ * The shell. One row on a phone, two columns on a laptop, and in both cases
+ * exactly the height of the screen: `100svh` is the *small* viewport, so a
+ * mobile URL bar sliding in cannot push the page taller than the glass. The page
+ * itself never scrolls — anything that overflows scrolls inside its own panel.
+ */
+body.skin {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  height: 100svh;
+  overflow: hidden;
+}
 
 .panel {
   max-width: 30rem;
@@ -160,6 +185,8 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 1.4rem;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /*
@@ -195,31 +222,60 @@ input[type="range"] {
   min-height: var(--tap);
 }
 
-/* ---------- skin: sending ---------- */
-
 /*
- * The pulse canvas is the payload — nothing may overlap or tint it, and that
- * includes the controls. They are fixed to the bottom, so the pulse is centred
- * in what is left above them rather than in the whole viewport.
+ * The stage: the box the pulse is fitted to.
  *
- * `--overlay-room` is the one number: the padding here keeps the canvas clear,
- * and `maxScale()` in skin.ts subtracts the same amount so the largest scale on
- * the slider is one that actually fits. skin.ts *measures* the controls and
- * overwrites this on every fit — the value below is only the guess used for the
- * first frame, and it errs high: too much room costs one px/cell, too little
- * hides the bottom beacon strip.
+ * `maxScale()` in skin.ts measures *this element* rather than doing arithmetic
+ * on the viewport, which is what lets one sizing routine serve both layouts —
+ * the stage is the whole screen on a phone and the right-hand column on a
+ * laptop, and the script never has to ask which.
  */
-body.skin:has(#pulse:not([hidden])) {
-  --overlay-room: 3.5rem;
+#stage {
   display: grid;
   place-items: center;
-  padding-bottom: var(--overlay-room);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: #000;
+}
+
+#stage-hint {
+  padding: 1.5rem;
+  text-align: center;
+}
+
+body.skin.sending #stage-hint {
+  display: none;
 }
 
 #pulse {
   display: block;
   image-rendering: pixelated;
+}
+
+/*
+ * Narrow: one thing at a time. Composing shows the panel, sending shows the
+ * stage, and the controls float over the pulse.
+ *
+ * `--overlay-room` is what keeps them from overlapping: the padding here holds
+ * the stage clear of the floating controls, and because `maxScale()` measures
+ * the stage it inherits that clearance for free. skin.ts *measures* the controls
+ * and overwrites this on every fit — the value below is only the guess used for
+ * the first frame, and it errs high: too much room costs one px/cell, too little
+ * hides the bottom beacon strip.
+ */
+body.skin:not(.sending) #stage {
+  display: none;
+}
+
+body.skin.sending #setup {
+  display: none;
+}
+
+body.skin.sending {
+  --overlay-room: 3.5rem;
+  padding-bottom: var(--overlay-room);
+  background: #000;
 }
 
 .overlay {
@@ -285,15 +341,89 @@ body.skin:has(#pulse:not([hidden])) {
   white-space: nowrap;
 }
 
+/* ---------- skin: wide ---------- */
+
+/*
+ * Laptop. The panel is resident — composing and sending are the same screen,
+ * with the pulse alongside rather than instead of the controls, so density and
+ * rate stay adjustable mid-send without dismissing anything.
+ *
+ * This is where the summon-and-retire rule stops applying. It was never about
+ * tidiness: on a phone the controls sit *inside* the pulse's own area and so
+ * inside the receiving camera's frame. Here they are outside it, against a
+ * surround the camera is not pointed at, so residency costs nothing optically.
+ */
+@media (min-width: 62rem) {
+  body.skin,
+  body.skin.sending {
+    grid-template-columns: var(--panel) 1fr;
+    grid-template-rows: 1fr auto;
+    padding-bottom: 0;
+    background: var(--bg);
+  }
+
+  body.skin #setup,
+  body.skin.sending #setup {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+    max-width: none;
+    margin: 0;
+    border-right: 1px solid var(--edge);
+  }
+
+  body.skin #stage,
+  body.skin:not(.sending) #stage {
+    display: grid;
+    grid-column: 2;
+    grid-row: 1 / -1;
+  }
+
+  /* Docked to the foot of the panel: in flow, square, and always up. */
+  .overlay {
+    position: static;
+    grid-column: 1;
+    grid-row: 2;
+    transform: none;
+    justify-content: flex-start;
+    max-width: none;
+    padding: 0.7rem 1.5rem calc(0.7rem + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--edge);
+    border-right: 1px solid var(--edge);
+    border-radius: 0;
+    background: var(--bg);
+  }
+
+  .overlay .size input[type="range"] {
+    width: 100%;
+  }
+
+  .overlay .size {
+    flex: 1 1 100%;
+  }
+}
+
 /* ---------- eye ---------- */
 
+/*
+ * Same shell as the skin, mirrored: the work is the camera preview and the panel
+ * sits to its right. Narrow keeps the readout floating over the bottom of the
+ * preview, because squeezing the preview makes aiming harder and aiming is the
+ * whole job.
+ */
 body.eye {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  height: 100svh;
   overflow: hidden;
 }
 
 .stage {
   position: relative;
-  height: 100%;
+  min-width: 0;
+  min-height: 0;
   background: #000;
 }
 
@@ -342,10 +472,6 @@ body.eye:has(#download:not([hidden])) .aim {
   border-radius: 6px;
 }
 
-/*
- * Floats over the camera rather than taking a row of its own: squeezing the
- * preview makes aiming harder, and aiming is the whole job.
- */
 .readout {
   position: absolute;
   right: 0;
@@ -358,6 +484,29 @@ body.eye:has(#download:not([hidden])) .aim {
   overflow-y: auto;
   padding: 0.9rem 1.1rem calc(0.9rem + env(safe-area-inset-bottom));
   background: linear-gradient(to top, #000000f2 55%, #000000b8 80%, #0000);
+}
+
+/* Laptop: the readout leaves the preview and becomes a resident side panel. */
+@media (min-width: 62rem) {
+  body.eye {
+    grid-template-columns: 1fr var(--panel);
+  }
+
+  .readout {
+    position: static;
+    grid-column: 2;
+    gap: 0.9rem;
+    max-height: none;
+    min-height: 0;
+    padding: 1.5rem 1.25rem calc(1.5rem + env(safe-area-inset-bottom));
+    border-left: 1px solid var(--edge);
+    background: var(--bg);
+  }
+
+  /* Nothing is competing for the space, so the numbers can simply be up. */
+  .details {
+    margin-top: auto;
+  }
 }
 
 .hint-large {

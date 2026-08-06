@@ -16,7 +16,7 @@ const start = document.querySelector<HTMLButtonElement>("#start")!;
 const rate = document.querySelector<HTMLInputElement>("#rate")!;
 const profile = document.querySelector<HTMLSelectElement>("#profile")!;
 const rateValue = document.querySelector<HTMLOutputElement>("#rate-value")!;
-const setup = document.querySelector<HTMLDivElement>("#setup")!;
+const stage = document.querySelector<HTMLDivElement>("#stage")!;
 const display = document.querySelector<HTMLCanvasElement>("#pulse")!;
 const status = document.querySelector<HTMLDivElement>("#status")!;
 const statusText = document.querySelector<HTMLSpanElement>("#status-text")!;
@@ -41,42 +41,49 @@ const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
 const displayCtx = display.getContext("2d")!;
 
 /**
- * The viewport the user can actually see.
+ * True when the layout has room for a resident side panel.
  *
- * `innerHeight` is the wrong number on a phone: mobile Safari counts the strip
- * under a retracted URL bar, so a canvas sized to it is taller than the screen
- * and its bottom rows — the *second beacon strip* — sit off the visible area or
- * under the overlay. `visualViewport` is what is on the glass.
+ * Matches the `62rem` breakpoint in style.css. The script has to know because
+ * the *behaviour* differs, not merely the arrangement: at this width the
+ * controls stay up, so there is nothing to summon and nothing to retire.
  */
-function viewport(): { width: number; height: number } {
-  const vv = window.visualViewport;
-  return {
-    width: Math.floor(vv?.width ?? window.innerWidth),
-    height: Math.floor(vv?.height ?? window.innerHeight),
-  };
+const wide = window.matchMedia("(min-width: 62rem)");
+
+/** Whether a send is in progress; also the CSS hook for the sending layout. */
+function sending(): boolean {
+  return document.body.classList.contains("sending");
 }
 
 /**
- * Height the status overlay owns at the bottom, measured rather than assumed.
+ * Room the floating controls take at the bottom, measured rather than assumed.
  *
- * A constant here was wrong in both directions: the overlay grows with the OS
- * text size and with the range control's native height, and it sits above the
- * home-indicator inset on an iPhone. Measuring from the overlay's own top edge
- * folds its height, its bottom offset and the safe-area inset into one number
- * that cannot drift from what is on screen.
+ * A constant here was wrong in both directions: the controls grow with the OS
+ * text size and with the range control's native height, and they sit above the
+ * home-indicator inset on an iPhone. Measuring from their own top edge folds
+ * height, offset and safe-area inset into one number that cannot drift from
+ * what is on screen.
+ *
+ * Zero once they are docked in the panel — then they are in flow, the grid has
+ * already accounted for them, and subtracting again would double-count.
  */
 function overlayRoom(): number {
-  if (status.hidden) return 0;
-  const box = status.getBoundingClientRect();
-  return Math.max(0, Math.ceil(viewport().height - box.top));
+  if (status.hidden || getComputedStyle(status).position !== "fixed") return 0;
+  const bottom = window.visualViewport?.height ?? window.innerHeight;
+  return Math.max(0, Math.ceil(bottom - status.getBoundingClientRect().top));
 }
 
-/** Largest whole pixels-per-cell that still fits the entire pulse on screen. */
+/**
+ * Largest whole pixels-per-cell that still fits the entire pulse in the stage.
+ *
+ * Measured off the stage element, not computed from the viewport. The stage is
+ * the full screen on a phone and the column beside the panel on a laptop, so one
+ * routine covers both — and it cannot disagree with what CSS actually did.
+ */
 function maxScale(): number {
   if (!skin) return 1;
-  const view = viewport();
-  const room = Math.max(1, view.height - overlayRoom());
-  return Math.max(1, Math.floor(Math.min(view.width / skin.cols, room / skin.rows)));
+  const width = Math.max(1, stage.clientWidth);
+  const height = Math.max(1, stage.clientHeight);
+  return Math.max(1, Math.floor(Math.min(width / skin.cols, height / skin.rows)));
 }
 
 /**
@@ -149,7 +156,7 @@ function loop(): void {
 
 rate.addEventListener("input", () => {
   rateValue.value = rate.value;
-  if (skin) statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
+  label();
 });
 
 // Resize repaints from the same pulse index, so dragging the slider never
@@ -189,8 +196,8 @@ file.addEventListener("change", async () => {
   // already on screen, refit it: the display canvas is still sized for the old
   // profile, and blitting the new grid into it would stretch every cell.
   index = 0;
-  if (!display.hidden) {
-    statusText.textContent = `${rate.value} Hz · ${skin.pulseCount} pulses`;
+  if (sending()) {
+    label();
     refit();
   }
   detail.textContent =
@@ -207,12 +214,19 @@ file.addEventListener("change", async () => {
 
 start.addEventListener("click", () => {
   if (!skin) return;
-  setup.hidden = true;
+  // On a laptop the panel stays, so Start remains reachable during a send —
+  // and a second loop() would run two rAF chains against one canvas, doubling
+  // the pulse rate the eye sees while the slider still claims the old one.
+  if (sending()) {
+    index = 0;
+    return;
+  }
+  document.body.classList.add("sending");
   display.hidden = false;
+  start.textContent = "Sending…";
   loop();
   void awake.acquire();
-  // Shown once so the controls are discoverable, then they get out of the way.
-  summon(FIRST_MS);
+  applyMode();
 });
 
 function refit(): void {
@@ -220,11 +234,11 @@ function refit(): void {
   paint();
 }
 
-/* ---------- summoned controls ---------- */
+/* ---------- controls: resident when wide, summoned when narrow ---------- */
 
 /**
- * How long the controls stay up. Longer the first time, because that showing is
- * the only thing that teaches they exist.
+ * How long the controls stay up on a narrow screen. Longer the first time,
+ * because that showing is the only thing that teaches they exist.
  */
 const IDLE_MS = 4000;
 const FIRST_MS = 9000;
@@ -232,48 +246,71 @@ const FIRST_MS = 9000;
 let dismiss = 0;
 let taught = false;
 
+function label(): void {
+  if (!skin) return;
+  statusText.textContent =
+    taught || wide.matches
+      ? `${rate.value} Hz · ${skin.pulseCount} pulses`
+      : `${rate.value} Hz · tap the pulse for these controls`;
+}
+
+function retire(): void {
+  window.clearTimeout(dismiss);
+  taught = true;
+  status.hidden = true;
+  refit();
+}
+
 /**
- * Show the controls and start their timer.
+ * Show the controls and, on a narrow screen, start their timer.
  *
- * Summoned rather than resident because during a send this screen is the
- * transmitter: a lit pill beside the pulse is emissive area inside the receiving
- * camera's frame, and auto-exposure meters the whole frame. Showing them
- * *shrinks* the pulse to fit above them instead of covering it — the bottom rows
- * are the second beacon strip, and occluding those turns detected tears back
- * into silent CRC failures.
+ * Summoned rather than resident *only* when narrow, and the reason is optical
+ * rather than aesthetic: there the controls sit inside the pulse's own area and
+ * therefore inside the receiving camera's frame, where a lit pill competes with
+ * the pulse for auto-exposure. A laptop has room to put them beside the pulse
+ * instead, so they stay. Either way they *shrink* the pulse to fit rather than
+ * cover it — the bottom rows are the second beacon strip, and occluding those
+ * turns detected tears back into silent CRC failures.
  */
 function summon(hold = IDLE_MS): void {
-  if (!skin) return;
+  if (!skin || !sending()) return;
   status.hidden = false;
-  statusText.textContent = taught
-    ? `${rate.value} Hz · ${skin.pulseCount} pulses`
-    : `${rate.value} Hz · tap the pulse for these controls`;
+  label();
   refit();
   window.clearTimeout(dismiss);
-  dismiss = window.setTimeout(() => {
-    taught = true;
-    status.hidden = true;
+  if (wide.matches) return;
+  dismiss = window.setTimeout(retire, hold);
+}
+
+/** Put the controls into whichever state the current width calls for. */
+function applyMode(): void {
+  if (!sending()) return;
+  if (wide.matches) {
+    window.clearTimeout(dismiss);
+    status.hidden = false;
+    label();
     refit();
-  }, hold);
+  } else {
+    // Crossing down into the narrow layout is the first showing all over again:
+    // the controls are about to start hiding themselves, which needs teaching.
+    summon(FIRST_MS);
+  }
 }
 
 // Tapping the pulse toggles; tapping the controls only restarts their timer, so
-// an adjustment is never interrupted halfway through.
+// an adjustment is never interrupted halfway through. Neither applies wide,
+// where the controls never leave.
 display.addEventListener("pointerdown", () => {
-  if (status.hidden) {
-    summon();
-  } else {
-    window.clearTimeout(dismiss);
-    taught = true;
-    status.hidden = true;
-    refit();
-  }
+  if (wide.matches || !sending()) return;
+  if (status.hidden) summon();
+  else retire();
 });
 
 status.addEventListener("pointerdown", () => summon());
 size.addEventListener("input", () => summon());
 rate.addEventListener("input", () => summon());
 
+wide.addEventListener("change", applyMode);
 window.addEventListener("resize", refit);
 window.addEventListener("orientationchange", refit);
 // The URL bar sliding in and out changes the visible height without firing a
@@ -281,15 +318,24 @@ window.addEventListener("orientationchange", refit);
 // bar was hidden and runs under the overlay.
 window.visualViewport?.addEventListener("resize", refit);
 
-// The overlay's own height moves with the OS text size and with how wide the
-// numbers in it are. Refit only when its *height* changes: it is re-laid-out on
-// every scale change, and reacting to width would be a loop.
-let lastRoom = -1;
-new ResizeObserver(() => {
-  const room = overlayRoom();
-  if (room === lastRoom) return;
-  lastRoom = room;
+/*
+ * Refit whenever the stage changes shape or the controls change height.
+ *
+ * Guarded on a signature rather than firing on every callback, because `resize`
+ * is itself upstream of both: it publishes `--overlay-room`, which pads the body,
+ * which resizes the stage. The guard is what makes that settle after one pass
+ * instead of ringing. Width is deliberately in the signature for the stage and
+ * out of it for the controls — the controls are re-laid-out on every scale
+ * change, since the readout they carry says how many pixels wide the pulse is.
+ */
+let lastFit = "";
+const watch = new ResizeObserver(() => {
+  const signature = `${stage.clientWidth}×${stage.clientHeight}/${overlayRoom()}`;
+  if (signature === lastFit) return;
+  lastFit = signature;
   refit();
-}).observe(status);
+});
+watch.observe(stage);
+watch.observe(status);
 
 await init();
