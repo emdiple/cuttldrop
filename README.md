@@ -82,7 +82,7 @@ which there is no warning at all.
 Three of the four test surfaces need no camera and no network at all.
 
 ```sh
-cargo test --workspace                    # 99 tests, the full synthetic optical channel
+cargo test --workspace                    # 102 tests, the full synthetic optical channel
 cargo run --release -p cuttl-cli -- encode f.pdf -o pulses/ && \
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.pdf --distort heavy --loss 0.5
 cd web && npm test                        # file -> WASM skin -> WASM eye -> file, in Node

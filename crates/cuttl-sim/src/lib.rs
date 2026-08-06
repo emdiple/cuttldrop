@@ -728,7 +728,9 @@ mod tests {
             // encode() applies overhead 3.0, so the loop is ~4K pulses long.
             let per_pulse = grid.payload_bytes(palette);
             let len = (TARGET_PULSES / 4).max(1) * per_pulse;
-            let object: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(29) ^ (i >> 5)) as u8).collect();
+            let object: Vec<u8> = (0..len as u32)
+                .map(|i| (i.wrapping_mul(29) ^ (i >> 5)) as u8)
+                .collect();
 
             let mut cells = String::new();
             for &hz in &rates {
