@@ -162,7 +162,7 @@ on it. That is a real, if low-bandwidth, control loop.
 
 **No network also means no confidentiality.** Whatever the skin shows, any camera with
 line of sight can read. What this design buys is the absence of a network path — not
-privacy. Optional passphrase encryption is on the roadmap (`COMPARISON-decimen.md`, R2).
+privacy. Optional passphrase encryption is planned for a later product milestone.
 
 ## Numbers
 
@@ -191,7 +191,7 @@ CRC gate, so density is a menu on one device only.
 
 Two things that table is really saying. **M2 beats M3** — density is a bigger lever
 than colour, and it is the safer one, since nothing about a mono grid depends on a
-camera's white balance. That is `DESIGN.md` §2's bottleneck ordering showing up as a
+camera's white balance. That is the project's bottleneck ordering showing up as a
 number. And **the payload column is why**: registration costs the same four finders
 whatever the grid, so a 9× cell count buys 13× the bytes. Small grids do not merely
 carry less, they spend a quarter of themselves saying where they are.
@@ -217,13 +217,8 @@ crates/cuttl-sim/     synthetic optical channel. Native only, and the primary te
 crates/cuttl-cli/     `cuttl` — encode and decode PNG pulse directories.
 crates/cuttl-wasm/    wasm-bindgen shim: Skin and Eye.
 web/                  Vite + TypeScript. No framework, no server, no build-time magic.
-DESIGN.md             the architecture document, and the reasoning behind every choice.
-ROADMAP.md            the ordered work list, and the measurements behind the order.
+README.md             the tracked project documentation.
 ```
-
-`DESIGN.md` is worth reading before changing anything. It records not just what was
-decided but what was measured, including several predictions that turned out wrong and
-were corrected in place.
 
 ## Development
 
@@ -242,8 +237,8 @@ on the modern browser stack (animated QR + LT codes + zxing WASM), with a real-d
 project builds. **Twibright Optar** — paper-based optical
 storage, the right reference for how dense a raster can get before the optics give up.
 **JAB Code** (ISO/IEC 23634:2022) — the polychrome symbology line; adjacent but built for
-a single static read, which changes the economics completely. `DESIGN.md` §9 covers what
-transfers from that work and what does not.
+a single static read, which changes the economics completely. Cuttldrop borrows the
+registration lessons while keeping a dynamic, fountain-coded transport.
 
 ## License
 
