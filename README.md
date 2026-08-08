@@ -24,6 +24,7 @@ it.
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
 | CLI (`cuttl encode` / `cuttl decode`) | done |
 | Browser skin + eye | built and typechecked; decode runs in a worker; JS boundary tested |
+| Product interface | responsive role flow, permanent desktop panels, drag/drop skin, live eye states |
 | iOS camera handling | exact/ideal fps negotiation, classified errors, retry, wake lock |
 | **A real file across a real air gap** | **not done** — needs two physical devices |
 

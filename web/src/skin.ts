@@ -11,6 +11,7 @@ import { ScreenAwake } from "./platform.js";
 const OVERHEAD = 2.0;
 
 const file = document.querySelector<HTMLInputElement>("#file")!;
+const dropZone = document.querySelector<HTMLLabelElement>("#drop-zone")!;
 const detail = document.querySelector<HTMLParagraphElement>("#detail")!;
 const start = document.querySelector<HTMLButtonElement>("#start")!;
 const rate = document.querySelector<HTMLInputElement>("#rate")!;
@@ -25,6 +26,8 @@ const size = document.querySelector<HTMLInputElement>("#size")!;
 const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: Skin | null = null;
+let selectedFile: File | null = null;
+let prepareGen = 0;
 const LOOKAHEAD = 3;
 let current: ImageData | null = null;
 let queue: ImageData[] = [];
@@ -212,7 +215,7 @@ function loop(): void {
 }
 
 rate.addEventListener("input", () => {
-  rateValue.value = rate.value;
+  rateValue.value = `${rate.value} Hz`;
   rateHint.textContent =
     Number(rate.value) > 30
       ? "Experimental: this rate needs a display and camera mode fast enough to expose clean pulses. If the eye reports tearing or decode fps falls behind, slow it down."
@@ -232,26 +235,36 @@ size.addEventListener("input", () => {
 // there is nothing to reuse. Cheap enough to do on every change.
 profile.addEventListener("change", () => {
   rate.value = String(PROFILE_RATE[profile.value] ?? 20);
-  rateValue.value = rate.value;
-  file.dispatchEvent(new Event("change"));
+  rateValue.value = `${rate.value} Hz`;
+  if (selectedFile) void prepare(selectedFile);
 });
 
-file.addEventListener("change", async () => {
-  const chosen = file.files?.[0];
-  if (!chosen) return;
-  detail.textContent = "Encoding…";
+async function prepare(chosen: File): Promise<void> {
+  const gen = ++prepareGen;
+  selectedFile = chosen;
+  detail.textContent = `Preparing ${chosen.name}…`;
   start.disabled = true;
 
-  const bytes = new Uint8Array(await chosen.arrayBuffer());
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await chosen.arrayBuffer());
+  } catch (error) {
+    if (gen !== prepareGen) return;
+    detail.textContent = `Could not read ${chosen.name}: ${error}`;
+    return;
+  }
+  if (gen !== prepareGen) return;
   const streamId = (Math.random() * 0xffffffff) >>> 0;
   try {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
     skin = new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
   } catch (error) {
+    if (gen !== prepareGen) return;
     detail.textContent = `Could not encode: ${error}`;
     return;
   }
+  if (gen !== prepareGen) return;
 
   grid.width = skin.cols;
   grid.height = skin.rows;
@@ -273,6 +286,30 @@ file.addEventListener("change", async () => {
     detail.textContent += " · short loop for this density, expect repeats";
   }
   start.disabled = false;
+}
+
+file.addEventListener("change", () => {
+  const chosen = file.files?.[0];
+  if (chosen) void prepare(chosen);
+});
+
+for (const eventName of ["dragenter", "dragover"]) {
+  dropZone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    dropZone.classList.add("dragging");
+  });
+}
+
+for (const eventName of ["dragleave", "drop"]) {
+  dropZone.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("dragging");
+  });
+}
+
+dropZone.addEventListener("drop", (event) => {
+  const chosen = event.dataTransfer?.files[0];
+  if (chosen) void prepare(chosen);
 });
 
 start.addEventListener("click", () => {

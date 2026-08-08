@@ -40,6 +40,7 @@ const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
 const captureFps = document.querySelector<HTMLSelectElement>("#capture-fps")!;
 const captureSetting = document.querySelector<HTMLLabelElement>("#capture-setting")!;
+const liveState = document.querySelector<HTMLSpanElement>(".live-state")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
@@ -57,6 +58,11 @@ const tiles = {
 };
 
 const awake = new ScreenAwake();
+
+function receiverState(state: "ready" | "scanning" | "attention" | "complete"): void {
+  liveState.className = `live-state ${state}`;
+  liveState.innerHTML = `<i></i>${state === "attention" ? "Needs attention" : state[0].toUpperCase() + state.slice(1)}`;
+}
 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
@@ -213,6 +219,7 @@ function render(): void {
 
 function finish(bytes: Uint8Array, name: string, mime: string): void {
   done = true;
+  receiverState("complete");
   // The file is here and verified; holding the camera and the wake lock past
   // that point drains the battery and leaves the indicator light on for no
   // reason. `done` already stopped the capture loop.
@@ -344,6 +351,7 @@ function releaseCamera(): void {
  */
 function offerRetry(message: string): void {
   releaseCamera();
+  receiverState("attention");
   hint.textContent = message;
   captureSetting.hidden = false;
   begin.hidden = false;
@@ -435,6 +443,7 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   begin.hidden = true;
   beginScreen.hidden = true;
   captureSetting.hidden = true;
+  receiverState("scanning");
   const track = stream.getVideoTracks()[0];
   await steady(track);
   // The camera is the only thing on this page that matters, and a display

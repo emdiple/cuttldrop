@@ -3,30 +3,66 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Cuttldrop</title>
+    <meta name="theme-color" content="#080a0d" />
+    <title>Cuttldrop &mdash; files through light</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
-  <body>
-    <main class="landing">
-      <h1>Cuttldrop</h1>
-      <p class="tagline">
-        Move a file between two devices with no network path between them. One screen
-        strobes it; the other camera reads it.
-      </p>
-      <nav>
-        <a class="card" href="./skin.html">
-          <strong>Skin</strong>
-          <span>Send &mdash; pick a file, point this screen at the other device</span>
+  <body class="landing-page">
+    <main class="landing-shell">
+      <header class="landing-header">
+        <a class="brand" href="./" aria-label="Cuttldrop home">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Cuttldrop</span>
         </a>
-        <a class="card" href="./eye.html">
-          <strong>Eye</strong>
-          <span>Receive &mdash; point this camera at the sending screen</span>
+        <span class="privacy-badge"><i></i> Offline by design</span>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Optical file transfer</p>
+          <h1>Move files through <em>light.</em></h1>
+          <p class="hero-lede">
+            No Wi-Fi. No Bluetooth. No server. One screen becomes the
+            transmitter; one camera becomes the receiver.
+          </p>
+        </div>
+
+        <div class="optical-diagram" aria-hidden="true">
+          <div class="device skin-device"><span class="mini-grid"></span></div>
+          <div class="light-path"><i></i><i></i><i></i></div>
+          <div class="device eye-device"><span></span></div>
+        </div>
+      </section>
+
+      <nav class="role-grid" aria-label="Choose a role">
+        <a class="role-card role-skin" href="./skin.html">
+          <span class="role-number">01</span>
+          <span class="role-icon" aria-hidden="true"><i></i></span>
+          <span class="role-copy">
+            <small>Transmit</small>
+            <strong>Use this screen as the skin</strong>
+            <span>Choose a file and render it as a stream of optical pulses.</span>
+          </span>
+          <span class="role-arrow" aria-hidden="true">↗</span>
+        </a>
+
+        <a class="role-card role-eye" href="./eye.html">
+          <span class="role-number">02</span>
+          <span class="role-icon" aria-hidden="true"><i></i></span>
+          <span class="role-copy">
+            <small>Receive</small>
+            <strong>Use this camera as the eye</strong>
+            <span>Aim at the sending screen and reconstruct the verified file.</span>
+          </span>
+          <span class="role-arrow" aria-hidden="true">↗</span>
         </a>
       </nav>
-      <p class="footnote">
-        Both sides run entirely in the browser. Nothing is uploaded anywhere, because
-        there is nowhere to upload it to.
-      </p>
+
+      <footer class="landing-footer">
+        <span>Client-side only</span>
+        <span>RaptorQ recovery</span>
+        <span>BLAKE3 verified</span>
+      </footer>
     </main>
   </body>
 </html>

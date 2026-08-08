@@ -1,51 +1,33 @@
-/*
- * Two screens with opposite jobs.
- *
- * The skin's screen *is* the transmitter, so its design rule is subtractive:
- * during a send, anything lit that is not payload is emissive area inside the
- * receiving camera's frame, competing with the pulse for auto-exposure. The
- * controls are therefore summoned, not resident.
- *
- * The eye's screen is the only feedback channel that exists (§1e — the human is
- * the back channel), so its rule is the opposite: one instruction, large enough
- * to read at arm's length while aiming, with the instrumentation folded away.
- *
- * Both pages then split by *width*, not by device:
- *
- *   narrow  — one thing at a time, chrome floating over the work, page fills the
- *             screen exactly and never scrolls; panels scroll inside themselves.
- *   wide    — a resident side panel beside the work, as any modular app has. The
- *             optical argument for hiding chrome does not apply here, because at
- *             this width the panel sits *outside* the pulse rather than over it.
- *
- * `--shell` is the breakpoint and the panel width in one place.
- */
-
 :root {
-  --ink: #e9e6df;
-  --dim: #8b8880;
-  --bg: #0b0c0e;
-  --edge: #23252a;
-  --accent: #4fd6b8;
-  --warn: #e8b44f;
-  --tap: 44px; /* smallest comfortable touch target */
-  --panel: clamp(19rem, 26vw, 24rem);
+  --bg: #080a0d;
+  --panel-bg: #0d1014;
+  --surface: #12161c;
+  --surface-2: #171c23;
+  --edge: #242b34;
+  --edge-bright: #37414d;
+  --ink: #f2f0e9;
+  --muted: #9299a2;
+  --faint: #616974;
+  --bio: #65f2c5;
+  --bio-strong: #35d9a8;
+  --bio-ink: #04261d;
+  --violet: #8f7cff;
+  --coral: #ff896e;
+  --warn: #f4bc5e;
+  --danger: #ff756d;
+  --tap: 46px;
+  --panel: clamp(22rem, 28vw, 27rem);
+  --radius-sm: 10px;
+  --radius: 16px;
+  --radius-lg: 24px;
   color-scheme: dark;
+  font-synthesis: none;
 }
 
 * {
   box-sizing: border-box;
 }
 
-/*
- * `hidden` must actually hide.
- *
- * The attribute is styled by the UA sheet as `display: none`, which *any* author
- * `display` rule outranks — so `.panel { display: flex }` quietly defeated
- * `setup.hidden = true` and the setup panel stayed on screen through a transfer.
- * Every element this app toggles has a display rule of its own, so the guard
- * belongs here rather than in each one.
- */
 [hidden] {
   display: none !important;
 }
@@ -53,558 +35,1312 @@
 html,
 body {
   margin: 0;
-  height: 100%;
+  min-height: 100%;
   background: var(--bg);
   color: var(--ink);
-  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.5 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-h1 {
+body {
+  min-width: 300px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button,
+a,
+input,
+select,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--bio);
+  outline-offset: 3px;
+}
+
+h1,
+h2,
+p {
   margin: 0;
-  font-size: 1.75rem;
-  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: clamp(1.8rem, 4vw, 2.35rem);
+  line-height: 1.05;
+  letter-spacing: -0.045em;
+}
+
+.eyebrow {
+  color: var(--bio);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .tagline,
-.detail,
 .hint,
+.detail,
 .footnote,
 .counters {
-  margin: 0;
-  color: var(--dim);
-  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.hint,
+.detail {
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .footnote,
 .counters {
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 
-/*
- * The way out of either side. Both pages are entered directly by URL as often as
- * from the landing page — the two devices are told an address, not handed a link
- * — so browser history is not a reliable back button and this is a real link
- * home rather than `history.back()`.
- */
-.back {
-  align-self: flex-start;
+.brand {
   display: inline-flex;
   align-items: center;
-  min-height: var(--tap);
-  color: var(--dim);
-  font-size: 0.9rem;
+  gap: 0.7rem;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   text-decoration: none;
 }
 
-.back:hover,
-.back:focus-visible {
-  color: var(--accent);
+.brand-mark {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 1px solid #65f2c54d;
+  border-radius: 9px;
+  background:
+    radial-gradient(circle at 8px 8px, var(--bio) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 21px 8px, var(--violet) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 8px 21px, var(--coral) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 21px 21px, var(--bio) 0 2px, transparent 2.5px),
+    #11171b;
+  box-shadow: inset 0 0 18px #65f2c50d;
 }
 
-button {
-  min-height: var(--tap);
-  padding: 0.7rem 1.1rem;
-  border: 0;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #06231d;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid #ffffff12;
+  border-radius: 5px;
 }
 
-button:disabled {
-  background: var(--edge);
-  color: var(--dim);
-  cursor: not-allowed;
-}
-
-/* Subordinate to the primary action: this is the bring-up path, not the point
- * of the page. Quiet enough that a phone user never reads it as the way in. */
-button.secondary {
-  background: transparent;
+.privacy-badge,
+.role-badge,
+.live-state,
+.verified-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  width: max-content;
   border: 1px solid var(--edge);
-  color: var(--dim);
-  font-weight: 500;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
 }
 
-button.secondary:disabled {
-  opacity: 0.5;
+.privacy-badge {
+  padding: 0.42rem 0.65rem;
 }
 
-input[type="range"] {
-  accent-color: var(--accent);
+.privacy-badge i,
+.live-state i,
+.stream-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bio);
+  box-shadow: 0 0 10px var(--bio);
 }
 
 /* ---------- landing ---------- */
 
-.landing {
-  max-width: 34rem;
+.landing-page {
+  min-height: 100svh;
+  background:
+    radial-gradient(circle at 75% 18%, #8f7cff13, transparent 28rem),
+    radial-gradient(circle at 12% 90%, #65f2c50c, transparent 25rem),
+    var(--bg);
+}
+
+.landing-shell {
+  width: min(1180px, 100%);
+  min-height: 100svh;
   margin: 0 auto;
-  padding: 4rem 1.5rem calc(4rem + env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.landing nav {
+  padding: max(1.5rem, env(safe-area-inset-top)) clamp(1.25rem, 4vw, 3.5rem)
+    max(1.25rem, env(safe-area-inset-bottom));
   display: grid;
-  gap: 0.75rem;
+  grid-template-rows: auto 1fr auto auto;
+  gap: clamp(1.5rem, 4vh, 3.25rem);
 }
 
-.card {
+.landing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
+  align-items: center;
+  gap: clamp(2rem, 7vw, 7rem);
+  padding-block: clamp(1rem, 5vh, 4rem);
+}
+
+.hero-copy {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  padding: 1rem 1.1rem;
+  gap: 1.1rem;
+}
+
+.hero h1 {
+  max-width: 700px;
+  font-size: clamp(3.2rem, 8vw, 7.5rem);
+  line-height: 0.88;
+  letter-spacing: -0.075em;
+}
+
+.hero h1 em {
+  color: var(--bio);
+  font-style: normal;
+}
+
+.hero-lede {
+  max-width: 42rem;
+  color: var(--muted);
+  font-size: clamp(1rem, 2vw, 1.2rem);
+}
+
+.optical-diagram {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1.15fr 0.72fr;
+  align-items: center;
+  min-height: 260px;
+}
+
+.device {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--edge-bright);
+  border-radius: 18px;
+  background: #050607;
+  box-shadow: 0 26px 70px #0009;
+}
+
+.skin-device {
+  transform: perspective(600px) rotateY(12deg) rotateX(3deg);
+}
+
+.eye-device {
+  aspect-ratio: 9 / 16;
+  transform: perspective(600px) rotateY(-12deg) rotateX(2deg);
+}
+
+.eye-device::before {
+  content: "";
+  width: 46%;
+  aspect-ratio: 1;
+  border: 1px solid #65f2c566;
+  border-radius: 50%;
+  box-shadow: inset 0 0 24px #65f2c52b, 0 0 24px #65f2c51f;
+}
+
+.eye-device::after {
+  content: "";
+  position: absolute;
+  top: 7%;
+  width: 18%;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--edge-bright);
+}
+
+.mini-grid,
+.stage-grid {
+  display: block;
+  background:
+    linear-gradient(90deg, transparent 48%, #090b0d 48% 52%, transparent 52%),
+    linear-gradient(transparent 48%, #090b0d 48% 52%, transparent 52%),
+    conic-gradient(from 45deg, var(--bio), var(--violet), var(--coral), var(--bio));
+  background-size: 9px 9px;
+}
+
+.mini-grid {
+  width: 78%;
+  aspect-ratio: 16 / 9;
+  border: 5px solid #f4f1e9;
+  box-shadow: 0 0 50px #65f2c52b;
+}
+
+.light-path {
+  position: relative;
+  height: 2px;
+  background: linear-gradient(90deg, var(--bio), #8f7cff80, transparent);
+  box-shadow: 0 0 14px #65f2c566;
+}
+
+.light-path i {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bio);
+  animation: travel 2s linear infinite;
+}
+
+.light-path i:nth-child(2) { animation-delay: -0.66s; }
+.light-path i:nth-child(3) { animation-delay: -1.33s; }
+
+@keyframes travel {
+  from { left: 0; transform: translate(-50%, -50%); opacity: 0; }
+  20%, 80% { opacity: 1; }
+  to { left: 100%; transform: translate(-50%, -50%); opacity: 0; }
+}
+
+.role-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.role-card {
+  position: relative;
+  min-height: 180px;
+  padding: 1.25rem;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto 1fr;
+  gap: 1rem 1.15rem;
+  overflow: hidden;
   border: 1px solid var(--edge);
-  border-radius: 12px;
-  text-decoration: none;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(145deg, #141920, #0e1116);
   color: inherit;
-  transition: border-color 120ms ease;
+  text-decoration: none;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
-.card:hover,
-.card:focus-visible {
-  border-color: var(--accent);
+.role-card:hover,
+.role-card:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--edge-bright);
+  background: linear-gradient(145deg, #171d24, #10141a);
 }
 
-.card span {
-  color: var(--dim);
-  font-size: 0.85rem;
+.role-card::after {
+  content: "";
+  position: absolute;
+  right: -4rem;
+  bottom: -6rem;
+  width: 15rem;
+  height: 15rem;
+  border-radius: 50%;
+  background: var(--glow, #65f2c510);
+  filter: blur(8px);
+  pointer-events: none;
 }
 
-/* ---------- skin ---------- */
+.role-eye { --glow: #8f7cff17; }
 
-/*
- * The shell. One row on a phone, two columns on a laptop, and in both cases
- * exactly the height of the screen: `100svh` is the *small* viewport, so a
- * mobile URL bar sliding in cannot push the page taller than the glass. The page
- * itself never scrolls — anything that overflows scrolls inside its own panel.
- */
-body.skin {
+.role-number {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  font: 600 0.66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.1em;
+}
+
+.role-icon {
+  width: 54px;
+  height: 54px;
   display: grid;
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
+  place-items: center;
+  border: 1px solid var(--edge-bright);
+  border-radius: 15px;
+  background: #0a0d11;
+}
+
+.role-icon i {
+  width: 23px;
+  height: 23px;
+  border: 2px solid var(--bio);
+}
+
+.role-eye .role-icon i {
+  border-radius: 50%;
+  border-color: var(--violet);
+  box-shadow: inset 0 0 0 5px #0a0d11, inset 0 0 0 7px var(--violet);
+}
+
+.role-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.role-copy small {
+  color: var(--bio);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.role-eye .role-copy small { color: #b8adff; }
+
+.role-copy strong {
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  letter-spacing: -0.025em;
+}
+
+.role-copy > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.role-arrow {
+  align-self: start;
+  color: var(--muted);
+  font-size: 1.3rem;
+}
+
+.landing-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.6rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--edge);
+  color: var(--faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ---------- shared tool shell ---------- */
+
+body.skin,
+body.eye {
   height: 100svh;
   overflow: hidden;
 }
 
-.panel {
-  max-width: 30rem;
-  margin: 0 auto;
-  padding: 2rem 1.5rem calc(2rem + env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 1.4rem;
-  min-height: 0;
-  overflow-y: auto;
+.tool-panel {
+  background:
+    linear-gradient(180deg, #ffffff03, transparent 8rem),
+    var(--panel-bg);
 }
 
-/*
- * A field is a stack: name, control, consequence. The consequence line is the
- * point — none of these settings has a right answer, and there is no back
- * channel to discover one with, so each has to say what it trades away.
- */
+.tool-header,
+.camera-header,
+.receive-header,
+.field-line,
+.progress-heading,
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tool-header {
+  gap: 1rem;
+}
+
+.role-badge {
+  padding: 0.35rem 0.62rem;
+  color: var(--bio);
+  border-color: #65f2c538;
+  background: #65f2c50a;
+  text-transform: uppercase;
+}
+
+.tool-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.tool-intro .tagline {
+  max-width: 31rem;
+  font-size: 0.88rem;
+}
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 1.35rem 1.25rem max(1.35rem, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 1.35rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.control-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-top: 1.15rem;
+  border-top: 1px solid var(--edge);
+}
+
+.section-heading {
+  justify-content: flex-start;
+  gap: 0.75rem;
+}
+
+.section-heading .step {
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--edge-bright);
+  border-radius: 8px;
+  color: var(--bio);
+  font: 700 0.7rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.section-heading > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.section-heading strong {
+  font-size: 0.85rem;
+}
+
+.section-heading small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .field {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
 }
 
-.field .label {
-  font-size: 0.9rem;
-  font-weight: 600;
+.field.compact { gap: 0.3rem; }
+
+.field-line {
+  gap: 1rem;
 }
 
-.field select,
-.field input[type="file"] {
+.field .label {
+  color: #d8d9d5;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.field-meta,
+.range-scale {
+  color: var(--faint);
+  font-size: 0.65rem;
+}
+
+.field select {
   width: 100%;
   min-height: var(--tap);
-  padding: 0.55rem 0.6rem;
+  padding: 0.62rem 2.25rem 0.62rem 0.72rem;
   border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: #14161a;
-  color: inherit;
-  font: inherit;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
 }
+
+.field select:hover { border-color: var(--edge-bright); }
 
 .field input[type="range"] {
   width: 100%;
-  min-height: var(--tap);
+  min-height: 28px;
+  margin: 0;
+  accent-color: var(--bio);
 }
 
-.field.compact {
-  gap: 0.25rem;
+.range-scale {
+  margin-top: -0.35rem;
+  display: flex;
+  justify-content: space-between;
 }
 
-/*
- * The stage: the box the pulse is fitted to.
- *
- * `maxScale()` in skin.ts measures *this element* rather than doing arithmetic
- * on the viewport, which is what lets one sizing routine serve both layouts —
- * the stage is the whole screen on a phone and the right-hand column on a
- * laptop, and the script never has to ask which.
- */
-#stage {
+.value-chip {
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: #65f2c510;
+  color: var(--bio);
+  font: 700 0.72rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.drop-zone {
+  min-height: 106px;
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  border: 1px dashed var(--edge-bright);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, #65f2c508, transparent 45%),
+    var(--surface);
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.drop-zone:hover,
+.drop-zone.dragging {
+  border-color: var(--bio);
+  background: #65f2c50c;
+  transform: translateY(-1px);
+}
+
+.drop-zone input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.drop-zone > span:last-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.drop-zone strong { font-size: 0.84rem; }
+.drop-zone small { color: var(--muted); font-size: 0.7rem; }
+
+.drop-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   display: grid;
   place-items: center;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: #000;
+  border: 1px solid #65f2c545;
+  border-radius: 11px;
+  color: var(--bio);
+  background: #65f2c50b;
+  font-size: 1.2rem;
 }
 
-#stage-hint {
-  padding: 1.5rem;
+.file-detail {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-action {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+button,
+.primary-action,
+#download {
+  min-height: var(--tap);
+  padding: 0.72rem 1rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bio);
+  color: var(--bio-ink);
+  font-weight: 750;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+button:hover:not(:disabled),
+.primary-action:hover,
+#download:hover {
+  transform: translateY(-1px);
+  background: #82f7d2;
+}
+
+button:disabled {
+  background: var(--surface-2);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+.primary-action {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.button-pulse,
+.camera-dot {
+  width: 8px;
+  height: 8px;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+}
+
+.camera-dot { border-radius: 50%; }
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--edge-bright);
+  color: var(--muted);
+  font-weight: 650;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.security-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  color: var(--faint);
+  font-size: 0.65rem;
   text-align: center;
 }
 
-body.skin.sending #stage-hint {
-  display: none;
+.security-note i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--warn);
+  border-radius: 50%;
 }
 
-#pulse {
-  display: block;
-  image-rendering: pixelated;
+/* ---------- skin ---------- */
+
+body.skin {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
 }
 
-/*
- * Narrow: one thing at a time. Composing shows the panel, sending shows the
- * stage, and the controls float over the pulse.
- *
- * `--overlay-room` is what keeps them from overlapping: the padding here holds
- * the stage clear of the floating controls, and because `maxScale()` measures
- * the stage it inherits that clearance for free. skin.ts *measures* the controls
- * and overwrites this on every fit — the value below is only the guess used for
- * the first frame, and it errs high: too much room costs one px/cell, too little
- * hides the bottom beacon strip.
- */
-body.skin:not(.sending) #stage {
-  display: none;
+.optical-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 50%, #14191c, #030404 65%),
+    #000;
 }
 
-body.skin.sending #setup {
-  display: none;
+.optical-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.12;
+  background-image:
+    linear-gradient(#ffffff0b 1px, transparent 1px),
+    linear-gradient(90deg, #ffffff0b 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle, #000 20%, transparent 75%);
 }
+
+.stage-empty {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.stage-empty strong { color: #cfd2cf; font-size: 0.85rem; }
+.stage-empty > span:last-child { font-size: 0.72rem; }
+
+.stage-grid {
+  width: 78px;
+  aspect-ratio: 16 / 9;
+  margin-bottom: 0.4rem;
+  border: 3px solid #d8d6ce;
+  opacity: 0.35;
+  filter: saturate(0.6);
+}
+
+body.skin:not(.sending) #stage { display: none; }
+body.skin.sending #setup { display: none; }
+body.skin.sending #stage-hint { display: none; }
 
 body.skin.sending {
-  --overlay-room: 3.5rem;
+  --overlay-room: 4.5rem;
   padding-bottom: var(--overlay-room);
   background: #000;
 }
 
-.overlay {
+#pulse {
+  position: relative;
+  z-index: 1;
+  display: block;
+  image-rendering: pixelated;
+  box-shadow: 0 0 44px #ffffff0c;
+}
+
+.stream-dock {
   position: fixed;
-  /* Clear of the home indicator, which would otherwise sit on the slider. */
-  bottom: max(0.75rem, env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
+  z-index: 10;
+  right: 0.75rem;
+  bottom: max(0.7rem, env(safe-area-inset-bottom));
+  left: 0.75rem;
+  min-height: 54px;
+  padding: 0.55rem 0.65rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  /*
-   * Wrap rather than squeeze. Without this a phone-width screen shrank the
-   * status text to one word per line, turning the pill into a tall column down
-   * the middle of the pulse. Safe now that the pulse is sized from the measured
-   * height of this element.
-   */
   flex-wrap: wrap;
-  gap: 0.3rem 0.85rem;
-  max-width: calc(100vw - 1.5rem);
-  padding: 0.3rem 0.9rem;
-  border-radius: 999px;
-  background: #000000cc;
-  color: var(--dim);
-  font-size: 0.8rem;
+  gap: 0.5rem 0.8rem;
+  border: 1px solid #ffffff18;
+  border-radius: 16px;
+  background: #0b0e11eb;
+  box-shadow: 0 12px 40px #0009;
+  backdrop-filter: blur(16px);
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
-.overlay .size {
+.stream-state {
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  white-space: nowrap;
+  gap: 0.45rem;
 }
 
-.overlay .size input[type="range"] {
-  width: 7rem;
-  min-height: 0;
-  margin: 0;
-}
-
-.overlay .size input[type="range"]:disabled {
-  opacity: 0.35;
-}
-
-.overlay output {
-  font-variant-numeric: tabular-nums;
-}
-
-/* Least important thing in the pill, so it is the one that gets truncated. */
 #status-text {
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.overlay .back {
-  align-self: auto;
-  min-height: 0;
-  margin: -0.35rem -0.5rem -0.35rem 0;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.8rem;
   white-space: nowrap;
 }
 
-/* ---------- skin: wide ---------- */
+.stream-dock .size {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
 
-/*
- * Laptop. The panel is resident — composing and sending are the same screen,
- * with the pulse alongside rather than instead of the controls, so density and
- * rate stay adjustable mid-send without dismissing anything.
- *
- * This is where the summon-and-retire rule stops applying. It was never about
- * tidiness: on a phone the controls sit *inside* the pulse's own area and so
- * inside the receiving camera's frame. Here they are outside it, against a
- * surround the camera is not pointed at, so residency costs nothing optically.
- */
-@media (min-width: 62rem) {
-  body.skin,
-  body.skin.sending {
-    grid-template-columns: var(--panel) 1fr;
-    grid-template-rows: 1fr auto;
-    padding-bottom: 0;
-    background: var(--bg);
-  }
+.stream-dock .size > span { color: var(--faint); }
 
-  body.skin #setup,
-  body.skin.sending #setup {
-    display: flex;
-    grid-column: 1;
-    grid-row: 1;
-    max-width: none;
-    margin: 0;
-    border-right: 1px solid var(--edge);
-  }
+.stream-dock input[type="range"] {
+  width: min(24vw, 7rem);
+  margin: 0;
+  accent-color: var(--bio);
+}
 
-  body.skin #stage,
-  body.skin:not(.sending) #stage {
-    display: grid;
-    grid-column: 2;
-    grid-row: 1 / -1;
-  }
+.stream-dock output {
+  font: 650 0.67rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
-  /* Docked to the foot of the panel: in flow, square, and always up. */
-  .overlay {
-    position: static;
-    grid-column: 1;
-    grid-row: 2;
-    transform: none;
-    justify-content: flex-start;
-    max-width: none;
-    padding: 0.7rem 1.5rem calc(0.7rem + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--edge);
-    border-right: 1px solid var(--edge);
-    border-radius: 0;
-    background: var(--bg);
-  }
-
-  .overlay .size input[type="range"] {
-    width: 100%;
-  }
-
-  .overlay .size {
-    flex: 1 1 100%;
-  }
+.stop-action {
+  min-height: 30px;
+  padding: 0.35rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #ff756d42;
+  border-radius: 8px;
+  color: var(--danger);
+  text-decoration: none;
 }
 
 /* ---------- eye ---------- */
 
-/*
- * Same shell as the skin, mirrored: the work is the camera preview and the panel
- * sits to its right. Narrow keeps the readout floating over the bottom of the
- * preview, because squeezing the preview makes aiming harder and aiming is the
- * whole job.
- */
 body.eye {
   position: relative;
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
-  height: 100svh;
-  overflow: hidden;
 }
 
-.stage {
+.camera-stage {
   position: relative;
   min-width: 0;
   min-height: 0;
-  background: #000;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 38%, #182027, transparent 45%),
+    #030405;
 }
 
 #camera {
   width: 100%;
   height: 100%;
+  display: block;
   object-fit: cover;
-  background: #000;
+  background: transparent;
 }
 
-.back.over {
+.camera-header {
   position: absolute;
-  top: max(0.5rem, env(safe-area-inset-top));
-  left: 0.75rem;
-  padding: 0 0.5rem;
-  border-radius: 999px;
-  background: #000000a6;
-  color: var(--ink);
+  z-index: 3;
+  top: max(0.75rem, env(safe-area-inset-top));
+  right: 0.85rem;
+  left: 0.85rem;
 }
 
-/*
- * Framing guide, shown only while the camera is live and dropped once the file
- * has landed. 16:9 because the grid is (and that is load-bearing — a square
- * grid inside a 16:9 frame is limited by height and yields 1.33× fewer px/cell).
- */
+.brand-over,
+.role-badge-over {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #ffffff17;
+  border-radius: 11px;
+  background: #050709b8;
+  backdrop-filter: blur(12px);
+}
+
+.brand-over .brand-mark {
+  width: 25px;
+  height: 25px;
+  flex-basis: 25px;
+  background-size: auto;
+}
+
 .aim {
   position: absolute;
+  z-index: 2;
   inset: 0;
   display: none;
-  place-items: center;
+  place-content: center;
+  justify-items: center;
+  gap: 0.8rem;
   pointer-events: none;
 }
 
-body.eye:has(#begin[hidden]) .aim {
-  display: grid;
-}
+body.eye:has(#begin[hidden]) .aim { display: grid; }
+body.eye:has(#download:not([hidden])) .aim { display: none; }
 
-body.eye:has(#download:not([hidden])) .aim {
-  display: none;
-}
-
-.aim span {
+.aim-frame {
+  position: relative;
   width: min(86vw, 150vh);
   aspect-ratio: 16 / 9;
-  border: 2px dashed #ffffff59;
-  border-radius: 6px;
+  border: 1px solid #ffffff1c;
+}
+
+.aim-frame i {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border-color: var(--bio);
+  border-style: solid;
+  filter: drop-shadow(0 0 5px #65f2c566);
+}
+
+.aim-frame i:nth-child(1) { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+.aim-frame i:nth-child(2) { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+.aim-frame i:nth-child(3) { right: -1px; bottom: -1px; border-width: 0 2px 2px 0; }
+.aim-frame i:nth-child(4) { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
+
+.aim small {
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  background: #050709b8;
+  color: #d7dad6;
+  font-size: 0.68rem;
+  backdrop-filter: blur(10px);
 }
 
 .readout {
   position: absolute;
+  z-index: 4;
   right: 0;
   bottom: 0;
   left: 0;
+  max-height: 64%;
+  min-height: 0;
+  padding: 1.1rem 1.05rem max(1rem, env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  max-height: 70%;
+  gap: 0.75rem;
   overflow-y: auto;
-  padding: 0.9rem 1.1rem calc(0.9rem + env(safe-area-inset-bottom));
-  background: linear-gradient(to top, #000000f2 55%, #000000b8 80%, #0000);
+  overscroll-behavior: contain;
+  background: linear-gradient(to top, #080a0dfc 76%, #080a0de8 91%, transparent);
 }
 
-/* Laptop: the readout leaves the preview and becomes a resident side panel. */
-@media (min-width: 62rem) {
-  body.eye {
-    grid-template-columns: 1fr var(--panel);
-  }
+.receive-header h1 {
+  margin-top: 0.25rem;
+  font-size: 1.45rem;
+}
 
-  .readout {
-    position: static;
-    grid-column: 2;
-    gap: 0.9rem;
-    max-height: none;
-    min-height: 0;
-    padding: 1.5rem 1.25rem calc(1.5rem + env(safe-area-inset-bottom));
-    border-left: 1px solid var(--edge);
-    background: var(--bg);
-  }
+.live-state {
+  padding: 0.35rem 0.55rem;
+  color: var(--bio);
+  border-color: #65f2c530;
+}
 
-  /* Nothing is competing for the space, so the numbers can simply be up. */
-  .details {
-    margin-top: auto;
-  }
+.live-state.scanning i {
+  animation: breathe 1.2s ease-in-out infinite alternate;
+}
+
+.live-state.attention {
+  color: var(--warn);
+  border-color: #f4bc5e40;
+}
+
+.live-state.attention i {
+  background: var(--warn);
+  box-shadow: 0 0 10px var(--warn);
+}
+
+.live-state.complete {
+  color: var(--bio);
+  background: #65f2c509;
+}
+
+@keyframes breathe {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+.instruction-card {
+  min-height: 72px;
+  padding: 0.8rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.instruction-icon {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #65f2c54d;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--bio) 0 3px, transparent 4px);
+  box-shadow: inset 0 0 0 8px #65f2c508;
 }
 
 .hint-large {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 650;
   line-height: 1.3;
-  text-wrap: balance;
+}
+
+.action-stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.progress-card {
+  padding: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background: #0a0d11;
+}
+
+.progress-heading {
+  color: #d9dbd7;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.verified-mark {
+  padding: 0.2rem 0.4rem;
+  color: var(--bio);
+  font: 650 0.56rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-color: #65f2c52d;
 }
 
 .bar {
   height: 5px;
-  border-radius: 999px;
-  background: #ffffff26;
   overflow: hidden;
+  border-radius: 999px;
+  background: #ffffff12;
 }
 
 #bar-fill {
-  height: 100%;
   width: 0;
-  background: var(--accent);
-  transition: width 200ms ease;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--bio-strong), var(--bio));
+  box-shadow: 0 0 12px #65f2c566;
+  transition: width 180ms ease;
 }
 
 #download {
-  align-self: flex-start;
-  min-height: var(--tap);
+  align-self: stretch;
   display: inline-flex;
   align-items: center;
-  padding: 0.5rem 1.1rem;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #06231d;
-  font-weight: 600;
+  justify-content: center;
+  color: var(--bio-ink);
   text-decoration: none;
+}
+
+.details {
+  border-top: 1px solid var(--edge);
 }
 
 .details summary {
   min-height: var(--tap);
   display: flex;
   align-items: center;
-  color: var(--dim);
-  font-size: 0.85rem;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 650;
   cursor: pointer;
+  list-style: none;
 }
 
-.details > *:not(summary) {
-  margin-top: 0.5rem;
+.details summary::-webkit-details-marker { display: none; }
+
+.summary-plus {
+  color: var(--bio);
+  font-size: 1rem;
+  transition: transform 120ms ease;
 }
 
-/*
- * Auto-fit rather than a fixed column count: the eye runs portrait on a phone
- * and landscape on a laptop, and the tiles should reflow instead of forcing the
- * readout to scroll over the camera.
- */
+.details[open] .summary-plus { transform: rotate(45deg); }
+
+.details > *:not(summary) { margin-top: 0.55rem; }
+
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.4rem;
 }
 
 .tile {
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--edge);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
   min-width: 0;
+  min-height: 62px;
+  padding: 0.45rem;
+  display: grid;
+  align-content: center;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--surface);
 }
 
 .tile span {
-  color: var(--dim);
-  font-size: 0.68rem;
-  letter-spacing: 0.06em;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 0.56rem;
+  letter-spacing: 0.07em;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .tile b {
-  font: 600 1rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
   overflow: hidden;
+  color: #e5e7e2;
+  font: 650 0.86rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile small {
+  color: var(--faint);
+  font-size: 0.55rem;
+}
+
+.panel-back {
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+  font-size: 0.72rem;
+  text-decoration: none;
+}
+
+.panel-back:hover { color: var(--ink); }
+
+/* ---------- wide modular shell ---------- */
+
+@media (min-width: 62rem) {
+  body.skin,
+  body.skin.sending {
+    grid-template-columns: var(--panel) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    padding-bottom: 0;
+  }
+
+  body.skin #setup,
+  body.skin.sending #setup {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    border-right: 1px solid var(--edge);
+  }
+
+  body.skin #stage,
+  body.skin:not(.sending) #stage {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: grid;
+  }
+
+  .stream-dock {
+    position: static;
+    grid-column: 1;
+    grid-row: 2;
+    justify-content: flex-start;
+    border-width: 1px 1px 0 0;
+    border-color: var(--edge);
+    border-radius: 0;
+    background: var(--panel-bg);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .stream-dock .size {
+    width: 100%;
+  }
+
+  .stream-dock input[type="range"] {
+    width: auto;
+    flex: 1;
+  }
+
+  .stop-action { margin-left: auto; }
+
+  body.eye {
+    grid-template-columns: minmax(0, 1fr) var(--panel);
+  }
+
+  .camera-stage {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .readout {
+    position: static;
+    grid-column: 2;
+    grid-row: 1;
+    max-height: none;
+    padding: 1.35rem 1.25rem max(1.35rem, env(safe-area-inset-bottom));
+    border-left: 1px solid var(--edge);
+    background: var(--panel-bg);
+  }
+
+  .details { margin-top: auto; }
+
+  .aim-frame {
+    width: min(76%, 130vh);
+  }
+
+  .camera-header {
+    right: 1.25rem;
+    left: 1.25rem;
+  }
+}
+
+/* ---------- compact screens ---------- */
+
+@media (max-width: 61.999rem) {
+  .panel {
+    width: min(100%, 34rem);
+    margin: 0 auto;
+  }
+
+  .receive-header,
+  .readout .panel-back {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .landing-shell {
+    gap: 1.6rem;
+  }
+
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+    padding-block: 1rem;
+  }
+
+  .hero h1 {
+    font-size: clamp(3rem, 17vw, 5.2rem);
+  }
+
+  .optical-diagram {
+    width: min(100%, 430px);
+    min-height: 160px;
+    justify-self: center;
+  }
+
+  .role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .role-card {
+    min-height: 145px;
+  }
+}
+
+@media (max-width: 430px) {
+  .landing-header .privacy-badge { display: none; }
+
+  .panel {
+    padding-inline: 1rem;
+  }
+
+  .stream-dock {
+    align-content: center;
+  }
+
+  .stream-state {
+    max-width: 42vw;
+  }
+
+  .stream-dock .size > span { display: none; }
+
+  .readout {
+    padding-inline: 0.85rem;
+  }
+
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

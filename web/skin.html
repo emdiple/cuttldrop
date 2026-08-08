@@ -3,78 +3,90 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080a0d" />
     <title>Cuttldrop &mdash; skin</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body class="skin">
-    <div id="setup" class="panel">
-      <a class="back" href="./">&larr; Cuttldrop</a>
-      <h1>Skin</h1>
-      <p class="tagline">Turn a file into light. Point this screen at the other device.</p>
+    <aside id="setup" class="panel tool-panel">
+      <header class="tool-header">
+        <a class="brand" href="./" aria-label="Cuttldrop home">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Cuttldrop</span>
+        </a>
+        <span class="role-badge">Skin</span>
+      </header>
 
-      <label class="field file">
-        <span class="label">File</span>
-        <input type="file" id="file" />
-      </label>
-      <p id="detail" class="detail">Nothing chosen yet.</p>
+      <section class="tool-intro">
+        <p class="eyebrow">Optical transmitter</p>
+        <h1>Send as light</h1>
+        <p class="tagline">This screen becomes the data path. The receiving device only needs a camera.</p>
+      </section>
 
-      <!--
-        Ordered by bitrate, which is also the order of risk. The eye works the
-        choice out for itself, so this menu exists on one device only.
-      -->
-      <label class="field">
-        <span class="label">Density</span>
-        <select id="profile">
-          <option value="m1" selected>Safe &mdash; 64&times;36 mono, 160 B/pulse</option>
-          <option value="m2">Dense &mdash; 192&times;108 mono, 2.1 KB/pulse</option>
-          <option value="m3">Colour &mdash; 96&times;54, 1.4 KB/pulse</option>
-          <option value="m4">Dense colour &mdash; 192&times;108, 6.3 KB/pulse</option>
-        </select>
-        <span class="hint">Denser is faster and less forgiving. Choosing a dense profile selects its simulator-measured 25 Hz starting point; slow it down if the eye reports tearing.</span>
-      </label>
+      <section class="control-section file-section">
+        <div class="section-heading">
+          <span class="step">1</span>
+          <div><strong>Choose the payload</strong><small>It never leaves this browser except as light.</small></div>
+        </div>
+        <label id="drop-zone" class="drop-zone" for="file">
+          <input type="file" id="file" />
+          <span class="drop-icon" aria-hidden="true">&uarr;</span>
+          <span><strong>Drop a file here</strong><small>or tap to browse this device</small></span>
+        </label>
+        <p id="detail" class="file-detail">No file selected</p>
+      </section>
 
-      <label class="field">
-        <span class="label">Pulse rate <output id="rate-value">20</output> Hz</span>
-        <input type="range" id="rate" min="1" max="60" value="20" />
-        <span id="rate-hint" class="hint">
-          No back channel exists, so nothing adapts this for you. If the eye reports
-          tearing, slow it down. Above 30 Hz is experimental and needs a fast display
-          and camera.
-        </span>
-      </label>
+      <section class="control-section transport-section">
+        <div class="section-heading">
+          <span class="step">2</span>
+          <div><strong>Tune the stream</strong><small>Start reliable, then climb if the eye stays clean.</small></div>
+        </div>
 
-      <button id="start" disabled>Start strobing</button>
-    </div>
+        <label class="field">
+          <span class="field-line"><span class="label">Profile</span><span class="field-meta">density + colour</span></span>
+          <select id="profile">
+            <option value="m1" selected>M1 · Safe mono · 160 B/pulse</option>
+            <option value="m2">M2 · Dense mono · 2.1 KB/pulse</option>
+            <option value="m3">M3 · Colour · 1.4 KB/pulse</option>
+            <option value="m4">M4 · Dense colour · 6.3 KB/pulse</option>
+          </select>
+          <span class="hint">The eye detects this automatically. Dense profiles need the sender to fill more of its camera frame.</span>
+        </label>
 
-    <!--
-      The pulse lives in a stage rather than loose in the body, because the stage
-      is what `maxScale()` measures. On a phone it is the whole screen; on a
-      laptop it is whatever is left beside the panel. Measuring a box beats
-      arithmetic over viewport minus chrome — the script never has to know which
-      layout it is in.
-    -->
-    <div id="stage">
-      <p id="stage-hint" class="hint">The pulse appears here.</p>
+        <label class="field">
+          <span class="field-line">
+            <span class="label">Pulse rate</span>
+            <output id="rate-value" class="value-chip">20 Hz</output>
+          </span>
+          <input type="range" id="rate" min="1" max="60" value="20" />
+          <span class="range-scale"><span>Reliable</span><span>Experimental</span></span>
+          <span id="rate-hint" class="hint">If the eye reports tearing, slow the skin down. Above 30 Hz needs a fast display and camera.</span>
+        </label>
+      </section>
+
+      <div class="panel-action">
+        <button id="start" class="primary-action" disabled><span class="button-pulse"></span>Start transmission</button>
+        <p class="security-note"><i aria-hidden="true"></i>Any camera with line of sight can read the stream.</p>
+      </div>
+    </aside>
+
+    <main id="stage" class="optical-stage">
+      <div id="stage-hint" class="stage-empty">
+        <span class="stage-grid" aria-hidden="true"></span>
+        <strong>Pulse preview</strong>
+        <span>Select a file to prepare the optical stream.</span>
+      </div>
       <canvas id="pulse" hidden></canvas>
-    </div>
+    </main>
 
-    <!--
-      Controls. On a laptop they dock to the foot of the panel and stay put. On a
-      phone they are summoned by a tap and retire, because there anything
-      permanently lit beside the pulse is emissive area inside the receiving
-      camera's frame — it pulls auto-exposure away from the thing being read. A
-      laptop has room to put them outside the pulse entirely, so the trade does
-      not arise. Either way they *shrink* the pulse rather than cover it: the
-      bottom rows are the second beacon strip.
-    -->
-    <div id="status" class="overlay" hidden>
-      <span id="status-text"></span>
+    <div id="status" class="stream-dock overlay" hidden>
+      <div class="stream-state"><i></i><span id="status-text"></span></div>
       <label class="size">
-        Size
+        <span>Cell size</span>
         <input type="range" id="size" min="1" max="1" value="1" />
         <output id="size-value"></output>
       </label>
-      <a class="back" href="./">Stop</a>
+      <a class="stop-action" href="./">Stop</a>
     </div>
 
     <script type="module" src="./src/skin.ts"></script>

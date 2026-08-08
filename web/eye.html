@@ -3,82 +3,79 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080a0d" />
     <title>Cuttldrop &mdash; eye</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body class="eye">
-    <!--
-      The camera fills the screen and everything else floats over it. The human
-      is aiming a lens at a moving target from arm's length, so the preview is
-      the primary control surface and the numbers are secondary.
-    -->
-    <div class="stage">
+    <main class="stage camera-stage">
       <video id="camera" playsinline muted autoplay></video>
 
-      <!--
-        Framing guide. The binding constraint is px/cell at the sensor, and the
-        only lever the human has over it is how much of the frame the sending
-        screen fills. Saying "fill this box" is more actionable than saying
-        MOVE CLOSER after the fact.
-      -->
-      <div class="aim" aria-hidden="true"><span></span></div>
+      <header class="camera-header">
+        <a class="brand brand-over" href="./" aria-label="Cuttldrop home">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Cuttldrop</span>
+        </a>
+        <span class="role-badge role-badge-over">Eye</span>
+      </header>
 
-      <a class="back over" href="./">&larr; Cuttldrop</a>
-    </div>
+      <div class="aim" aria-hidden="true">
+        <span class="aim-frame"><i></i><i></i><i></i><i></i></span>
+        <small>Fit the entire pulse inside the frame</small>
+      </div>
+    </main>
 
-    <!--
-      A sibling of the stage, not a child of it: on a laptop this becomes a
-      permanent side panel in its own column, and on a phone it floats back over
-      the bottom of the preview.
-    -->
-    <div class="readout">
-      <!-- The back channel (§1e). Largest thing on the page, deliberately. -->
-      <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+    <aside class="readout tool-panel">
+      <header class="receive-header">
+        <div>
+          <p class="eyebrow">Optical receiver</p>
+          <h1>Receive from light</h1>
+        </div>
+        <span class="live-state"><i></i>Ready</span>
+      </header>
+
+      <section class="instruction-card">
+        <span class="instruction-icon" aria-hidden="true"></span>
+        <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+      </section>
+
       <label id="capture-setting" class="field compact">
-        <span class="label">Camera rate</span>
+        <span class="field-line"><span class="label">Camera rate</span><span class="field-meta">requested mode</span></span>
         <select id="capture-fps">
-          <option value="30" selected>30 fps &mdash; reliable</option>
-          <option value="60">60 fps &mdash; experimental</option>
+          <option value="30" selected>30 fps · reliable</option>
+          <option value="60">60 fps · experimental</option>
         </select>
-        <span class="hint">60 fps can reduce resolution or exposure quality on a phone. The granted mode appears in Measurements.</span>
+        <span class="hint">The actual mode granted by the phone appears under diagnostics.</span>
       </label>
-      <!--
-        iOS wants a user gesture behind getUserMedia and play(); a page-load
-        prompt is the one a phone is likeliest to refuse. One tap costs nothing
-        and is the difference between working and silently not.
-      -->
-      <button id="begin">Start camera</button>
-      <!--
-        The whole browser pipeline without a second device: share the skin's
-        window and the eye reads it as if it were a camera. Hidden where
-        getDisplayMedia does not exist, which is every browser on iOS.
-      -->
-      <button id="begin-screen" class="secondary" hidden>Read a window instead</button>
-      <div class="bar"><div id="bar-fill"></div></div>
-      <p id="progress" class="detail">0 / &mdash; symbols</p>
-      <a id="download" hidden download>Save file</a>
 
-      <!--
-        Instrumentation, not decoration. Every performance number this project
-        owns is simulated; these tiles are how the M1 air-gap run reports back
-        what a real sensor actually did (DESIGN.md §5). Folded away because they
-        are for the operator of an experiment, not for someone moving a photo
-        between two phones.
-      -->
+      <div class="action-stack">
+        <button id="begin" class="primary-action"><span class="camera-dot"></span>Start camera</button>
+        <button id="begin-screen" class="secondary" hidden>Read a window instead</button>
+      </div>
+
+      <section class="progress-card">
+        <div class="progress-heading"><span>Transfer progress</span><span class="verified-mark">BLAKE3</span></div>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="progress" class="file-detail">Waiting for the first pulse</p>
+        <a id="download" hidden download>Save file</a>
+      </section>
+
       <details class="details">
-        <summary>Measurements</summary>
+        <summary><span>Live diagnostics</span><span class="summary-plus">+</span></summary>
         <div class="tiles">
-          <div class="tile"><span>capture fps</span><b id="t-capture">&mdash;</b></div>
-          <div class="tile"><span>decode fps</span><b id="t-decode">&mdash;</b></div>
-          <div class="tile"><span>goodput</span><b id="t-goodput">&mdash;</b></div>
-          <div class="tile"><span>elapsed</span><b id="t-elapsed">&mdash;</b></div>
-          <div class="tile"><span>frames new/dup</span><b id="t-newdup">0/0</b></div>
-          <div class="tile"><span>eta</span><b id="t-eta">&mdash;</b></div>
+          <div class="tile"><span>Capture</span><b id="t-capture">&mdash;</b><small>fps</small></div>
+          <div class="tile"><span>Decode</span><b id="t-decode">&mdash;</b><small>fps</small></div>
+          <div class="tile"><span>Goodput</span><b id="t-goodput">&mdash;</b></div>
+          <div class="tile"><span>Elapsed</span><b id="t-elapsed">&mdash;</b></div>
+          <div class="tile"><span>New / dup</span><b id="t-newdup">0 / 0</b></div>
+          <div class="tile"><span>ETA</span><b id="t-eta">&mdash;</b></div>
         </div>
         <p id="counters" class="counters"></p>
-        <p id="camera-mode" class="footnote">camera &mdash;</p>
+        <p id="camera-mode" class="footnote">Camera not started</p>
       </details>
-    </div>
+
+      <a class="panel-back" href="./">&larr; Back to role selection</a>
+    </aside>
 
     <script type="module" src="./src/eye.ts"></script>
   </body>
