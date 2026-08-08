@@ -92,6 +92,29 @@ mod tests {
     /// through blur.
     const CELL_PX: u32 = 4;
 
+    /// Keep optical measurements about the optical channel. Adaptive
+    /// compression has its own codec tests; letting synthetic repeated bytes
+    /// collapse here would change loop lengths and invalidate every historical
+    /// rate, tear and loss comparison at once.
+    fn encode_raw(
+        data: &[u8],
+        grid: Grid,
+        palette: Palette,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Vec<Pulse> {
+        stream::encode_named(
+            data,
+            "sim.bin",
+            "application/zip",
+            grid,
+            palette,
+            stream_id,
+            overhead,
+        )
+        .unwrap()
+    }
+
     /// Outcome of pushing an object through the whole path.
     struct Transfer {
         object: cuttl_codec::Result<Vec<u8>>,
@@ -117,7 +140,7 @@ mod tests {
     fn transfer(data: &[u8], overhead: f32, preset: Preset, loss: f64, seed: u64) -> Transfer {
         let (grid, palette) = M1;
         let channel = Channel::preset(preset);
-        let pulses = stream::encode(data, grid, palette, 42, overhead).unwrap();
+        let pulses = encode_raw(data, grid, palette, 42, overhead);
         let mut rng = StdRng::seed_from_u64(seed);
         let mut rx = Receiver::new();
         let mut delivered = 0;
@@ -171,7 +194,7 @@ mod tests {
     ) -> (cuttl_codec::Result<Vec<u8>>, usize) {
         let (grid, palette) = profile.parts();
         let channel = Channel::preset(preset);
-        let pulses = stream::encode_named(data, "ladder.bin", "", grid, palette, 42, 2.0).unwrap();
+        let pulses = encode_raw(data, grid, palette, 42, 2.0);
         let mut rng = StdRng::seed_from_u64(seed);
         let mut rx = Receiver::new();
 
@@ -416,7 +439,7 @@ mod tests {
             tear: 1.0,
             ..Channel::preset(Preset::None)
         };
-        let pulses = stream::encode(&vec![0x42u8; 4096], grid, palette, 9, 0.0).unwrap();
+        let pulses = encode_raw(&vec![0x42u8; 4096], grid, palette, 9, 0.0);
 
         let mut detected = 0;
         let trials = 20;
@@ -525,7 +548,7 @@ mod tests {
                 bands,
                 ..Grid::M3_COLOR
             };
-            let pulses = stream::encode(&object, grid, palette, 1, 3.0).unwrap();
+            let pulses = encode_raw(&object, grid, palette, 1, 3.0);
             let mut rng = StdRng::seed_from_u64(seed);
             let mut rx = Receiver::new();
             let mut frames = 0usize;
@@ -593,7 +616,7 @@ mod tests {
             ..Channel::preset(Preset::Heavy)
         };
         let shutter = channel::Shutter::PHONE;
-        let pulses = stream::encode(object, grid, palette, 88, 3.0).unwrap();
+        let pulses = encode_raw(object, grid, palette, 88, 3.0);
         let frames: Vec<RgbImage> = pulses.iter().map(|p| render(p, CELL_PX)).collect();
         let period = 1.0 / pulse_hz;
 
@@ -632,7 +655,7 @@ mod tests {
     #[test]
     fn a_mid_readout_flip_reads_as_torn_in_the_timed_model() {
         let (grid, palette) = M1;
-        let pulses = stream::encode(&vec![0x42u8; 4096], grid, palette, 9, 0.0).unwrap();
+        let pulses = encode_raw(&vec![0x42u8; 4096], grid, palette, 9, 0.0);
         let frames = [render(&pulses[3], CELL_PX), render(&pulses[4], CELL_PX)];
         let shutter = channel::Shutter {
             readout: 0.015,
@@ -1003,7 +1026,9 @@ mod alignment {
         let data: Vec<u8> = (0..6000u32)
             .map(|i| (i.wrapping_mul(2654435761)) as u8)
             .collect();
-        let pulses = stream::encode(&data, grid, palette, 7, 0.0).unwrap();
+        let pulses =
+            stream::encode_named(&data, "sim.bin", "application/zip", grid, palette, 7, 0.0)
+                .unwrap();
         let mut rng = StdRng::seed_from_u64(seed);
 
         let (mut total, mut frames) = (0usize, 0usize);
@@ -1200,7 +1225,9 @@ mod alignment {
             let data: Vec<u8> = (0..8000u32)
                 .map(|i| i.wrapping_mul(2654435761) as u8)
                 .collect();
-            let pulses = stream::encode(&data, grid, palette, 7, 0.0).unwrap();
+            let pulses =
+                stream::encode_named(&data, "sim.bin", "application/zip", grid, palette, 7, 0.0)
+                    .unwrap();
             let mut rng = StdRng::seed_from_u64(5);
             let channel = Channel::preset(Preset::Light);
             let image = channel::apply(&render(&pulses[0], CELL_PX), &channel, CELL_PX, &mut rng);

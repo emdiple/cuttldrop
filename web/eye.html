@@ -34,6 +34,14 @@
     <div class="readout">
       <!-- The back channel (§1e). Largest thing on the page, deliberately. -->
       <p id="hint" class="hint-large">Point this camera at the sending screen</p>
+      <label id="capture-setting" class="field compact">
+        <span class="label">Camera rate</span>
+        <select id="capture-fps">
+          <option value="30" selected>30 fps &mdash; reliable</option>
+          <option value="60">60 fps &mdash; experimental</option>
+        </select>
+        <span class="hint">60 fps can reduce resolution or exposure quality on a phone. The granted mode appears in Measurements.</span>
+      </label>
       <!--
         iOS wants a user gesture behind getUserMedia and play(); a page-load
         prompt is the one a phone is likeliest to refuse. One tap costs nothing

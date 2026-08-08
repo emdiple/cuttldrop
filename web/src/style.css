@@ -235,6 +235,10 @@ body.skin {
   min-height: var(--tap);
 }
 
+.field.compact {
+  gap: 0.25rem;
+}
+
 /*
  * The stage: the box the pulse is fitted to.
  *

@@ -50,12 +50,26 @@ pub trait Fountain: Sized {
 
     fn config(&self) -> [u8; CONFIG_LEN];
 
+    /// Number of source symbols in the object.
+    fn source_symbols(&self) -> u32;
+
+    /// One deterministic symbol from the unbounded stream. Source symbols come
+    /// first; every later sequence number is a fresh repair symbol. This is the
+    /// browser skin's hot path: preparing a stream is O(file), asking for the
+    /// next pulse is O(one symbol), never O(the whole loop).
+    fn symbol(&self, sequence: u32) -> Vec<u8>;
+
     /// Source symbols plus `overhead` × K repair symbols.
     ///
     /// A finite batch is an M0 convenience: the CLI writes a directory of PNGs,
     /// which has to stand in for a skin that loops indefinitely. The browser
     /// skin will pull repair symbols on demand instead.
-    fn symbols(&self, overhead: f32) -> Vec<Vec<u8>>;
+    fn symbols(&self, overhead: f32) -> Vec<Vec<u8>> {
+        let source = self.source_symbols();
+        let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
+        let total = if source == 0 { 1 } else { source + repair };
+        (0..total).map(|sequence| self.symbol(sequence)).collect()
+    }
 }
 
 /// Eye side: absorbs symbols until the object falls out.
@@ -87,6 +101,9 @@ pub trait Sink: Sized {
 pub struct RaptorQ {
     config: raptorq::ObjectTransmissionInformation,
     encoder: Option<raptorq::Encoder>,
+    /// Serialized systematic packets. This is roughly one extra copy of the
+    /// file, but replaces the old `Vec<Pulse>` which could be hundreds of MB.
+    source: Vec<Vec<u8>>,
     empty: bool,
 }
 
@@ -111,13 +128,21 @@ impl Fountain for RaptorQ {
                     ALIGNMENT,
                 ),
                 encoder: None,
+                source: Vec::new(),
                 empty: true,
             });
         }
         let encoder = raptorq::Encoder::with_defaults(object, max_symbol);
+        let source = encoder
+            .get_block_encoders()
+            .iter()
+            .flat_map(|block| block.source_packets())
+            .map(|packet| packet.serialize())
+            .collect();
         Ok(Self {
             config: encoder.get_config(),
             encoder: Some(encoder),
+            source,
             empty: false,
         })
     }
@@ -126,19 +151,27 @@ impl Fountain for RaptorQ {
         self.config.serialize()
     }
 
-    fn symbols(&self, overhead: f32) -> Vec<Vec<u8>> {
-        let Some(encoder) = &self.encoder else {
-            // Still emit one pulse so the eye learns the config and the stream
-            // id; the object itself is empty.
-            return vec![Vec::new()];
-        };
-        let source = source_symbol_count(&self.config);
-        let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
-        encoder
-            .get_encoded_packets(repair)
-            .into_iter()
-            .map(|packet| packet.serialize())
-            .collect()
+    fn source_symbols(&self) -> u32 {
+        self.source.len() as u32
+    }
+
+    fn symbol(&self, sequence: u32) -> Vec<u8> {
+        if self.empty {
+            return Vec::new();
+        }
+        if let Some(packet) = self.source.get(sequence as usize) {
+            return packet.clone();
+        }
+
+        let encoder = self
+            .encoder
+            .as_ref()
+            .expect("non-empty fountain has encoder");
+        let blocks = encoder.get_block_encoders();
+        let repair = sequence - self.source.len() as u32;
+        let block = repair as usize % blocks.len();
+        let ordinal = repair / blocks.len() as u32;
+        blocks[block].repair_packets(ordinal, 1)[0].serialize()
     }
 }
 

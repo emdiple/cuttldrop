@@ -55,13 +55,18 @@ use crate::error::{Error, Result};
 use crate::fec;
 use crate::fountain::{CONFIG_LEN, Fountain, RaptorQ, RaptorQSink, SYMBOL_ID_LEN, Sink};
 use crate::geometry::Grid;
-use crate::manifest::Manifest;
+use crate::manifest::{Compression as ObjectCompression, Manifest};
 use crate::palette::Palette;
 use crate::pulse::Pulse;
+use flate2::Compression;
+use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::io::{Read, Write};
 
 const MAGIC: [u8; 2] = *b"CD";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
 /// Band 0's payload is the manifest, not a fountain symbol.
 const FLAG_MANIFEST: u8 = 1;
@@ -240,8 +245,201 @@ fn check_crc(bytes: &[u8], end: usize) -> Option<()> {
     (crc(&bytes[..end]) == expected).then_some(())
 }
 
-/// Encode an object as a batch of pulses, `grid.bands` symbols at a time, with
-/// its manifest interleaved every [`MANIFEST_PERIOD`]-th pulse.
+/// Prepared skin-side stream. The expensive RaptorQ intermediate-symbol solve
+/// happens once; pulses are rendered individually when the display asks for
+/// them. This keeps browser startup and memory proportional to the file rather
+/// than to `file × grid overhead × repair loop`.
+pub struct StreamEncoder {
+    grid: Grid,
+    palette: Palette,
+    fountain: RaptorQ,
+    manifest: Vec<u8>,
+    header: StreamHeader,
+    symbols: u32,
+    pulses: usize,
+}
+
+impl StreamEncoder {
+    pub fn new(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        grid: Grid,
+        palette: Palette,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<Self> {
+        grid.validate()?;
+        let max_symbol = symbol_capacity(grid, palette)?;
+        let (encoded, compression) = prepare_object(object, mime)?;
+        let fountain = RaptorQ::new(&encoded, max_symbol)?;
+        let manifest = Manifest::describe_encoded(name, mime, object, compression);
+        let wire = manifest.to_bytes();
+
+        let band0 = band_layout(grid, palette, 0)?.data_len();
+        if STREAM_HEADER_LEN + wire.len() + 4 > band0 {
+            return Err(Error::PayloadTooLarge {
+                len: wire.len(),
+                capacity: band0.saturating_sub(STREAM_HEADER_LEN + 4),
+            });
+        }
+
+        let source = fountain.source_symbols();
+        let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
+        // An empty object still needs one empty symbol to make the sink produce
+        // the empty object; pulse 0 itself is occupied by the manifest on m1.
+        let symbols = if source == 0 { 1 } else { source + repair };
+        let bands = grid.bands.max(1) as usize;
+        let mut pulses = 0usize;
+        let mut slots = 0usize;
+        while slots < symbols as usize || pulses == 0 {
+            let manifest_slot = usize::from(pulses.is_multiple_of(MANIFEST_PERIOD));
+            slots += bands.saturating_sub(manifest_slot);
+            pulses += 1;
+        }
+
+        let header = StreamHeader {
+            stream_id,
+            config: fountain.config(),
+            hash_head: manifest.hash[..4].try_into().expect("hash has 32 bytes"),
+        };
+        Ok(Self {
+            grid,
+            palette,
+            fountain,
+            manifest: wire,
+            header,
+            symbols,
+            pulses,
+        })
+    }
+
+    pub fn pulse_count(&self) -> usize {
+        self.pulses
+    }
+
+    /// Generate pulse `index`. Indices wrap because the skin loops until a
+    /// human stops it.
+    pub fn pulse(&self, index: usize) -> Result<Pulse> {
+        let index = index % self.pulses;
+        let bands = self.grid.bands.max(1) as usize;
+        let manifests_before = index.div_ceil(MANIFEST_PERIOD);
+        let mut ordinal = index * bands - manifests_before;
+        let mut pulse = Pulse::new(self.grid, self.palette)?;
+
+        for band in 0..bands {
+            let layout = band_layout(self.grid, self.palette, band as u8)?;
+            let framed = if band == 0 && index.is_multiple_of(MANIFEST_PERIOD) {
+                frame_band(
+                    band as u8,
+                    &self.header,
+                    Framed::Manifest(&self.manifest),
+                    layout.data_len(),
+                )
+            } else if ordinal < self.symbols as usize {
+                let symbol = self.fountain.symbol(ordinal as u32);
+                ordinal += 1;
+                frame_band(
+                    band as u8,
+                    &self.header,
+                    Framed::Symbol(&symbol),
+                    layout.data_len(),
+                )
+            } else {
+                continue;
+            };
+            pulse.write_band(band as u8, &fec::encode(&framed, layout)?)?;
+        }
+        beacon::write(
+            &mut pulse,
+            Beacon {
+                stream_id: self.header.stream_id as u8,
+                counter: index as u32,
+            },
+        )?;
+        Ok(pulse)
+    }
+}
+
+/// Compress only when the media type is plausibly compressible and the result
+/// wins by enough to pay for format metadata. This mirrors Decimen's useful
+/// policy, but compression remains inside Cuttldrop's authenticated manifest.
+fn prepare_object<'a>(object: &'a [u8], mime: &str) -> Result<(Cow<'a, [u8]>, ObjectCompression)> {
+    if object.len() < 768 || is_precompressed(mime) {
+        return Ok((Cow::Borrowed(object), ObjectCompression::None));
+    }
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(object)
+        .map_err(|error| Error::Compression(error.to_string()))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| Error::Compression(error.to_string()))?;
+    if compressed.len() + 64 < object.len() {
+        Ok((Cow::Owned(compressed), ObjectCompression::Deflate))
+    } else {
+        Ok((Cow::Borrowed(object), ObjectCompression::None))
+    }
+}
+
+fn is_precompressed(mime: &str) -> bool {
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    mime.starts_with("video/")
+        || matches!(
+            mime.as_str(),
+            "application/gzip"
+                | "application/java-archive"
+                | "application/vnd.rar"
+                | "application/x-7z-compressed"
+                | "application/x-rar-compressed"
+                | "application/zip"
+                | "application/zstd"
+        )
+        || (mime.starts_with("image/")
+            && !matches!(
+                mime.as_str(),
+                "image/bmp" | "image/svg+xml" | "image/tiff" | "image/x-icon"
+            ))
+        || (mime.starts_with("audio/")
+            && !matches!(mime.as_str(), "audio/wav" | "audio/x-wav" | "audio/aiff"))
+}
+
+fn restore_object(manifest: &Manifest, encoded: &[u8]) -> Result<Vec<u8>> {
+    let expected = usize::try_from(manifest.original_len)
+        .map_err(|_| Error::Compression("declared length does not fit this device".into()))?;
+    let object = match manifest.compression {
+        ObjectCompression::None => encoded.to_vec(),
+        ObjectCompression::Deflate => {
+            let decoder = DeflateDecoder::new(encoded);
+            let mut limited = decoder.take(manifest.original_len.saturating_add(1));
+            // The manifest crossed an untrusted optical channel. Its CRC and
+            // hash protect correctness, not resource use; never reserve an
+            // attacker-declared multi-gigabyte length before decompression has
+            // produced those bytes.
+            let mut out = Vec::with_capacity(expected.min(8 * 1024 * 1024));
+            limited
+                .read_to_end(&mut out)
+                .map_err(|error| Error::Compression(error.to_string()))?;
+            out
+        }
+    };
+    if object.len() != expected {
+        return Err(Error::Compression(format!(
+            "declared {expected} B, restored {} B",
+            object.len()
+        )));
+    }
+    Ok(object)
+}
+
+/// Encode an object as a finite batch of pulses for the CLI and simulator.
+/// The browser uses [`StreamEncoder`] directly and generates one pulse at a
+/// time.
 ///
 /// `name` and `mime` may be empty — an anonymous transfer is legitimate, and
 /// the eye falls back to a safe placeholder name. The BLAKE3 hash is not
@@ -259,62 +457,10 @@ pub fn encode_named(
     stream_id: u32,
     overhead: f32,
 ) -> Result<Vec<Pulse>> {
-    grid.validate()?;
-    let max_symbol = symbol_capacity(grid, palette)?;
-    let fountain = RaptorQ::new(object, max_symbol)?;
-    let manifest = Manifest::describe(name, mime, object);
-    let wire = manifest.to_bytes();
-
-    // The truncation caps in `manifest` guarantee this for every real profile;
-    // the check is for hand-built grids.
-    let band0 = band_layout(grid, palette, 0)?.data_len();
-    if STREAM_HEADER_LEN + wire.len() + 4 > band0 {
-        return Err(Error::PayloadTooLarge {
-            len: wire.len(),
-            capacity: band0.saturating_sub(STREAM_HEADER_LEN + 4),
-        });
-    }
-
-    let header = StreamHeader {
-        stream_id,
-        config: fountain.config(),
-        hash_head: manifest.hash[..4].try_into().expect("hash has 32 bytes"),
-    };
-
-    let bands = grid.bands.max(1);
-    let mut symbols = fountain.symbols(overhead).into_iter().peekable();
-    let mut pulses = Vec::new();
-    let mut index = 0usize;
-    // Symbols flow into every slot the manifest is not occupying, so a manifest
-    // pulse costs loop length, never a symbol. `index == 0` keeps an empty
-    // object from producing a stream with no manifest.
-    while symbols.peek().is_some() || index == 0 {
-        let mut pulse = Pulse::new(grid, palette)?;
-        for band in 0..bands {
-            let layout = band_layout(grid, palette, band)?;
-            let framed = if band == 0 && index.is_multiple_of(MANIFEST_PERIOD) {
-                frame_band(band, &header, Framed::Manifest(&wire), layout.data_len())
-            } else if let Some(symbol) = symbols.next() {
-                frame_band(band, &header, Framed::Symbol(&symbol), layout.data_len())
-            } else {
-                // A short final chunk leaves its remaining bands blank; they
-                // simply fail their CRC at the far end, an erasure like any
-                // other.
-                continue;
-            };
-            pulse.write_band(band, &fec::encode(&framed, layout)?)?;
-        }
-        beacon::write(
-            &mut pulse,
-            Beacon {
-                stream_id: stream_id as u8,
-                counter: index as u32,
-            },
-        )?;
-        pulses.push(pulse);
-        index += 1;
-    }
-    Ok(pulses)
+    let encoder = StreamEncoder::new(object, name, mime, grid, palette, stream_id, overhead)?;
+    (0..encoder.pulse_count())
+        .map(|index| encoder.pulse(index))
+        .collect()
 }
 
 /// [`encode_named`] with no name and no mime — the convenience for tests and
@@ -558,7 +704,10 @@ impl Receiver {
     /// Exact object length, known as soon as any pulse is understood — the
     /// fountain config carries it.
     pub fn expected_len(&self) -> Option<u64> {
-        self.sink.as_ref().map(|sink| sink.transfer_length())
+        self.manifest
+            .as_ref()
+            .map(|manifest| manifest.original_len)
+            .or_else(|| self.sink.as_ref().map(|sink| sink.transfer_length()))
     }
 
     /// Bytes of the object each accepted symbol stands for, once the config is
@@ -592,17 +741,18 @@ impl Receiver {
         if self.stream_id.is_none() {
             return Err(Error::Empty);
         }
-        let Some(object) = &self.object else {
+        let Some(encoded) = &self.object else {
             let (have, need) = self.progress();
             return Err(Error::NotConverged { have, need });
         };
         let Some(manifest) = &self.manifest else {
             return Err(Error::NoManifest);
         };
-        if blake3::hash(object).as_bytes() != &manifest.hash {
+        let object = restore_object(manifest, encoded)?;
+        if blake3::hash(&object).as_bytes() != &manifest.hash {
             return Err(Error::ObjectHash);
         }
-        Ok(object.clone())
+        Ok(object)
     }
 }
 
@@ -822,8 +972,11 @@ mod tests {
 
     #[test]
     fn a_foreign_stream_in_view_is_ignored() {
-        let ours = encode(&[1u8; 2000], M1.0, M1.1, 111, 0.0).unwrap();
-        let theirs = encode(&[2u8; 2000], M1.0, M1.1, 222, 0.0).unwrap();
+        // This test is about handover, not compression. Mark the synthetic
+        // bytes as already compressed so they still require several symbols.
+        let ours = encode_named(&[1u8; 2000], "", "application/zip", M1.0, M1.1, 111, 0.0).unwrap();
+        let theirs =
+            encode_named(&[2u8; 2000], "", "application/zip", M1.0, M1.1, 222, 0.0).unwrap();
         let mut rx = Receiver::new();
         assert_eq!(rx.ingest(&ours[0]), Ingest::Accepted);
         assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
@@ -835,9 +988,9 @@ mod tests {
 
     #[test]
     fn two_valid_headers_move_the_eye_to_a_new_stream() {
-        let old = encode(&[1u8; 4000], M1.0, M1.1, 111, 0.5).unwrap();
+        let old = encode_named(&[1u8; 4000], "", "application/zip", M1.0, M1.1, 111, 0.5).unwrap();
         let object = vec![2u8; 4000];
-        let new = encode(&object, M1.0, M1.1, 222, 0.5).unwrap();
+        let new = encode_named(&object, "", "application/zip", M1.0, M1.1, 222, 0.5).unwrap();
         let mut rx = Receiver::new();
 
         assert_eq!(rx.ingest(&old[0]), Ingest::Accepted);
@@ -862,6 +1015,27 @@ mod tests {
                 break;
             }
         }
+        assert_eq!(rx.finish().unwrap(), object);
+    }
+
+    #[test]
+    fn useful_compression_shortens_the_stream_and_restores_the_original() {
+        let object = "chromatophore pulse\n".repeat(5000).into_bytes();
+        let compressed =
+            StreamEncoder::new(&object, "notes.txt", "text/plain", M1.0, M1.1, 7, 0.2).unwrap();
+        let raw = StreamEncoder::new(&object, "notes.txt", "application/zip", M1.0, M1.1, 8, 0.2)
+            .unwrap();
+
+        assert!(compressed.pulse_count() * 10 < raw.pulse_count());
+        let pulses: Vec<_> = (0..compressed.pulse_count())
+            .map(|index| compressed.pulse(index).unwrap())
+            .collect();
+        let rx = absorb_all(&pulses);
+        assert_eq!(
+            rx.manifest().unwrap().compression,
+            ObjectCompression::Deflate
+        );
+        assert_eq!(rx.expected_len(), Some(object.len() as u64));
         assert_eq!(rx.finish().unwrap(), object);
     }
 

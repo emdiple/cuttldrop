@@ -16,6 +16,7 @@ const start = document.querySelector<HTMLButtonElement>("#start")!;
 const rate = document.querySelector<HTMLInputElement>("#rate")!;
 const profile = document.querySelector<HTMLSelectElement>("#profile")!;
 const rateValue = document.querySelector<HTMLOutputElement>("#rate-value")!;
+const rateHint = document.querySelector<HTMLSpanElement>("#rate-hint")!;
 const stage = document.querySelector<HTMLDivElement>("#stage")!;
 const display = document.querySelector<HTMLCanvasElement>("#pulse")!;
 const status = document.querySelector<HTMLDivElement>("#status")!;
@@ -24,7 +25,10 @@ const size = document.querySelector<HTMLInputElement>("#size")!;
 const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: Skin | null = null;
-let index = 0;
+const LOOKAHEAD = 3;
+let current: ImageData | null = null;
+let queue: ImageData[] = [];
+let nextIndex = 0;
 /** True until the size slider is deliberately moved; see `resize`. */
 let pinnedToMax = true;
 
@@ -134,12 +138,44 @@ function resize(): void {
   displayCtx.imageSmoothingEnabled = false;
 }
 
+function makeFrame(): ImageData {
+  if (!skin) throw new Error("no prepared stream");
+  const rgba = skin.pulseRgba(nextIndex);
+  nextIndex = (nextIndex + 1) % skin.pulseCount;
+  return new ImageData(new Uint8ClampedArray(rgba), skin.cols, skin.rows);
+}
+
+/** Keep only a few pulses ahead, like Decimen's sender. Preparing the RaptorQ
+ * state remains one-time work; raster/FEC generation is amortised one pulse per
+ * display tick instead of materialising the complete loop at file selection. */
+function pump(max = LOOKAHEAD): void {
+  if (!skin) return;
+  for (let made = 0; made < max && queue.length < LOOKAHEAD; made += 1) {
+    queue.push(makeFrame());
+  }
+}
+
 function paint(): void {
   if (!skin) return;
-  const rgba = skin.pulseRgba(index);
-  gridCtx.putImageData(new ImageData(new Uint8ClampedArray(rgba), skin.cols, skin.rows), 0, 0);
+  current ??= queue.shift() ?? makeFrame();
+  pump(1);
+  gridCtx.putImageData(current, 0, 0);
   displayCtx.imageSmoothingEnabled = false;
   displayCtx.drawImage(grid, 0, 0, display.width, display.height);
+}
+
+function advance(): void {
+  if (!skin) return;
+  current = queue.shift() ?? makeFrame();
+  pump(1);
+  paint();
+}
+
+function rewind(): void {
+  current = null;
+  queue = [];
+  nextIndex = 0;
+  pump();
 }
 
 /**
@@ -166,8 +202,7 @@ function loop(): void {
     requestAnimationFrame(step);
     if (now < nextAt) return;
 
-    index = (index + 1) % skin.pulseCount;
-    paint();
+    advance();
 
     const interval = 1000 / Math.max(1, Number(rate.value));
     nextAt += interval;
@@ -178,10 +213,14 @@ function loop(): void {
 
 rate.addEventListener("input", () => {
   rateValue.value = rate.value;
+  rateHint.textContent =
+    Number(rate.value) > 30
+      ? "Experimental: this rate needs a display and camera mode fast enough to expose clean pulses. If the eye reports tearing or decode fps falls behind, slow it down."
+      : "No back channel exists, so nothing adapts this for you. If the eye reports tearing, slow it down. Above 30 Hz is experimental and needs a fast display and camera.";
   label();
 });
 
-// Resize repaints from the same pulse index, so dragging the slider never
+// Resize repaints the same pulse, so dragging the slider never
 // costs the eye a frame of the loop.
 size.addEventListener("input", () => {
   pinnedToMax = false;
@@ -219,7 +258,7 @@ file.addEventListener("change", async () => {
   // A re-encode is a different grid and a different loop length. If one is
   // already on screen, refit it: the display canvas is still sized for the old
   // profile, and blitting the new grid into it would stretch every cell.
-  index = 0;
+  rewind();
   if (sending()) {
     label();
     refit();
@@ -242,7 +281,8 @@ start.addEventListener("click", () => {
   // and a second loop() would run two rAF chains against one canvas, doubling
   // the pulse rate the eye sees while the slider still claims the old one.
   if (sending()) {
-    index = 0;
+    rewind();
+    paint();
     return;
   }
   document.body.classList.add("sending");

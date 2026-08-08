@@ -24,15 +24,24 @@
 /// BLAKE3 output length.
 pub const HASH_LEN: usize = 32;
 
-/// Longest name carried, in bytes. Sized so the manifest fits band 0 of the
-/// smallest profile alongside the stream header and CRC.
-pub const MAX_NAME: usize = 100;
+/// Longest name carried, in bytes. Sized so the manifest, including restoration
+/// metadata, fits band 0 of the smallest profile alongside the stream header
+/// and CRC.
+pub const MAX_NAME: usize = 91;
 
 /// Longest mime type carried, in bytes. Real types run ~10–70 bytes; anything
 /// longer is noise.
 pub const MAX_MIME: usize = 32;
 
-/// Name, mime and hash of the object in flight.
+/// How the fountain object must be restored before its hash is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Compression {
+    None = 0,
+    Deflate = 1,
+}
+
+/// Name, mime, restoration metadata and hash of the original file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     /// BLAKE3 of the whole object. The first four bytes also ride in every
@@ -44,6 +53,10 @@ pub struct Manifest {
     pub name: String,
     /// Mime type, or empty if the sender did not know.
     pub mime: String,
+    /// Compression applied before fountain coding.
+    pub compression: Compression,
+    /// Exact uncompressed length. The decoder enforces this as a hard ceiling.
+    pub original_len: u64,
 }
 
 impl Manifest {
@@ -53,13 +66,28 @@ impl Manifest {
             hash: *blake3::hash(object).as_bytes(),
             name: truncated(name, MAX_NAME),
             mime: truncated(mime, MAX_MIME),
+            compression: Compression::None,
+            original_len: object.len() as u64,
         }
     }
 
-    /// Wire form: hash, then length-prefixed name and mime.
+    pub fn describe_encoded(
+        name: &str,
+        mime: &str,
+        original: &[u8],
+        compression: Compression,
+    ) -> Self {
+        let mut manifest = Self::describe(name, mime, original);
+        manifest.compression = compression;
+        manifest
+    }
+
+    /// Wire form: hash, restoration metadata, then length-prefixed name and mime.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.wire_len());
         out.extend_from_slice(&self.hash);
+        out.push(self.compression as u8);
+        out.extend_from_slice(&self.original_len.to_le_bytes());
         out.push(self.name.len() as u8);
         out.extend_from_slice(self.name.as_bytes());
         out.push(self.mime.len() as u8);
@@ -68,7 +96,7 @@ impl Manifest {
     }
 
     pub fn wire_len(&self) -> usize {
-        HASH_LEN + 1 + self.name.len() + 1 + self.mime.len()
+        HASH_LEN + 1 + 8 + 1 + self.name.len() + 1 + self.mime.len()
     }
 
     /// Parse a manifest and report how many bytes it occupied, so the caller
@@ -76,11 +104,18 @@ impl Manifest {
     /// the CRC gate then treats as an ordinary erasure.
     pub fn parse(bytes: &[u8]) -> Option<(Self, usize)> {
         let hash: [u8; HASH_LEN] = bytes.get(..HASH_LEN)?.try_into().ok()?;
-        let name_len = *bytes.get(HASH_LEN)? as usize;
+        let compression = match *bytes.get(HASH_LEN)? {
+            0 => Compression::None,
+            1 => Compression::Deflate,
+            _ => return None,
+        };
+        let original_len =
+            u64::from_le_bytes(bytes.get(HASH_LEN + 1..HASH_LEN + 9)?.try_into().ok()?);
+        let name_len = *bytes.get(HASH_LEN + 9)? as usize;
         if name_len > MAX_NAME {
             return None;
         }
-        let at = HASH_LEN + 1;
+        let at = HASH_LEN + 10;
         let name = core::str::from_utf8(bytes.get(at..at + name_len)?).ok()?;
         let at = at + name_len;
         let mime_len = *bytes.get(at)? as usize;
@@ -93,6 +128,8 @@ impl Manifest {
                 hash,
                 name: name.to_string(),
                 mime: mime.to_string(),
+                compression,
+                original_len,
             },
             at + 1 + mime_len,
         ))
@@ -169,10 +206,23 @@ mod tests {
     #[test]
     fn oversized_fields_on_the_wire_are_rejected() {
         let mut bytes = vec![0u8; HASH_LEN];
+        bytes.push(Compression::None as u8);
+        bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.push((MAX_NAME + 1) as u8);
         bytes.extend_from_slice(&[b'a'; MAX_NAME + 1]);
         bytes.push(0);
         assert!(Manifest::parse(&bytes).is_none());
+    }
+
+    #[test]
+    fn restoration_metadata_roundtrips() {
+        let original = vec![b'a'; 4096];
+        let manifest =
+            Manifest::describe_encoded("notes.txt", "text/plain", &original, Compression::Deflate);
+        let parsed = Manifest::parse(&manifest.to_bytes()).unwrap().0;
+        assert_eq!(parsed.compression, Compression::Deflate);
+        assert_eq!(parsed.original_len, 4096);
+        assert_eq!(parsed.hash, *blake3::hash(&original).as_bytes());
     }
 
     #[test]
@@ -181,6 +231,8 @@ mod tests {
             hash: [0; HASH_LEN],
             name: n.to_string(),
             mime: String::new(),
+            compression: Compression::None,
+            original_len: 0,
         };
         assert_eq!(name("../../etc/passwd").safe_name(), "passwd");
         assert_eq!(name("..\\..\\boot.ini").safe_name(), "boot.ini");

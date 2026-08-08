@@ -19,6 +19,7 @@ cuttl-sim = { path = "crates/cuttl-sim" }
 raptorq = "2.0"    # outer fountain layer, RFC 6330 (DESIGN.md §1a)
 blake3 = "1.8"     # whole-object integrity (DESIGN.md §3c)
 crc32fast = "1.5"  # per-symbol error->erasure gate (DESIGN.md §1b)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 thiserror = "2"
 
 # Inner RS layer (DESIGN.md §1b): GF(2^8), 255-byte blocks, byte symbols, no_std.

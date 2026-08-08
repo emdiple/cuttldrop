@@ -9,6 +9,7 @@ license.workspace = true
 raptorq = { workspace = true }
 blake3 = { workspace = true }
 crc32fast = { workspace = true }
+flate2 = { workspace = true }
 reed-solomon = { workspace = true }
 thiserror = { workspace = true }
 

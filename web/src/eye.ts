@@ -38,6 +38,8 @@ const RATE_WINDOW = 2;
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
 const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
+const captureFps = document.querySelector<HTMLSelectElement>("#capture-fps")!;
+const captureSetting = document.querySelector<HTMLLabelElement>("#capture-setting")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
@@ -315,12 +317,15 @@ function unavailable(): string | null {
 /**
  * Frame rate to ask the camera for.
  *
- * 30, not 60. The measured pulse-rate optimum is 20 Hz against a 30 fps camera,
- * and asking for more on a phone tends to buy a lower-resolution sensor mode
- * rather than more frames — the wrong trade when px/cell is the binding
- * constraint.
+ * Reliable defaults to 30: the measured pulse-rate optimum is 20–25 Hz against
+ * a 30 fps camera, and asking for more on a phone can buy a lower-resolution
+ * sensor mode rather than useful frames. A deliberate 60-fps option exists for
+ * hardware that can prove it granted both rate and resolution; telemetry says
+ * what actually happened.
  */
-const WANT_FPS = 30;
+function wantedFps(): number {
+  return Number(captureFps.value) === 60 ? 60 : 30;
+}
 
 /** Let go of the camera. Called on completion and on every failed start. */
 function releaseCamera(): void {
@@ -340,6 +345,7 @@ function releaseCamera(): void {
 function offerRetry(message: string): void {
   releaseCamera();
   hint.textContent = message;
+  captureSetting.hidden = false;
   begin.hidden = false;
   begin.disabled = false;
   begin.textContent = "Try again";
@@ -357,6 +363,7 @@ function offerRetry(message: string): void {
  * has to exist for every camera that genuinely cannot hit the number.
  */
 async function openCamera(): Promise<MediaStream> {
+  const fps = wantedFps();
   const base: MediaTrackConstraints = {
     facingMode: { ideal: "environment" },
     // Matched to the decode width rather than maximised. Anything above
@@ -368,12 +375,12 @@ async function openCamera(): Promise<MediaStream> {
   try {
     return await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { ...base, frameRate: { exact: WANT_FPS } },
+      video: { ...base, frameRate: { exact: fps } },
     });
   } catch {
     return await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { ...base, frameRate: { ideal: WANT_FPS } },
+      video: { ...base, frameRate: { ideal: fps } },
     });
   }
 }
@@ -393,9 +400,10 @@ async function openCamera(): Promise<MediaStream> {
  * says nothing about whether a camera can read the screen.
  */
 async function openScreen(): Promise<MediaStream> {
+  const fps = wantedFps();
   return await navigator.mediaDevices.getDisplayMedia({
     audio: false,
-    video: { frameRate: { ideal: WANT_FPS } },
+    video: { frameRate: { ideal: fps } },
   });
 }
 
@@ -426,6 +434,7 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   }
   begin.hidden = true;
   beginScreen.hidden = true;
+  captureSetting.hidden = true;
   const track = stream.getVideoTracks()[0];
   await steady(track);
   // The camera is the only thing on this page that matters, and a display
@@ -438,7 +447,8 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   // for this device, and nothing else on the page would ever say so.
   const settings = track.getSettings();
   const granted = Math.round(settings.frameRate ?? 0);
-  const fps = granted ? `@${granted} fps${granted === WANT_FPS ? "" : ` (asked ${WANT_FPS})`}` : "";
+  const requested = wantedFps();
+  const fps = granted ? `@${granted} fps${granted === requested ? "" : ` (asked ${requested})`}` : "";
   // Say which source this is. A screen-capture run has no optics in it, and a
   // goodput number from one must never be quoted as if a camera produced it.
   const kind = source === openScreen ? "screen" : "camera";

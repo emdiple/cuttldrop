@@ -19,7 +19,7 @@
 //! borrows it as a `Raster`. No conversion pass over a multi-megabyte frame,
 //! and no allocation per capture beyond what the decoder itself needs.
 
-use cuttl_codec::{Grid, Ingest, Profile, Pulse, Raster, Receiver, eye, stream};
+use cuttl_codec::{Grid, Ingest, Profile, Raster, Receiver, eye, stream};
 use wasm_bindgen::prelude::*;
 
 /// What happened to one captured frame.
@@ -49,10 +49,10 @@ fn profile_of(name: &str) -> Result<Profile, String> {
     Profile::parse(name).ok_or_else(|| format!("unknown profile {name:?}"))
 }
 
-/// The sending side: holds a file's worth of pulses, ready to paint.
+/// The sending side: prepares RaptorQ once, then generates pulses as painted.
 #[wasm_bindgen]
 pub struct Skin {
-    pulses: Vec<Pulse>,
+    stream: stream::StreamEncoder,
     grid: Grid,
 }
 
@@ -88,9 +88,10 @@ impl Skin {
         overhead: f32,
     ) -> Result<Skin, String> {
         let (grid, palette) = profile_of(profile)?.parts();
-        let pulses = stream::encode_named(object, name, mime, grid, palette, stream_id, overhead)
-            .map_err(|e| e.to_string())?;
-        Ok(Self { pulses, grid })
+        let stream =
+            stream::StreamEncoder::new(object, name, mime, grid, palette, stream_id, overhead)
+                .map_err(|e| e.to_string())?;
+        Ok(Self { stream, grid })
     }
 
     #[wasm_bindgen(getter)]
@@ -105,7 +106,7 @@ impl Skin {
 
     #[wasm_bindgen(getter, js_name = pulseCount)]
     pub fn pulse_count(&self) -> usize {
-        self.pulses.len()
+        self.stream.pulse_count()
     }
 
     /// One pulse as RGBA, at *grid* resolution — `cols × rows`, not screen size.
@@ -117,11 +118,10 @@ impl Skin {
     #[wasm_bindgen(js_name = pulseRgba)]
     pub fn pulse_rgba(&self, index: usize) -> Vec<u8> {
         let mut out = vec![255u8; (self.grid.cols as usize) * (self.grid.rows as usize) * 4];
-        if self.pulses.is_empty() {
-            return out;
-        }
-        // Wraps, because the skin loops forever.
-        let pulse = &self.pulses[index % self.pulses.len()];
+        // StreamEncoder wraps the index because the skin loops forever. Every
+        // failure mode was rejected by the constructor; per-pulse generation
+        // only performs deterministic framing/ECC over that prepared state.
+        let pulse = self.stream.pulse(index).expect("prepared stream renders");
         for y in 0..self.grid.rows {
             for x in 0..self.grid.cols {
                 let rgb = pulse.rgb(x, y).expect("cell within grid bounds");

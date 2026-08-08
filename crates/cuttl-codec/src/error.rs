@@ -72,6 +72,9 @@ pub enum Error {
     #[error("BLAKE3 mismatch after reassembly — the reconstruction is not the file that was sent")]
     ObjectHash,
 
+    #[error("compressed object could not be restored: {0}")]
+    Compression(String),
+
     #[error("pulses disagree about the object: {field}")]
     Inconsistent { field: &'static str },
 }
