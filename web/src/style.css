@@ -1,19 +1,20 @@
 :root {
-  --bg: #080a0d;
-  --panel-bg: #0d1014;
-  --surface: #12161c;
-  --surface-2: #171c23;
-  --edge: #242b34;
-  --edge-bright: #37414d;
-  --ink: #f2f0e9;
-  --muted: #9299a2;
-  --faint: #616974;
-  --bio: #65f2c5;
-  --bio-strong: #35d9a8;
-  --bio-ink: #04261d;
-  --violet: #8f7cff;
-  --coral: #ff896e;
-  --warn: #f4bc5e;
+  --bg: #0b0908;
+  --panel-bg: #110f0d;
+  --surface: #181512;
+  --surface-2: #201b17;
+  --edge: #2d2822;
+  --edge-bright: #494037;
+  --ink: #f2ead9;
+  --muted: #a09687;
+  --faint: #6e665d;
+  --bio: #78ddc4;
+  --bio-strong: #45bea4;
+  --bio-ink: #08251e;
+  --violet: #9b86c8;
+  --coral: #e68a61;
+  --sand: #d7bd89;
+  --warn: #e5b767;
   --danger: #ff756d;
   --tap: 46px;
   --panel: clamp(22rem, 28vw, 27rem);
@@ -121,26 +122,39 @@ h1 {
 
 .brand-mark {
   position: relative;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
-  border: 1px solid #65f2c54d;
-  border-radius: 9px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  filter: drop-shadow(0 0 10px #78ddc426);
+}
+
+.brand-mark::before {
+  content: "";
+  position: absolute;
+  inset: 2px 5px 7px;
+  border: 1px solid #f2ead94d;
+  border-radius: 62% 38% 48% 52% / 68% 55% 45% 32%;
   background:
-    radial-gradient(circle at 8px 8px, var(--bio) 0 2px, transparent 2.5px),
-    radial-gradient(circle at 21px 8px, var(--violet) 0 2px, transparent 2.5px),
-    radial-gradient(circle at 8px 21px, var(--coral) 0 2px, transparent 2.5px),
-    radial-gradient(circle at 21px 21px, var(--bio) 0 2px, transparent 2.5px),
-    #11171b;
-  box-shadow: inset 0 0 18px #65f2c50d;
+    radial-gradient(circle at 72% 67%, #090706 0 1.5px, var(--bio) 2px 3px, transparent 3.5px),
+    radial-gradient(circle at 28% 27%, var(--sand) 0 1.5px, transparent 2px),
+    radial-gradient(circle at 62% 23%, var(--coral) 0 1.4px, transparent 2px),
+    radial-gradient(circle at 35% 59%, var(--violet) 0 1.5px, transparent 2px),
+    linear-gradient(145deg, #75583f, #30271f 58%, #171310);
+  transform: rotate(-7deg);
 }
 
 .brand-mark::after {
   content: "";
   position: absolute;
-  inset: 5px;
-  border: 1px solid #ffffff12;
-  border-radius: 5px;
+  right: 4px;
+  bottom: 2px;
+  width: 17px;
+  height: 10px;
+  border: solid var(--coral);
+  border-width: 0 0 1.5px;
+  border-radius: 0 0 65% 45%;
+  box-shadow: 1px 3px 0 -1px var(--bio), -2px 5px 0 -2px var(--sand);
+  transform: rotate(-12deg);
 }
 
 .privacy-badge,
@@ -176,11 +190,27 @@ h1 {
 /* ---------- landing ---------- */
 
 .landing-page {
+  position: relative;
   min-height: 100svh;
   background:
-    radial-gradient(circle at 75% 18%, #8f7cff13, transparent 28rem),
-    radial-gradient(circle at 12% 90%, #65f2c50c, transparent 25rem),
+    radial-gradient(ellipse at 78% 12%, #9b86c817, transparent 30rem),
+    radial-gradient(ellipse at 8% 88%, #e68a6112, transparent 28rem),
+    radial-gradient(circle at 48% 110%, #78ddc40c, transparent 34rem),
     var(--bg);
+}
+
+.landing-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  opacity: 0.22;
+  pointer-events: none;
+  background:
+    radial-gradient(circle, #d7bd8957 0 1px, transparent 1.7px) 0 0 / 47px 43px,
+    radial-gradient(circle, #e68a6145 0 1.3px, transparent 2px) 19px 12px / 61px 57px,
+    radial-gradient(circle, #78ddc436 0 0.8px, transparent 1.5px) 7px 26px / 53px 49px;
+  -webkit-mask-image: radial-gradient(ellipse at 70% 38%, #000, transparent 69%);
+  mask-image: radial-gradient(ellipse at 70% 38%, #000, transparent 69%);
 }
 
 .landing-shell {
@@ -238,6 +268,22 @@ h1 {
   grid-template-columns: 1fr 1.15fr 0.72fr;
   align-items: center;
   min-height: 260px;
+}
+
+.optical-diagram::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 2% -7% 0 3%;
+  border: 1px solid #d7bd8915;
+  border-radius: 58% 42% 62% 38% / 46% 65% 35% 54%;
+  background:
+    radial-gradient(circle at 21% 35%, #e68a6128 0 2px, transparent 3px),
+    radial-gradient(circle at 67% 28%, #78ddc429 0 2px, transparent 3px),
+    radial-gradient(circle at 43% 72%, #9b86c828 0 2px, transparent 3px),
+    #d7bd8905;
+  background-size: 32px 35px, 41px 38px, 47px 43px, auto;
+  transform: rotate(-3deg);
 }
 
 .device {
@@ -338,8 +384,8 @@ h1 {
   gap: 1rem 1.15rem;
   overflow: hidden;
   border: 1px solid var(--edge);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(145deg, #141920, #0e1116);
+  border-radius: 26px 18px 30px 20px;
+  background: linear-gradient(145deg, #1c1814, #100e0c);
   color: inherit;
   text-decoration: none;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
@@ -349,7 +395,7 @@ h1 {
 .role-card:focus-visible {
   transform: translateY(-3px);
   border-color: var(--edge-bright);
-  background: linear-gradient(145deg, #171d24, #10141a);
+  background: linear-gradient(145deg, #241e19, #14110e);
 }
 
 .role-card::after {
@@ -450,7 +496,8 @@ body.eye {
 
 .tool-panel {
   background:
-    linear-gradient(180deg, #ffffff03, transparent 8rem),
+    radial-gradient(circle at 94% 5%, #e68a610c 0 2px, transparent 3px) 0 0 / 29px 31px,
+    linear-gradient(180deg, #d7bd8905, transparent 9rem),
     var(--panel-bg);
 }
 
@@ -605,7 +652,8 @@ body.eye {
   border: 1px dashed var(--edge-bright);
   border-radius: var(--radius);
   background:
-    linear-gradient(135deg, #65f2c508, transparent 45%),
+    radial-gradient(circle at 92% 14%, #e68a6121 0 2px, transparent 3px) 0 0 / 29px 31px,
+    linear-gradient(135deg, #78ddc408, transparent 45%),
     var(--surface);
   cursor: pointer;
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
@@ -754,7 +802,7 @@ body.skin {
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 50%, #14191c, #030404 65%),
+    radial-gradient(ellipse at 50% 50%, #1a1713, #030302 68%),
     #000;
 }
 
@@ -764,9 +812,11 @@ body.skin {
   inset: 0;
   opacity: 0.12;
   background-image:
-    linear-gradient(#ffffff0b 1px, transparent 1px),
-    linear-gradient(90deg, #ffffff0b 1px, transparent 1px);
-  background-size: 32px 32px;
+    radial-gradient(circle, #e68a6140 0 1.4px, transparent 2px),
+    radial-gradient(circle, #78ddc42f 0 1px, transparent 1.7px),
+    radial-gradient(circle, #d7bd8933 0 0.8px, transparent 1.5px);
+  background-position: 0 0, 17px 11px, 8px 25px;
+  background-size: 41px 37px, 53px 47px, 59px 43px;
   mask-image: radial-gradient(circle, #000 20%, transparent 75%);
 }
 
@@ -892,7 +942,7 @@ body.eye {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 38%, #182027, transparent 45%),
+    radial-gradient(ellipse at 50% 38%, #201a15, transparent 47%),
     #030405;
 }
 
