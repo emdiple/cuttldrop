@@ -189,12 +189,29 @@ impl Eye {
             }
         }
 
-        let (grid, palette) = self.locked.unwrap_or_default().parts();
+        let locked = self.locked.unwrap_or_default();
+        let (grid, palette) = locked.parts();
         let Ok(pulse) = eye::read(&raster, grid, palette) else {
+            // A sender may have changed density as well as object. The old grid
+            // cannot even sample that stream's header, so give the other grids
+            // a chance before calling the frame unlocatable. Receiver::adopt
+            // still requires two CRC-valid headers before any state changes.
+            if let Some(outcome) = self.detect_except(&raster, Some(locked)) {
+                return outcome;
+            }
             self.unlocatable += 1;
             return Outcome::Unlocatable;
         };
-        match self.receiver.ingest(&pulse) {
+        let ingest = self.receiver.ingest(&pulse);
+        // A correctly located frame that fails the current grid's CRC can also
+        // be the first frame of a denser/sparser stream. Only pay the trial-
+        // decode cost on failure; duplicates on a healthy stream stay cheap.
+        if ingest == Ingest::Rejected
+            && let Some(outcome) = self.detect_except(&raster, Some(locked))
+        {
+            return outcome;
+        }
+        match ingest {
             Ingest::Accepted => Outcome::Accepted,
             Ingest::Completed => Outcome::Completed,
             Ingest::Duplicate => Outcome::Duplicate,
@@ -214,7 +231,15 @@ impl Eye {
     /// Returns `None` if no profile got anywhere, leaving the eye unlocked to
     /// try again on the next frame.
     fn detect(&mut self, raster: &Raster<'_>) -> Option<Outcome> {
+        self.detect_except(raster, None)
+    }
+
+    /// Trial-decode every profile except the one already attempted.
+    fn detect_except(&mut self, raster: &Raster<'_>, skip: Option<Profile>) -> Option<Outcome> {
         for profile in Profile::ALL {
+            if Some(profile) == skip {
+                continue;
+            }
             let (grid, palette) = profile.parts();
             let Ok(pulse) = eye::read(raster, grid, palette) else {
                 continue;
@@ -371,6 +396,33 @@ mod tests {
             assert_eq!(eye.profile().as_deref(), Some(name), "{name}: locked wrong");
             assert_eq!(eye.take_object().unwrap(), object, "{name}: bad object");
         }
+    }
+
+    #[test]
+    fn the_eye_follows_a_new_object_and_profile_without_a_reload() {
+        let old = Skin::create(&[1u8; 20_000], "old.bin", "", "m1", 11, 0.5).unwrap();
+        let object = vec![2u8; 20_000];
+        let new = Skin::create(&object, "new.bin", "", "m2", 22, 0.5).unwrap();
+        let mut eye = Eye::create("auto").unwrap();
+
+        eye.ingest(&old.pulse_rgba(0), old.cols(), old.rows());
+        assert_eq!(eye.profile().as_deref(), Some("m1"));
+        assert_eq!(eye.file_name().as_deref(), Some("old.bin"));
+
+        // Receiver::adopt deliberately asks for two CRC-valid headers before
+        // abandoning useful progress. The profile trial-decode must carry that
+        // handover across a grid change too.
+        eye.ingest(&new.pulse_rgba(0), new.cols(), new.rows());
+        eye.ingest(&new.pulse_rgba(0), new.cols(), new.rows());
+        assert_eq!(eye.profile().as_deref(), Some("m2"));
+        assert_eq!(eye.file_name().as_deref(), Some("new.bin"));
+
+        for index in 0..new.pulse_count() {
+            if eye.ingest(&new.pulse_rgba(index), new.cols(), new.rows()) == Outcome::Completed {
+                break;
+            }
+        }
+        assert_eq!(eye.take_object().unwrap(), object);
     }
 
     #[test]

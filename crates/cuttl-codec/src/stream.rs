@@ -350,7 +350,12 @@ pub enum Ingest {
 /// Absorbs pulses until the object falls out.
 pub struct Receiver {
     stream_id: Option<u32>,
+    stream_config: Option<[u8; CONFIG_LEN]>,
     hash_head: [u8; 4],
+    /// A different, CRC-valid stream seen once. Two consecutive headers are
+    /// required before abandoning the active transfer, so one fantastically
+    /// unlikely CRC false-positive cannot erase useful progress.
+    candidate: Option<(StreamHeader, u8)>,
     sink: Option<RaptorQSink>,
     manifest: Option<Manifest>,
     seen: HashSet<[u8; SYMBOL_ID_LEN]>,
@@ -370,7 +375,9 @@ impl Receiver {
     pub fn new() -> Self {
         Self {
             stream_id: None,
+            stream_config: None,
             hash_head: [0; 4],
+            candidate: None,
             sink: None,
             manifest: None,
             seen: HashSet::new(),
@@ -481,20 +488,54 @@ impl Receiver {
         }
     }
 
-    /// Lock onto the first stream seen; reject anything that disagrees.
+    /// Follow a stream, changing over only after two consecutive CRC-valid
+    /// headers agree on the replacement.
+    ///
+    /// The previous receiver locked onto the first stream forever. Selecting a
+    /// different file or profile on the skin creates a fresh stream, so a live
+    /// eye then rejected every pulse until the page was reloaded. One foreign
+    /// pulse is still ignored; seeing the same complete header twice is the
+    /// deliberate handover signal. The CRC gate has already accepted both
+    /// bands before this method runs.
     fn adopt(&mut self, header: StreamHeader) -> bool {
-        match self.stream_id {
-            Some(id) => id == header.stream_id && self.hash_head == header.hash_head,
-            None => {
-                let Ok(sink) = RaptorQSink::new(&header.config) else {
-                    return false;
-                };
-                self.stream_id = Some(header.stream_id);
-                self.hash_head = header.hash_head;
-                self.sink = Some(sink);
-                true
-            }
+        let current = self.stream_id == Some(header.stream_id)
+            && self.stream_config == Some(header.config)
+            && self.hash_head == header.hash_head;
+        if current {
+            self.candidate = None;
+            return true;
         }
+        if self.stream_id.is_none() {
+            return self.start_stream(header);
+        }
+
+        let sightings = match self.candidate {
+            Some((candidate, count)) if candidate == header => count.saturating_add(1),
+            _ => 1,
+        };
+        self.candidate = Some((header, sightings));
+        sightings >= 2 && self.start_stream(header)
+    }
+
+    /// Replace all state that belongs to one transfer. Diagnostic counters
+    /// reset too: after handover, the UI must describe the new stream rather
+    /// than carrying the old stream's failures forward.
+    fn start_stream(&mut self, header: StreamHeader) -> bool {
+        let Ok(sink) = RaptorQSink::new(&header.config) else {
+            return false;
+        };
+        self.stream_id = Some(header.stream_id);
+        self.stream_config = Some(header.config);
+        self.hash_head = header.hash_head;
+        self.candidate = None;
+        self.sink = Some(sink);
+        self.manifest = None;
+        self.seen.clear();
+        self.accepted = 0;
+        self.rejected = 0;
+        self.torn = 0;
+        self.object = None;
+        true
     }
 
     /// Symbols absorbed versus the minimum needed. Honest and monotonic — not a
@@ -786,6 +827,42 @@ mod tests {
         let mut rx = Receiver::new();
         assert_eq!(rx.ingest(&ours[0]), Ingest::Accepted);
         assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
+        // Returning to the active stream cancels the one-frame candidate.
+        assert_eq!(rx.ingest(&ours[1]), Ingest::Accepted);
+        assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
+        assert_eq!(rx.ingest(&ours[2]), Ingest::Accepted);
+    }
+
+    #[test]
+    fn two_valid_headers_move_the_eye_to_a_new_stream() {
+        let old = encode(&[1u8; 4000], M1.0, M1.1, 111, 0.5).unwrap();
+        let object = vec![2u8; 4000];
+        let new = encode(&object, M1.0, M1.1, 222, 0.5).unwrap();
+        let mut rx = Receiver::new();
+
+        assert_eq!(rx.ingest(&old[0]), Ingest::Accepted);
+        assert_eq!(rx.ingest(&old[1]), Ingest::Accepted);
+        assert_eq!(rx.progress().0, 1);
+
+        // One pulse could be a foreign screen briefly crossing the camera.
+        assert_eq!(rx.ingest(&new[0]), Ingest::Rejected);
+        assert_eq!(rx.progress().0, 1);
+        // The second CRC-valid header is intent. It resets the old progress and
+        // absorbs this pulse as the first contribution to the new stream.
+        assert_eq!(rx.ingest(&new[0]), Ingest::Accepted);
+        assert_eq!(rx.progress().0, 0); // pulse 0 is the manifest
+        assert_eq!(
+            rx.manifest().unwrap().hash,
+            *blake3::hash(&object).as_bytes()
+        );
+
+        for pulse in &new {
+            rx.ingest(pulse);
+            if rx.is_complete() {
+                break;
+            }
+        }
+        assert_eq!(rx.finish().unwrap(), object);
     }
 
     proptest! {

@@ -35,6 +35,17 @@ let pinnedToMax = true;
  */
 const awake = new ScreenAwake();
 
+/** Simulator peaks by profile. Dense mono/colour gain about 15% at 25 Hz;
+ * m1 stays at the more forgiving 20 Hz bring-up point. The user can override
+ * this immediately after choosing a profile — the human remains the back
+ * channel. */
+const PROFILE_RATE: Record<string, number> = {
+  m1: 20,
+  m2: 25,
+  m3: 25,
+  m4: 25,
+};
+
 /** Off-screen canvas at *grid* resolution; the display is a scaled blit of it. */
 const grid = document.createElement("canvas");
 const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
@@ -132,24 +143,35 @@ function paint(): void {
 }
 
 /**
- * Hold each pulse for a whole number of display refreshes.
+ * Pace pulses from elapsed time, with requestAnimationFrame as the commit
+ * boundary.
  *
- * Never try to change pulses faster than the display can commit them (§3d): a
- * pulse the panel never fully showed is one the camera can only catch mid-flip.
+ * The old loop divided a hard-coded 60 Hz by the requested pulse rate. That
+ * made a 120 Hz phone transmit twice as fast as its label claimed and made
+ * several useful rates impossible on a 60 Hz panel (`25` rounded to two
+ * refreshes and therefore became 30). Both errors create rolling-shutter tear,
+ * which looks like poor optical throughput even though more pulses are being
+ * painted.
+ *
+ * Time decides when a pulse is due; rAF still decides when it can actually be
+ * committed. Fractional refresh ratios naturally alternate their hold count —
+ * 25 Hz on 60 Hz is 2, 2, 3 refreshes — while 20 Hz remains exactly 20 on a
+ * 60, 90 or 120 Hz display. If the tab falls behind, skip the missed deadlines
+ * rather than bursting several pulses that the panel could never have shown.
  */
 function loop(): void {
-  let held = 0;
-  const step = () => {
+  let nextAt = performance.now() + 1000 / Math.max(1, Number(rate.value));
+  const step = (now: number) => {
     if (!skin) return;
-    const refreshRate = 60;
-    const hold = Math.max(1, Math.round(refreshRate / Number(rate.value)));
-    if (held >= hold) {
-      index = (index + 1) % skin.pulseCount;
-      paint();
-      held = 0;
-    }
-    held += 1;
     requestAnimationFrame(step);
+    if (now < nextAt) return;
+
+    index = (index + 1) % skin.pulseCount;
+    paint();
+
+    const interval = 1000 / Math.max(1, Number(rate.value));
+    nextAt += interval;
+    if (now - nextAt > 3 * interval) nextAt = now + interval;
   };
   requestAnimationFrame(step);
 }
@@ -170,6 +192,8 @@ size.addEventListener("input", () => {
 // Changing density re-encodes: the grid decides how much fits in a pulse, so
 // there is nothing to reuse. Cheap enough to do on every change.
 profile.addEventListener("change", () => {
+  rate.value = String(PROFILE_RATE[profile.value] ?? 20);
+  rateValue.value = rate.value;
   file.dispatchEvent(new Event("change"));
 });
 

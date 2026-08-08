@@ -94,6 +94,22 @@ for (const profile of ["m2", "m3", "m4"]) {
   assert.deepEqual(watcher.takeObject(), object, `${profile} round trip differs`);
 }
 
+// A live eye follows a restarted skin, including a profile change. The first
+// differing CRC-valid header is only a candidate; the second is the handover.
+const oldSkin = new Skin(object, "old.bin", MIME, "m1", 0x1111, 0.5);
+const newSkin = new Skin(object, "new.bin", MIME, "m2", 0x2222, 0.5);
+const switcher = new Eye("auto");
+switcher.ingest(oldSkin.pulseRgba(0), oldSkin.cols, oldSkin.rows);
+assert.equal(switcher.profile, "m1");
+switcher.ingest(newSkin.pulseRgba(0), newSkin.cols, newSkin.rows);
+switcher.ingest(newSkin.pulseRgba(0), newSkin.cols, newSkin.rows);
+assert.equal(switcher.profile, "m2", "eye did not follow the new grid");
+assert.equal(switcher.fileName, "new.bin", "eye kept the old manifest");
+for (let i = 0; i < newSkin.pulseCount; i += 1) {
+  if (switcher.ingest(newSkin.pulseRgba(i), newSkin.cols, newSkin.rows) === Outcome.Completed) break;
+}
+assert.deepEqual(switcher.takeObject(), object, "restarted stream differs");
+
 console.log(
   `ok — ${object.length} B through the JS boundary in ${frames} of ${skin.pulseCount} pulses`,
 );
