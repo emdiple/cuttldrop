@@ -4,6 +4,7 @@
 // things a browser does better: reading a file, sizing a canvas, and pacing.
 
 import init, { Skin } from "../pkg/cuttl_wasm.js";
+import { PulsePacer, QUIET_CELLS, fitPhysicalScale, rasterizePulse } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
@@ -53,9 +54,9 @@ const PROFILE_RATE: Record<string, number> = {
   m4: 25,
 };
 
-/** Off-screen canvas at *grid* resolution; the display is a scaled blit of it. */
-const grid = document.createElement("canvas");
-const gridCtx = grid.getContext("2d", { willReadFrequently: false })!;
+/** One physical pixel per raster cell; the visible canvas is an integer-scaled blit. */
+const raster = document.createElement("canvas");
+const rasterCtx = raster.getContext("2d", { willReadFrequently: false })!;
 const displayCtx = display.getContext("2d")!;
 
 /**
@@ -90,33 +91,26 @@ function overlayRoom(): number {
   return Math.max(0, Math.ceil(bottom - status.getBoundingClientRect().top));
 }
 
-/**
- * Largest whole pixels-per-cell that still fits the entire pulse in the stage.
- *
- * Measured off the stage element, not computed from the viewport. The stage is
- * the full screen on a phone and the column beside the panel on a laptop, so one
- * routine covers both — and it cannot disagree with what CSS actually did.
- */
-function maxScale(): number {
-  if (!skin) return 1;
-  const width = Math.max(1, stage.clientWidth);
-  const height = Math.max(1, stage.clientHeight);
-  return Math.max(1, Math.floor(Math.min(width / skin.cols, height / skin.rows)));
+/** Display dimensions after adding the four-cell border on every edge. */
+function rasterSize(): { cols: number; rows: number } {
+  if (!skin) return { cols: 1, rows: 1 };
+  return { cols: skin.cols + QUIET_CELLS * 2, rows: skin.rows + QUIET_CELLS * 2 };
 }
 
 /**
- * Size the canvas to an *integer* multiple of the grid.
+ * Size the canvas to an *integer physical-pixel* multiple of the raster.
  *
  * This matters more than it looks. At a fractional scale, nearest-neighbour
- * upscaling gives some cells one more pixel than others, so the eye's run-length
+ * upscaling gives some cells one more physical pixel than others, so the eye's run-length
  * ratios stop being clean 1:1:3:1:1 and finder detection gets harder for no
  * reason. An integer scale makes every cell identical.
  *
  * It is also why the size control counts *pixels per cell* rather than a
  * percentage: a percentage slider would offer positions that round to the same
  * scale, so most of its travel would do nothing visible. Here every notch is a
- * different grid, and the number shown is the one that governs whether the eye
- * can resolve a cell at all — the measured floor is 4 px/cell at the sensor.
+ * different physical raster, and the readout states both physical and CSS
+ * pixels — those differ on HiDPI screens. The quiet zone participates in the
+ * fit, so it can never push the pulse under the controls or outside the stage.
  */
 function resize(): void {
   if (!skin) return;
@@ -124,18 +118,31 @@ function resize(): void {
   // arithmetic that *sizes* it agree by construction. The stylesheet's value is
   // only ever the starting guess, used for the frame before the first measure.
   document.body.style.setProperty("--overlay-room", `${overlayRoom()}px`);
-  const limit = maxScale();
-  size.max = String(limit);
+  const { cols, rows } = rasterSize();
+  const requested = pinnedToMax ? undefined : Number(size.value);
+  const fit = fitPhysicalScale(
+    cols,
+    rows,
+    Math.max(1, stage.clientWidth),
+    Math.max(1, stage.clientHeight),
+    window.devicePixelRatio,
+    requested,
+  );
+  size.max = String(fit.maxScale);
   // Until the slider is touched, track the largest that fits. Otherwise hiding
   // the controls would free up room the pulse never reclaims — the default has
   // to follow the space available, and only a deliberate choice should pin it.
   // Keep the chosen scale when it still fits, clamp it when the window shrinks.
-  const scale = pinnedToMax ? limit : Math.min(limit, Math.max(1, Number(size.value) || limit));
-  size.value = String(scale);
-  size.disabled = limit <= 1;
-  sizeValue.value = `${scale} px/cell · ${skin.cols * scale}×${skin.rows * scale}`;
-  display.width = skin.cols * scale;
-  display.height = skin.rows * scale;
+  size.value = String(fit.scale);
+  size.disabled = fit.maxScale <= 1;
+  const cssPerCell = fit.scale / (window.devicePixelRatio || 1);
+  sizeValue.value =
+    `${fit.scale} physical / ${cssPerCell.toFixed(2)} CSS px/cell · ` +
+    `${fit.backingWidth}×${fit.backingHeight}`;
+  display.width = fit.backingWidth;
+  display.height = fit.backingHeight;
+  display.style.width = `${fit.cssWidth}px`;
+  display.style.height = `${fit.cssHeight}px`;
   // Set after every resize: the context resets its state when the canvas is
   // resized, and smoothing back on would blur every cell edge.
   displayCtx.imageSmoothingEnabled = false;
@@ -145,7 +152,8 @@ function makeFrame(): ImageData {
   if (!skin) throw new Error("no prepared stream");
   const rgba = skin.pulseRgba(nextIndex);
   nextIndex = (nextIndex + 1) % skin.pulseCount;
-  return new ImageData(new Uint8ClampedArray(rgba), skin.cols, skin.rows);
+  const framed = rasterizePulse(rgba, skin.cols, skin.rows);
+  return new ImageData(framed.rgba, framed.width, framed.height);
 }
 
 /** Keep only a few pulses ahead, like Decimen's sender. Preparing the RaptorQ
@@ -162,9 +170,9 @@ function paint(): void {
   if (!skin) return;
   current ??= queue.shift() ?? makeFrame();
   pump(1);
-  gridCtx.putImageData(current, 0, 0);
+  rasterCtx.putImageData(current, 0, 0);
   displayCtx.imageSmoothingEnabled = false;
-  displayCtx.drawImage(grid, 0, 0, display.width, display.height);
+  displayCtx.drawImage(raster, 0, 0, display.width, display.height);
 }
 
 function advance(): void {
@@ -193,33 +201,27 @@ function rewind(): void {
  * painted.
  *
  * Time decides when a pulse is due; rAF still decides when it can actually be
- * committed. Fractional refresh ratios naturally alternate their hold count —
- * 25 Hz on 60 Hz is 2, 2, 3 refreshes — while 20 Hz remains exactly 20 on a
- * 60, 90 or 120 Hz display. If the tab falls behind, skip the missed deadlines
- * rather than bursting several pulses that the panel could never have shown.
+ * committed. PulsePacer additionally requires two refresh callbacks between
+ * changes, so a requested 60 Hz becomes at most 30 pulses/s on a 60 Hz panel
+ * but remains 60 on a 120 Hz panel. If the tab falls behind, missed deadlines
+ * are skipped rather than burst onto a panel that never displayed them.
  */
 function loop(): void {
-  let nextAt = performance.now() + 1000 / Math.max(1, Number(rate.value));
+  const pacer = new PulsePacer(performance.now(), Number(rate.value));
   const step = (now: number) => {
     if (!skin) return;
     requestAnimationFrame(step);
-    if (now < nextAt) return;
-
-    advance();
-
-    const interval = 1000 / Math.max(1, Number(rate.value));
-    nextAt += interval;
-    if (now - nextAt > 3 * interval) nextAt = now + interval;
+    if (pacer.tick(now, Number(rate.value))) advance();
   };
   requestAnimationFrame(step);
 }
 
 rate.addEventListener("input", () => {
-  rateValue.value = `${rate.value} Hz`;
+  rateValue.value = `${rate.value} Hz target`;
   rateHint.textContent =
     Number(rate.value) > 30
-      ? "Experimental: this rate needs a display and camera mode fast enough to expose clean pulses. If the eye reports tearing or decode fps falls behind, slow it down."
-      : "No back channel exists, so nothing adapts this for you. If the eye reports tearing, slow it down. Above 30 Hz is experimental and needs a fast display and camera.";
+      ? "Experimental: each pulse still stays for two display refreshes, so this target needs a 120 Hz panel. If the eye reports tearing or decode fps falls behind, slow it down."
+      : "No back channel exists, so nothing adapts this for you. Each pulse stays for at least two display refreshes; if the eye reports tearing, slow it down.";
   label();
 });
 
@@ -235,7 +237,7 @@ size.addEventListener("input", () => {
 // there is nothing to reuse. Cheap enough to do on every change.
 profile.addEventListener("change", () => {
   rate.value = String(PROFILE_RATE[profile.value] ?? 20);
-  rateValue.value = `${rate.value} Hz`;
+  rateValue.value = `${rate.value} Hz target`;
   if (selectedFile) void prepare(selectedFile);
 });
 
@@ -266,8 +268,9 @@ async function prepare(chosen: File): Promise<void> {
   }
   if (gen !== prepareGen) return;
 
-  grid.width = skin.cols;
-  grid.height = skin.rows;
+  const framed = rasterSize();
+  raster.width = framed.cols;
+  raster.height = framed.rows;
   // A re-encode is a different grid and a different loop length. If one is
   // already on screen, refit it: the display canvas is still sized for the old
   // profile, and blitting the new grid into it would stretch every cell.
@@ -325,6 +328,9 @@ start.addEventListener("click", () => {
   document.body.classList.add("sending");
   display.hidden = false;
   start.textContent = "Sending…";
+  rewind();
+  resize();
+  paint();
   loop();
   void awake.acquire();
   applyMode();
@@ -351,8 +357,8 @@ function label(): void {
   if (!skin) return;
   statusText.textContent =
     taught || wide.matches
-      ? `${rate.value} Hz · ${skin.pulseCount} pulses`
-      : `${rate.value} Hz · tap the pulse for these controls`;
+      ? `${rate.value} Hz target · ${skin.pulseCount} pulses`
+      : `${rate.value} Hz target · tap the pulse for these controls`;
 }
 
 function retire(): void {

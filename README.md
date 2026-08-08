@@ -27,6 +27,7 @@ it.
 | Product interface | responsive role flow, permanent desktop panels, drag/drop skin, live eye states |
 | iOS camera handling | exact/ideal fps negotiation, classified errors, retry, wake lock |
 | Dense/colour eye path | adaptive 1280→1920 capture, five-point cell sampling, pilot calibration |
+| Skin display discipline | four-cell black quiet zone, physical-pixel fit, two-refresh pulse floor |
 | **A real file across a real air gap** | **not done** — needs two physical devices |
 
 That last row is the honest headline. Everything upstream of the camera is verified;
@@ -130,6 +131,12 @@ loop. Before fountain coding, v4 tries raw DEFLATE for plausibly compressible da
 keeps it only when at least 64 B are saved. Already-compressed media stays untouched;
 the manifest carries the original length and the final BLAKE3 is always checked against
 the restored original.
+
+Rendering adds an opaque-black four-cell quiet zone without changing the pulse bytes.
+Every chroma cell is an integer number of physical display pixels—even at fractional
+device pixel ratios—and every pulse remains on the panel for at least two refreshes.
+While sending, the optical stage is pure black: the desktop controls remain resident in
+their side panel, but texture, glow, and illuminated edges are removed around the pulse.
 
 **The eye locates the grid rather than being told where it is.** Four QR-style
 concentric-square finders, found by scanning for the 1:1:3:1:1 run-length ratio, then

@@ -853,12 +853,26 @@ body.skin.sending {
   background: #000;
 }
 
+/* During transmission the stage is optical hardware, not decoration. Any lit
+ * edge outside the raster competes with it for the eye camera's auto-exposure. */
+body.skin.sending .optical-stage {
+  background: #000;
+}
+
+body.skin.sending .optical-stage::before {
+  display: none;
+}
+
 #pulse {
   position: relative;
   z-index: 1;
   display: block;
   image-rendering: pixelated;
   box-shadow: 0 0 44px #ffffff0c;
+}
+
+body.skin.sending #pulse {
+  box-shadow: none;
 }
 
 .stream-dock {
