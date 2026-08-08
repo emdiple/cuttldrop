@@ -407,6 +407,82 @@ mod tests {
         );
     }
 
+    /// A real display/camera pair does not preserve sRGB channel levels. The
+    /// distributed pilots must teach the eye what each binary subchannel looks
+    /// like in this frame; a fixed threshold at 128 is not a colour decoder.
+    #[test]
+    fn pilots_recover_colour_after_camera_channel_shift() {
+        let grid = Grid::M3_COLOR;
+        let palette = Palette::Color3;
+        let mut pulse = Pulse::new(grid, palette).unwrap();
+        let data: Vec<u8> = (0..pulse.capacity()).map(|i| (i * 73 + 19) as u8).collect();
+        pulse.write_payload(&data).unwrap();
+
+        let shifted = Channel {
+            crosstalk: 0.10,
+            // Red and blue are entirely above the fixed 128 threshold;
+            // green is entirely below it. Their two levels remain separated,
+            // which is exactly what the pilots are there to discover.
+            gain: [0.25, 0.45, 0.30],
+            offset: [0.60, -0.10, 0.55],
+            vignette: 0.10,
+            blur_cells: 0.08,
+            noise: 0.004,
+            warp: 0.0,
+            skew: 0.0,
+            barrel: 0.0,
+            tear: 0.0,
+            blend: 0.0,
+        };
+        let image = channel::apply(
+            &render(&pulse, 5),
+            &shifted,
+            5,
+            &mut StdRng::seed_from_u64(0xc0110),
+        );
+        let got = sample(&image, grid, palette).unwrap();
+        let wrong = pulse
+            .cells()
+            .iter()
+            .zip(got.cells())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            wrong < 12,
+            "pilot-calibrated frame still had {wrong} wrong cells"
+        );
+    }
+
+    /// One hot/dead sensor sample at the exact projected centre of every cell
+    /// must not decide the whole pulse. Dense profiles only have a handful of
+    /// pixels per cell, so the eye samples a small interior footprint and uses
+    /// its median rather than trusting one pixel.
+    #[test]
+    fn cell_footprint_rejects_a_bad_centre_sample() {
+        let grid = Grid::M1_MONO;
+        let palette = Palette::Mono1;
+        let mut pulse = Pulse::new(grid, palette).unwrap();
+        let data: Vec<u8> = (0..pulse.capacity()).map(|i| (i * 29 + 7) as u8).collect();
+        pulse.write_payload(&data).unwrap();
+
+        let cell_px = 5;
+        let mut image = render(&pulse, cell_px);
+        for y in 0..grid.rows {
+            for x in 0..grid.cols {
+                let original = image.get_pixel(x as u32 * cell_px + 2, y as u32 * cell_px + 2)[0];
+                let damaged = 255 - original;
+                image.put_pixel(
+                    x as u32 * cell_px + 2,
+                    y as u32 * cell_px + 2,
+                    image::Rgb([damaged; 3]),
+                );
+            }
+        }
+
+        let got = sample(&image, grid, palette).unwrap();
+        assert_eq!(got.cells(), pulse.cells());
+    }
+
     /// Tear is *detected*, not merely survived.
     ///
     /// A stitched frame would fail the CRC gate regardless, so this is not what

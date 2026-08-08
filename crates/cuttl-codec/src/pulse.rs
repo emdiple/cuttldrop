@@ -136,11 +136,7 @@ impl Pulse {
                     }
                     // Cycle the full gamut across the frame so every palette
                     // level is observed somewhere in every pulse (§3b).
-                    Region::Pilot => {
-                        let px = (x - g.timing_cols) / g.pilot_period;
-                        let py = (y - g.beacon_rows) / g.pilot_period;
-                        ((px + py) % self.palette.levels() as u16) as u8
-                    }
+                    Region::Pilot => g.pilot_value(x, y, self.palette).unwrap_or(0),
                     Region::Separator | Region::Beacon | Region::Payload => 0,
                 };
                 let i = self.index(x, y);

@@ -436,6 +436,21 @@ impl Grid {
         out
     }
 
+    /// The known palette value painted into a pilot cell.
+    ///
+    /// This is format geometry, not rendering policy: the skin paints it and
+    /// the eye uses the same function to learn the display→camera colour
+    /// channel. Keeping the formula here prevents a decoder that calibrates
+    /// against a subtly different pattern from the one on screen.
+    pub fn pilot_value(&self, x: u16, y: u16, palette: Palette) -> Option<u8> {
+        if self.region(x, y) != Region::Pilot {
+            return None;
+        }
+        let px = (x - self.timing_cols) / self.pilot_period;
+        let py = (y - self.beacon_rows) / self.pilot_period;
+        Some(((px + py) % palette.levels() as u16) as u8)
+    }
+
     /// Centres of alignment patterns *and* finders together — every fixed point
     /// the eye can measure in a frame. Finders come first, in the order
     /// [`Grid::finder_centres`] uses.

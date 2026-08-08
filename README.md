@@ -18,7 +18,7 @@ it.
 
 | | |
 |---|---|
-| Codec, fountain layer, FEC stack | done, 106 tests |
+| Codec, fountain layer, FEC stack | done, 108 tests |
 | Manifest + mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
 | On-demand pulses + adaptive compression | done — three-frame lookahead; compress only when useful |
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
@@ -26,6 +26,7 @@ it.
 | Browser skin + eye | built and typechecked; decode runs in a worker; JS boundary tested |
 | Product interface | responsive role flow, permanent desktop panels, drag/drop skin, live eye states |
 | iOS camera handling | exact/ideal fps negotiation, classified errors, retry, wake lock |
+| Dense/colour eye path | adaptive 1280→1920 capture, five-point cell sampling, pilot calibration |
 | **A real file across a real air gap** | **not done** — needs two physical devices |
 
 That last row is the honest headline. Everything upstream of the camera is verified;
@@ -84,7 +85,7 @@ which there is no warning at all.
 Three of the four test surfaces need no camera and no network at all.
 
 ```sh
-cargo test --workspace                    # 106 tests, the full synthetic optical channel
+cargo test --workspace                    # 108 tests, the full synthetic optical channel
 cargo run --release -p cuttl-cli -- encode f.pdf -o pulses/ && \
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.pdf --distort heavy --loss 0.5
 cd web && npm test                        # file -> WASM skin -> WASM eye -> file, in Node
@@ -105,11 +106,6 @@ be quoted as one, which is why the readout says `screen` rather than `camera`.
 
 The interesting part is not the picture, it is what is underneath it. This is a
 communications problem wearing a graphics costume.
-
-**There is no back channel.** The sender's camera is not watching the receiver, so there
-are no acknowledgements and no retransmit requests. The transport is therefore a
-**rateless fountain code** (RaptorQ, RFC 6330): the skin loops forever and the eye
-reconstructs from any sufficient subset of frames, in any order.
 
 **A fountain code repairs erasures, not errors** — and a camera pointed at a screen
 produces both. One silently corrupted symbol propagates through the decoder and poisons
@@ -149,6 +145,14 @@ patterns**, 5×5 rather than the finder's 7 so they can never be mistaken for on
 predicts each through the corner fit, finds where it actually landed, and interpolates
 the difference. Costs 2.2% of the grid, buys a 1.5× wider distortion tolerance, and turns
 that 2208 back into 2.
+
+Dense profiles do not permanently pay the CPU and memory cost of full-resolution camera
+frames. The eye starts at 1280 pixels wide for M1, asks the camera to preserve a
+1920-wide source, and escalates only when a dense profile locks or eight frames cannot
+be identified. It never upscales a lower-resolution camera mode. Each chroma cell is the
+median of five interior samples rather than one fragile centre pixel. In colour mode,
+64 spatially distributed pilot references teach the eye the observed low/high level of
+each camera channel, replacing the old fixed RGB=128 threshold.
 
 **The hard part is time.** Rolling shutter reads a sensor row by row over 10–30 ms, so a
 capture that straddles a pulse flip is stitched from two different frames. Each pulse

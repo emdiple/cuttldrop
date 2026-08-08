@@ -12,7 +12,7 @@
 //!
 //! ## Status
 //! - [`geometry`] — cell grid, regions, payload ordering (§3a) — **landed**
-//! - [`palette`] — Mono1 now; Color3 defined but unused until M3 (§3b) — **landed**
+//! - [`palette`] — Mono1 + pilot-calibrated Color3 (§3b) — **landed**
 //! - [`pulse`] — cell buffer, structure painting, bit packing (§3a) — **landed**
 //! - [`fountain`] — outer RaptorQ erasure code (§1a, §3c) — **landed**
 //! - [`stream`] — framing + CRC gate over the fountain (§3c) — **landed**

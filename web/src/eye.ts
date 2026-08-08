@@ -18,16 +18,18 @@ const PROFILE = "auto";
  * Working resolution for decoding.
  *
  * Not the camera's resolution — decoding scans every row and column, so this is
- * the single biggest lever on CPU cost. It is set by the *densest* profile, not
- * the default one, because the eye auto-detects and must be able to read
- * whatever the skin chose.
+ * the single biggest lever on CPU cost. Start at 1280 for M1, then escalate to
+ * 1920 only when a dense profile locks or the base pass cannot identify one.
  *
  * The arithmetic: 192 columns need ~4 px/cell (the measured cliff is between 3
  * and 2), and a handheld frame is rarely more than ~70% filled by the sending
- * screen, so the budget is `192 × 4 ÷ 0.7 ≈ 1100`. 1280 leaves a little room
- * above that. At the 64-column default the same width is a luxurious 14 px/cell.
+ * screen, so the bare budget is `192 × 4 ÷ 0.7 ≈ 1100`. In practice 1280 has
+ * too little margin for focus softness and perspective; 1920 gives ~7 px/cell
+ * while M1 retains the cheaper 1280 path.
  */
-const WORK_WIDTH = 1280;
+const BASE_WORK_WIDTH = 1280;
+const DENSE_WORK_WIDTH = 1920;
+const DETAIL_AFTER_FRAMES = 8;
 
 /** Frames to look back over when deciding what to tell the human. */
 const HINT_WINDOW = 30;
@@ -66,6 +68,8 @@ function receiverState(state: "ready" | "scanning" | "attention" | "complete"): 
 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
+let workWidth = BASE_WORK_WIDTH;
+let searchingFrames = 0;
 
 const worker = new Worker(new URL("./eye-worker.ts", import.meta.url), {
   type: "module",
@@ -173,12 +177,16 @@ function advise(): string {
  */
 let baseCameraMode = "";
 
+function showCameraMode(profile?: string): void {
+  if (!baseCameraMode) return;
+  const locked = profile ? ` · profile ${profile}` : "";
+  cameraMode.textContent = `${baseCameraMode} · decoding at ${work.width || workWidth}px wide${locked}`;
+}
+
 function meter(now: number): void {
   // Which grid the eye settled on, once it has. Worth showing: it is the only
   // confirmation that the density chosen on the *other* device took effect.
-  if (last?.profile && baseCameraMode) {
-    cameraMode.textContent = `${baseCameraMode} · profile ${last.profile}`;
-  }
+  showCameraMode(last?.profile);
   const capture = captureRate.perSecond(now);
   const decode = decodeRate.perSecond(now);
   tiles.capture.textContent = capture === null ? "—" : capture.toFixed(1);
@@ -249,11 +257,38 @@ function finish(bytes: Uint8Array, name: string, mime: string): void {
  * two extra lines to never guess.
  */
 function sized(): boolean {
-  if (work.width > 0) return true;
   if (!video.videoWidth || !video.videoHeight) return false;
-  work.width = WORK_WIDTH;
-  work.height = Math.round((WORK_WIDTH * video.videoHeight) / video.videoWidth);
+  // Never manufacture detail the source did not grant. When dense-mode
+  // escalation asks for 1920 but iOS supplied 1280, keep the honest 1280.
+  const width = Math.min(workWidth, video.videoWidth);
+  const height = Math.round((width * video.videoHeight) / video.videoWidth);
+  if (work.width === width && work.height === height) return true;
+  work.width = width;
+  work.height = height;
+  showCameraMode(last?.profile);
   return true;
+}
+
+/**
+ * Preserve M1's cheap hot loop, but stop throwing away the pixels m2/m4 need.
+ *
+ * Auto-detection cannot tell us the grid until one pulse passes CRC. If eight
+ * frames fail to lock, retry at native detail; if a dense profile locks at the
+ * base width, retain high detail for the rest of its stream. The worker's busy
+ * gate naturally sheds frames while the more expensive decode is running.
+ */
+function adjustDetail(message: Extract<FromWorker, { kind: "status" }>): void {
+  if (message.profile) {
+    searchingFrames = 0;
+  } else {
+    searchingFrames += 1;
+  }
+  const dense = message.profile === "m2" || message.profile === "m4";
+  if (workWidth < DENSE_WORK_WIDTH && (dense || searchingFrames >= DETAIL_AFTER_FRAMES)) {
+    workWidth = DENSE_WORK_WIDTH;
+    // `sized` sees the changed target on the next capture and resizes once.
+    showCameraMode(message.profile);
+  }
 }
 
 function capture(): void {
@@ -374,11 +409,10 @@ async function openCamera(): Promise<MediaStream> {
   const fps = wantedFps();
   const base: MediaTrackConstraints = {
     facingMode: { ideal: "environment" },
-    // Matched to the decode width rather than maximised. Anything above
-    // WORK_WIDTH is downscaled away, and asking for 1920 on a phone often
-    // selects a mode that is slower without being sharper where it counts.
-    width: { ideal: WORK_WIDTH },
-    height: { ideal: Math.round((WORK_WIDTH * 9) / 16) },
+    // Ask the camera to preserve enough source detail for m2/m4. The work
+    // canvas begins at BASE_WORK_WIDTH and only consumes all of it when needed.
+    width: { ideal: DENSE_WORK_WIDTH },
+    height: { ideal: Math.round((DENSE_WORK_WIDTH * 9) / 16) },
   };
   try {
     return await navigator.mediaDevices.getUserMedia({
@@ -431,6 +465,10 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   }
 
   video.srcObject = stream;
+  workWidth = BASE_WORK_WIDTH;
+  searchingFrames = 0;
+  work.width = 0;
+  work.height = 0;
   // iOS rejects `play()` in plenty of situations a desktop never hits, and an
   // unhandled rejection here leaves the page sitting on its opening hint
   // forever — the silent failure this whole function exists to avoid.
@@ -461,11 +499,11 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   // Say which source this is. A screen-capture run has no optics in it, and a
   // goodput number from one must never be quoted as if a camera produced it.
   const kind = source === openScreen ? "screen" : "camera";
-  cameraMode.textContent =
+  baseCameraMode =
     settings.width && settings.height
-      ? `${kind} ${settings.width}×${settings.height}${fps} · decoding at ${WORK_WIDTH} px wide`
+      ? `${kind} ${settings.width}×${settings.height}${fps}`
       : `${kind} — resolution unreported`;
-  baseCameraMode = cameraMode.textContent;
+  showCameraMode();
 
   captureGen += 1;
   pump(captureGen);
@@ -520,6 +558,7 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
     case "status": {
       busy = false;
       last = message;
+      adjustDetail(message);
       const now = performance.now();
       decodeRate.mark(now);
       if (message.outcome === Outcome.Duplicate) dupFrames += 1;

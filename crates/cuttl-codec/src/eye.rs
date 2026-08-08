@@ -361,6 +361,170 @@ fn luma_at(raster: &Raster, x: f64, y: f64) -> u8 {
     ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
 }
 
+/// RGB observed at a chroma cell's interior.
+///
+/// One projected centre sample is too brittle for a dense grid: a dead/hot
+/// sensor pixel, Bayer interpolation, or a half-pixel homography error gets to
+/// decide several payload bits. Five samples remain well inside the cell and
+/// their per-channel median rejects one bad sample without averaging across a
+/// boundary. The footprint is expressed in cell space, so perspective scales
+/// it correctly at both ends of the pulse.
+fn cell_rgb(
+    raster: &Raster,
+    transform: &Homography,
+    residuals: &[Residual],
+    x: f64,
+    y: f64,
+) -> [u8; 3] {
+    const FOOTPRINT: [(f64, f64); 5] = [
+        (0.0, 0.0),
+        (-0.22, 0.0),
+        (0.22, 0.0),
+        (0.0, -0.22),
+        (0.0, 0.22),
+    ];
+    // The geometric correction varies over tens of cells, not across one
+    // cell's interior. Evaluate it once at the centre; doing the full anchor
+    // interpolation for every footprint sample multiplies dense-profile work
+    // by five without moving a sample by a meaningful fraction of a pixel.
+    let (dx, dy) = residual_at(residuals, x, y);
+    let mut samples = [[0u8; 5]; 3];
+    for (index, (ox, oy)) in FOOTPRINT.into_iter().enumerate() {
+        let (fx, fy) = (x + ox, y + oy);
+        let (mut ix, mut iy) = transform.apply(fx, fy);
+        ix += dx;
+        iy += dy;
+        let rgb = raster.bilinear(ix, iy);
+        for channel in 0..3 {
+            samples[channel][index] = rgb[channel];
+        }
+    }
+    let mut rgb = [0u8; 3];
+    for channel in 0..3 {
+        samples[channel].sort_unstable();
+        rgb[channel] = samples[channel][2];
+    }
+    rgb
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PilotSample {
+    cell: (f64, f64),
+    value: u8,
+    rgb: [u8; 3],
+}
+
+/// Frame-local classifier learned from the distributed pilot cells.
+///
+/// Camera RGB is not display RGB: white balance, ambient lift and mismatched
+/// primaries can put both levels of a channel above or below 128. For each
+/// binary subchannel we estimate its observed low and high level from known
+/// pilots, with nearby pilots weighted more heavily. Comparing distance to
+/// those learned levels also survives an inverted channel, unlike a threshold.
+struct Calibration {
+    pilots: Vec<PilotSample>,
+}
+
+impl Calibration {
+    fn read(
+        raster: &Raster,
+        grid: Grid,
+        palette: Palette,
+        transform: &Homography,
+        residuals: &[Residual],
+    ) -> Self {
+        // Mono already has a huge black/white decision margin and avoids
+        // camera white-balance entirely. Spending a distributed calibration
+        // pass on m1/m2 only makes their hot loop slower; colour is where the
+        // display and camera channels genuinely disagree.
+        if palette == Palette::Mono1 {
+            return Self { pilots: Vec::new() };
+        }
+        let mut pilots = Vec::new();
+        for y in 0..grid.rows {
+            for x in 0..grid.cols {
+                let Some(value) = grid.pilot_value(x, y, palette) else {
+                    continue;
+                };
+                let cell = (x as f64 + 0.5, y as f64 + 0.5);
+                pilots.push(PilotSample {
+                    cell,
+                    value,
+                    rgb: cell_rgb(raster, transform, residuals, cell.0, cell.1),
+                });
+            }
+        }
+        // A dense grid contains hundreds of pilots. They are redundancy, not
+        // an instruction to compare every payload cell with every reference:
+        // that turns m4 classification into O(cells × pilots). Retain eight
+        // spatially spread observations of each of the eight palette values.
+        // This is still distributed calibration (64 points across the frame),
+        // while bounding per-cell work independently of grid density.
+        const PER_LEVEL: usize = 8;
+        if pilots.len() > palette.levels() as usize * PER_LEVEL {
+            let mut spread = Vec::with_capacity(palette.levels() as usize * PER_LEVEL);
+            for value in 0..palette.levels() {
+                let matching: Vec<PilotSample> = pilots
+                    .iter()
+                    .copied()
+                    .filter(|pilot| pilot.value == value)
+                    .collect();
+                let kept = PER_LEVEL.min(matching.len());
+                for index in 0..kept {
+                    spread.push(matching[index * matching.len() / kept]);
+                }
+            }
+            pilots = spread;
+        }
+        Self { pilots }
+    }
+
+    fn level(&self, x: f64, y: f64, channel: usize, high: bool) -> Option<f64> {
+        let (mut sum, mut weights) = (0.0, 0.0);
+        for pilot in &self.pilots {
+            let expected = pilot.value & (1 << channel) != 0;
+            if expected != high {
+                continue;
+            }
+            let d2 = (x - pilot.cell.0).powi(2) + (y - pilot.cell.1).powi(2);
+            // Squared inverse distance with a one-cell softening term. Nearby
+            // pilots follow vignette/ambient variation; the tail prevents a
+            // sparse corner from having no calibration at all.
+            let weight = 1.0 / (d2 + 1.0).powi(2);
+            let observed = f64::from(pilot.rgb[channel]);
+            sum += observed * weight;
+            weights += weight;
+        }
+        (weights > 0.0).then_some(sum / weights)
+    }
+
+    fn classify(&self, palette: Palette, rgb: [u8; 3], x: f64, y: f64) -> u8 {
+        if self.pilots.is_empty() {
+            return palette.from_rgb(rgb);
+        }
+        match palette {
+            Palette::Mono1 => palette.from_rgb(rgb),
+            Palette::Color3 => {
+                let mut value = 0u8;
+                for channel in 0..3 {
+                    let Some(low) = self.level(x, y, channel, false) else {
+                        return palette.from_rgb(rgb);
+                    };
+                    let Some(high) = self.level(x, y, channel, true) else {
+                        return palette.from_rgb(rgb);
+                    };
+                    if (f64::from(rgb[channel]) - high).abs()
+                        < (f64::from(rgb[channel]) - low).abs()
+                    {
+                        value |= 1 << channel;
+                    }
+                }
+                value
+            }
+        }
+    }
+}
+
 /// Sample every cell, correcting the homography by the measured anchors.
 ///
 /// The correction is an inverse-distance-weighted interpolation of the anchor
@@ -385,15 +549,13 @@ pub fn sample_corrected(
             (a.cell, (a.image.0 - p.0, a.image.1 - p.1))
         })
         .collect();
+    let calibration = Calibration::read(raster, grid, palette, transform, &residuals);
 
     for y in 0..grid.rows {
         for x in 0..grid.cols {
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
-            let (mut ix, mut iy) = transform.apply(fx, fy);
-            let (dx, dy) = residual_at(&residuals, fx, fy);
-            ix += dx;
-            iy += dy;
-            pulse.set_cell(x, y, palette.from_rgb(raster.bilinear(ix, iy)))?;
+            let rgb = cell_rgb(raster, transform, &residuals, fx, fy);
+            pulse.set_cell(x, y, calibration.classify(palette, rgb, fx, fy))?;
         }
     }
     Ok(pulse)

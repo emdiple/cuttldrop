@@ -77,11 +77,10 @@ impl Palette {
 
     /// sRGB → cell value.
     ///
-    /// **M0 placeholder.** This is a fixed 50% threshold per channel with no
-    /// calibration whatsoever. The real classifier (§3b) fits a per-region
-    /// colour transform from the pilots, equalises cross-module interference,
-    /// and only then classifies — optionally with QDA. None of that exists yet
-    /// and none of it is needed while the channel is lossless.
+    /// Direct fixed-threshold conversion for exact pixels and as a safe
+    /// fallback when no pilot observations are available. The optical eye does
+    /// not use this naked for colour camera frames: [`crate::eye`] learns the
+    /// observed low/high channel levels from distributed pilots first.
     pub const fn from_rgb(self, rgb: [u8; 3]) -> u8 {
         match self {
             Palette::Mono1 => {
