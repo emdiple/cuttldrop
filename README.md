@@ -18,8 +18,9 @@ it.
 
 | | |
 |---|---|
-| Codec, fountain layer, FEC stack | done, 102 tests |
+| Codec, fountain layer, FEC stack | done, 106 tests |
 | Manifest + mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
+| On-demand pulses + adaptive compression | done — three-frame lookahead; compress only when useful |
 | Optical channel simulator | done — warp, tear, exposure blend, crosstalk, vignette, blur, noise |
 | CLI (`cuttl encode` / `cuttl decode`) | done |
 | Browser skin + eye | built and typechecked; decode runs in a worker; JS boundary tested |
@@ -82,7 +83,7 @@ which there is no warning at all.
 Three of the four test surfaces need no camera and no network at all.
 
 ```sh
-cargo test --workspace                    # 102 tests, the full synthetic optical channel
+cargo test --workspace                    # 106 tests, the full synthetic optical channel
 cargo run --release -p cuttl-cli -- encode f.pdf -o pulses/ && \
 cargo run --release -p cuttl-cli -- decode pulses/ -o out.pdf --distort heavy --loss 0.5
 cd web && npm test                        # file -> WASM skin -> WASM eye -> file, in Node
@@ -114,8 +115,8 @@ produces both. One silently corrupted symbol propagates through the decoder and 
 the whole file. So the stack is concatenated:
 
 ```
-skin:  file → fountain → framing → inner Reed-Solomon → cells → screen
-eye:   camera → locate → sample → RS correct → CRC gate → fountain → BLAKE3 → file
+skin:  file → useful compression → fountain → framing → inner Reed-Solomon → cells → screen
+eye:   camera → locate → sample → RS correct → CRC gate → fountain → restore → BLAKE3 → file
 ```
 
 The **CRC gate** in the middle is the load-bearing piece: it converts errors into
@@ -125,6 +126,13 @@ only statement about the *file*: the eye holds the expected hash (it rides in th
 manifest, every 8th pulse, along with the filename and mime type) and refuses to hand
 anything back until the reconstruction matches. The same manifest is why the eye can
 say *"receiving cuttlefish.pdf — 2.4 MB"* a second after it starts looking.
+
+The skin prepares RaptorQ once and generates pulses on demand behind a three-frame
+lookahead; selecting a large file no longer rasterises and retains its entire repair
+loop. Before fountain coding, v4 tries raw DEFLATE for plausibly compressible data and
+keeps it only when at least 64 B are saved. Already-compressed media stays untouched;
+the manifest carries the original length and the final BLAKE3 is always checked against
+the restored original.
 
 **The eye locates the grid rather than being told where it is.** Four QR-style
 concentric-square finders, found by scanning for the 1:1:3:1:1 run-length ratio, then
