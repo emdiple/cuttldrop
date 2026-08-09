@@ -9,7 +9,7 @@ import type { Outcome } from "../pkg/cuttl_wasm.js";
 
 /** Page → worker. Frames only start once `ready` has come back. */
 export type ToWorker =
-  | { kind: "init"; profile: string }
+  | { kind: "init"; profile: string; transport: "custom" | "qr" }
   | { kind: "frame"; buffer: ArrayBuffer; width: number; height: number };
 
 /** Worker → page: `ready` once, one `status` per frame, `complete` at most once. */

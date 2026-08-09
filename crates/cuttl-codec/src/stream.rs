@@ -77,6 +77,15 @@ const FLAG_MANIFEST: u8 = 1;
 /// of colour's (§3c sketched ~1-in-16).
 pub const MANIFEST_PERIOD: usize = 8;
 
+/// Largest RaptorQ payload used by the standard-QR reference transport.
+///
+/// The complete packet is 24 B of header, a 4 B RaptorQ packet id, this
+/// symbol, and a 4 B CRC: 1432 B in total. That fits in a version-27 QR code
+/// at level L (the deliberately conservative reference setting used by the
+/// browser), while retaining Cuttldrop's own fountain, manifest and BLAKE3
+/// semantics.
+pub const REFERENCE_SYMBOL_CAPACITY: u16 = 1400;
+
 /// Stream header bytes, carried by band 0 only.
 pub const STREAM_HEADER_LEN: usize = 24;
 /// Symbol id plus the trailing CRC, on every band.
@@ -193,6 +202,28 @@ fn frame_band(band: u8, header: &StreamHeader, payload: Framed<'_>, data_len: us
     buf
 }
 
+/// Frame one complete packet for the standard-QR reference transport.
+///
+/// Unlike a chroma-cell band this has no padding and no inner RS layer: QR's
+/// own L-level ECC corrects a symbol or its decoder rejects it wholesale. The
+/// CRC remains because it is the firewall before RaptorQ in every transport.
+fn frame_packet(header: &StreamHeader, payload: Framed<'_>) -> Vec<u8> {
+    let flags = match payload {
+        Framed::Manifest(_) => FLAG_MANIFEST,
+        Framed::Symbol(_) => 0,
+    };
+    let bytes = match payload {
+        Framed::Symbol(bytes) | Framed::Manifest(bytes) => bytes,
+    };
+    let mut buf = vec![0u8; STREAM_HEADER_LEN + bytes.len() + 4];
+    header.write_into(&mut buf[..STREAM_HEADER_LEN], flags);
+    buf[STREAM_HEADER_LEN..STREAM_HEADER_LEN + bytes.len()].copy_from_slice(bytes);
+    let end = STREAM_HEADER_LEN + bytes.len();
+    let checksum = crc(&buf[..end]).to_le_bytes();
+    buf[end..].copy_from_slice(&checksum);
+    buf
+}
+
 /// What one band turned out to carry.
 enum Payload<'a> {
     Symbol(&'a [u8]),
@@ -243,6 +274,30 @@ fn parse_band(
 fn check_crc(bytes: &[u8], end: usize) -> Option<()> {
     let expected = u32::from_le_bytes(bytes.get(end..end + 4)?.try_into().ok()?);
     (crc(&bytes[..end]) == expected).then_some(())
+}
+
+/// Parse an exact, header-bearing QR reference packet.
+fn parse_packet(bytes: &[u8]) -> Option<(StreamHeader, Payload<'_>)> {
+    let (header, flags) = StreamHeader::parse(bytes)?;
+    let at = STREAM_HEADER_LEN;
+    if flags & FLAG_MANIFEST != 0 {
+        let (manifest, used) = Manifest::parse(bytes.get(at..)?)?;
+        (bytes.len() == at + used + 4).then_some(())?;
+        check_crc(bytes, at + used)?;
+        return Some((header, Payload::Manifest(manifest)));
+    }
+
+    let symbol_len = RaptorQSink::probe(&header.config)?;
+    let end = at
+        + if symbol_len == 0 {
+            0
+        } else {
+            SYMBOL_ID_LEN + symbol_len
+        };
+    let symbol = bytes.get(at..end)?;
+    (bytes.len() == end + 4).then_some(())?;
+    check_crc(bytes, end)?;
+    Some((header, Payload::Symbol(symbol)))
 }
 
 /// Prepared skin-side stream. The expensive RaptorQ intermediate-symbol solve
@@ -358,6 +413,84 @@ impl StreamEncoder {
             },
         )?;
         Ok(pulse)
+    }
+}
+
+/// Grid-independent packet stream for the standard-QR reference mode.
+///
+/// This deliberately shares every non-optical layer with chroma-cell pulses:
+/// compression, RaptorQ, stream identity, periodic manifest and final BLAKE3.
+/// Its only difference is that a packet is handed to a QR writer instead of
+/// Reed–Solomon-protected chroma cells.
+pub struct ReferenceEncoder {
+    fountain: RaptorQ,
+    manifest: Vec<u8>,
+    header: StreamHeader,
+    symbols: u32,
+    packets: usize,
+}
+
+impl ReferenceEncoder {
+    pub fn new(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<Self> {
+        let (encoded, compression) = prepare_object(object, mime)?;
+        let fountain = RaptorQ::new(&encoded, REFERENCE_SYMBOL_CAPACITY)?;
+        let manifest = Manifest::describe_encoded(name, mime, object, compression);
+        let hash_head: [u8; 4] = manifest.hash[..4].try_into().expect("hash has 32 bytes");
+        let manifest = manifest.to_bytes();
+        if manifest.len() > REFERENCE_SYMBOL_CAPACITY as usize {
+            return Err(Error::PayloadTooLarge {
+                len: manifest.len(),
+                capacity: REFERENCE_SYMBOL_CAPACITY as usize,
+            });
+        }
+
+        let source = fountain.source_symbols();
+        let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
+        let symbols = if source == 0 { 1 } else { source + repair };
+        let mut packets = 0usize;
+        let mut slots = 0usize;
+        while slots < symbols as usize || packets == 0 {
+            if !packets.is_multiple_of(MANIFEST_PERIOD) {
+                slots += 1;
+            }
+            packets += 1;
+        }
+
+        let header = StreamHeader {
+            stream_id,
+            config: fountain.config(),
+            hash_head,
+        };
+        Ok(Self {
+            fountain,
+            manifest,
+            header,
+            symbols,
+            packets,
+        })
+    }
+
+    pub fn packet_count(&self) -> usize {
+        self.packets
+    }
+
+    /// One complete QR payload, wrapping around as long as the skin sends.
+    pub fn packet(&self, index: usize) -> Vec<u8> {
+        let index = index % self.packets;
+        if index.is_multiple_of(MANIFEST_PERIOD) {
+            return frame_packet(&self.header, Framed::Manifest(&self.manifest));
+        }
+        let manifests_before = index.div_ceil(MANIFEST_PERIOD);
+        let ordinal = index - manifests_before;
+        debug_assert!(ordinal < self.symbols as usize);
+        let symbol = self.fountain.symbol(ordinal as u32);
+        frame_packet(&self.header, Framed::Symbol(&symbol))
     }
 }
 
@@ -634,6 +767,64 @@ impl Receiver {
         }
     }
 
+    /// Absorb one decoded standard-QR packet.
+    ///
+    /// QR's decoder has already located, sampled and applied its own ECC. This
+    /// method deliberately begins at the same CRC gate that chroma-cell bands
+    /// reach after their inner RS layer, keeping the fountain and BLAKE3 path
+    /// identical between the reference and custom transports.
+    pub fn ingest_packet(&mut self, bytes: &[u8]) -> Ingest {
+        if self.is_complete() {
+            return Ingest::Duplicate;
+        }
+        let Some((header, payload)) = parse_packet(bytes) else {
+            self.rejected += 1;
+            return Ingest::Rejected;
+        };
+        if !self.adopt(header) {
+            self.rejected += 1;
+            return Ingest::Rejected;
+        }
+
+        match payload {
+            Payload::Manifest(manifest) => {
+                if manifest.hash[..4] != self.hash_head {
+                    self.rejected += 1;
+                    return Ingest::Rejected;
+                }
+                if self.manifest.is_some() {
+                    return Ingest::Duplicate;
+                }
+                self.manifest = Some(manifest);
+            }
+            Payload::Symbol(symbol) => {
+                if self.object.is_some() {
+                    return Ingest::Duplicate;
+                }
+                if symbol.len() >= SYMBOL_ID_LEN {
+                    let id: [u8; SYMBOL_ID_LEN] =
+                        symbol[..SYMBOL_ID_LEN].try_into().expect("checked length");
+                    if !self.seen.insert(id) {
+                        return Ingest::Duplicate;
+                    }
+                }
+                let Some(sink) = self.sink.as_mut() else {
+                    self.rejected += 1;
+                    return Ingest::Rejected;
+                };
+                self.accepted += 1;
+                if let Some(object) = sink.absorb(symbol) {
+                    self.object = Some(object);
+                }
+            }
+        }
+        if self.is_complete() {
+            Ingest::Completed
+        } else {
+            Ingest::Accepted
+        }
+    }
+
     /// Follow a stream, changing over only after two consecutive CRC-valid
     /// headers agree on the replacement.
     ///
@@ -789,6 +980,24 @@ mod tests {
     fn empty_object_roundtrips() {
         let pulses = encode(&[], M1.0, M1.1, 1, 0.0).unwrap();
         assert_eq!(absorb_all(&pulses).finish().unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn qr_reference_packets_share_the_verified_stream() {
+        let object: Vec<u8> = (0..18_000u32).map(|n| (n * 31) as u8).collect();
+        let skin =
+            ReferenceEncoder::new(&object, "reference.bin", "application/test", 19, 0.5).unwrap();
+        let mut eye = Receiver::new();
+        for index in 0..skin.packet_count() {
+            if eye.ingest_packet(&skin.packet(index)) == Ingest::Completed {
+                break;
+            }
+        }
+        assert_eq!(
+            eye.manifest().map(|manifest| manifest.name.as_str()),
+            Some("reference.bin")
+        );
+        assert_eq!(eye.finish().unwrap(), object);
     }
 
     /// The manifest names the file long before the object converges (§3c).

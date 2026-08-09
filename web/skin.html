@@ -45,12 +45,13 @@
         <label class="field">
           <span class="field-line"><span class="label">Profile</span><span class="field-meta">density + colour</span></span>
           <select id="profile">
+            <option value="qr">QR Reference · v27-L · 1.4 KB/packet</option>
             <option value="m1" selected>M1 · Safe mono · 160 B/pulse</option>
             <option value="m2">M2 · Dense mono · 2.1 KB/pulse</option>
             <option value="m3">M3 · Colour · 1.4 KB/pulse</option>
             <option value="m4">M4 · Dense colour · 6.3 KB/pulse</option>
           </select>
-          <span class="hint">The eye detects this automatically. Dense profiles need the sender to fill more of its camera frame.</span>
+          <span class="hint">QR Reference uses a standard black-and-white QR code for a camera baseline. The eye detects m1–m4 automatically; choose QR mode on the eye when comparing it.</span>
         </label>
 
         <label class="field">

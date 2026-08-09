@@ -12,11 +12,12 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import QRCode from "qrcode";
 
 const pkg = new URL("../pkg/cuttl_wasm.js", import.meta.url);
 const wasm = new URL("../pkg/cuttl_wasm_bg.wasm", import.meta.url);
 
-const { default: init, Skin, Eye, Outcome } = await import(pkg.href);
+const { default: init, ReferenceEye, ReferenceSkin, Skin, Eye, Outcome } = await import(pkg.href);
 // The `web` target normally fetches its own binary; in Node we hand it over.
 await init({ module_or_path: await readFile(fileURLToPath(wasm)) });
 
@@ -69,6 +70,27 @@ assert.ok(eye.isComplete, "eye never completed");
 const received = eye.takeObject();
 assert.ok(received instanceof Uint8Array, "takeObject should hand back a Uint8Array");
 assert.deepEqual(received, object, "received file differs from the sent one");
+
+// QR Reference changes only the optical raster. Its packet bytes use the same
+// manifest, RaptorQ and BLAKE3 path as the custom chroma-cell transport.
+const referenceSkin = new ReferenceSkin(object, NAME, MIME, 0xface, 0.5);
+const referenceEye = new ReferenceEye();
+assert.ok(referenceSkin.packetCount > 1, "reference skin produced no QR packets");
+for (let i = 0; i < referenceSkin.packetCount; i += 1) {
+  if (referenceEye.ingest(referenceSkin.packet(i)) === Outcome.Completed) break;
+}
+assert.equal(referenceEye.profile, "qr");
+assert.equal(referenceEye.fileName, NAME);
+assert.deepEqual(referenceEye.takeObject(), object, "QR reference packet round trip differs");
+
+// Reference packets must remain inside the chosen standard QR version rather
+// than relying on the writer to silently enlarge the visual carrier.
+const referenceQr = QRCode.create([{ data: referenceSkin.packet(1), mode: "byte" }], {
+  version: 27,
+  errorCorrectionLevel: "L",
+  maskPattern: 4,
+});
+assert.equal(referenceQr.modules.size, 125, "reference packet escaped QR version 27");
 
 // A frame that is not a pulse must be reported, not thrown.
 const noise = new Uint8Array(skin.cols * skin.rows * 4).fill(0);

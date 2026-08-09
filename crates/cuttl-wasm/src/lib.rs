@@ -56,6 +56,42 @@ pub struct Skin {
     grid: Grid,
 }
 
+/// The skin-side packet producer for the standard QR reference transport.
+///
+/// It intentionally has no raster methods. The browser turns each packet into
+/// a standards-compliant QR matrix; every transport detail above that matrix
+/// remains Cuttldrop's own RaptorQ/manifest/BLAKE3 stream.
+#[wasm_bindgen]
+pub struct ReferenceSkin {
+    stream: stream::ReferenceEncoder,
+}
+
+#[wasm_bindgen]
+impl ReferenceSkin {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<ReferenceSkin, JsValue> {
+        stream::ReferenceEncoder::new(object, name, mime, stream_id, overhead)
+            .map(|stream| Self { stream })
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[wasm_bindgen(getter, js_name = packetCount)]
+    pub fn packet_count(&self) -> usize {
+        self.stream.packet_count()
+    }
+
+    #[wasm_bindgen(js_name = packet)]
+    pub fn packet(&self, index: usize) -> Vec<u8> {
+        self.stream.packet(index)
+    }
+}
+
 #[wasm_bindgen]
 impl Skin {
     /// Encode a file into a looping pulse sequence.
@@ -140,6 +176,114 @@ pub struct Eye {
     locked: Option<Profile>,
     receiver: Receiver,
     unlocatable: u32,
+}
+
+/// The eye-side packet sink for the standard QR reference transport.
+#[wasm_bindgen]
+pub struct ReferenceEye {
+    receiver: Receiver,
+    unlocatable: u32,
+}
+
+impl Default for ReferenceEye {
+    fn default() -> Self {
+        Self {
+            receiver: Receiver::new(),
+            unlocatable: 0,
+        }
+    }
+}
+
+fn outcome(ingest: Ingest) -> Outcome {
+    match ingest {
+        Ingest::Accepted => Outcome::Accepted,
+        Ingest::Completed => Outcome::Completed,
+        Ingest::Duplicate => Outcome::Duplicate,
+        Ingest::Rejected => Outcome::Rejected,
+        Ingest::Torn => Outcome::Torn,
+    }
+}
+
+#[wasm_bindgen]
+impl ReferenceEye {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> ReferenceEye {
+        Self::default()
+    }
+
+    /// Feed bytes returned by a standards-compliant QR decoder.
+    pub fn ingest(&mut self, packet: &[u8]) -> Outcome {
+        outcome(self.receiver.ingest_packet(packet))
+    }
+
+    /// QR detection found no valid symbol in this camera frame.
+    pub fn miss(&mut self) {
+        self.unlocatable += 1;
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn profile(&self) -> String {
+        "qr".to_string()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn symbols(&self) -> u32 {
+        self.receiver.progress().0
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn needed(&self) -> u32 {
+        self.receiver.progress().1
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn torn(&self) -> u32 {
+        self.receiver.torn()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn rejected(&self) -> u32 {
+        self.receiver.rejected()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn unlocatable(&self) -> u32 {
+        self.unlocatable
+    }
+
+    #[wasm_bindgen(getter, js_name = fileName)]
+    pub fn file_name(&self) -> Option<String> {
+        self.receiver
+            .manifest()
+            .map(|manifest| manifest.safe_name())
+    }
+
+    #[wasm_bindgen(getter, js_name = fileMime)]
+    pub fn file_mime(&self) -> Option<String> {
+        self.receiver
+            .manifest()
+            .map(|manifest| manifest.mime.clone())
+    }
+
+    #[wasm_bindgen(getter, js_name = expectedBytes)]
+    pub fn expected_bytes(&self) -> Option<f64> {
+        self.receiver.expected_len().map(|len| len as f64)
+    }
+
+    #[wasm_bindgen(getter, js_name = symbolBytes)]
+    pub fn symbol_bytes(&self) -> Option<u32> {
+        self.receiver.symbol_len().map(|len| len as u32)
+    }
+
+    #[wasm_bindgen(getter, js_name = isComplete)]
+    pub fn is_complete(&self) -> bool {
+        self.receiver.is_complete()
+    }
+
+    #[wasm_bindgen(js_name = takeObject)]
+    pub fn take_object(&self) -> Option<Vec<u8>> {
+        self.receiver.finish().ok()
+    }
 }
 
 #[wasm_bindgen]
@@ -370,6 +514,22 @@ mod tests {
         assert!(eye.is_complete());
         assert_eq!(eye.take_object().unwrap(), object);
         assert_eq!(eye.file_mime().as_deref(), Some("application/octet-stream"));
+    }
+
+    #[test]
+    fn qr_reference_skin_and_eye_share_the_verified_stream() {
+        let object: Vec<u8> = (0..11_000u32).map(|n| (n * 13) as u8).collect();
+        let skin =
+            ReferenceSkin::new(&object, "reference.bin", "application/test", 41, 0.5).unwrap();
+        let mut eye = ReferenceEye::new();
+        for index in 0..skin.packet_count() {
+            if eye.ingest(&skin.packet(index)) == Outcome::Completed {
+                break;
+            }
+        }
+        assert_eq!(eye.profile(), "qr");
+        assert_eq!(eye.file_name().as_deref(), Some("reference.bin"));
+        assert_eq!(eye.take_object().unwrap(), object);
     }
 
     /// The eye works out the profile for itself, for every profile there is.

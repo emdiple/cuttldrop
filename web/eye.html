@@ -48,6 +48,15 @@
         <span class="hint">The actual mode granted by the phone appears under diagnostics.</span>
       </label>
 
+      <label id="transport-setting" class="field compact">
+        <span class="field-line"><span class="label">Receiver mode</span><span class="field-meta">optical raster</span></span>
+        <select id="transport">
+          <option value="custom" selected>Custom chroma cells · m1–m4</option>
+          <option value="qr">QR Reference · standard QR</option>
+        </select>
+        <span class="hint">Match the skin. QR Reference tests camera and display behaviour against ZXing; it is not the custom colour transport.</span>
+      </label>
+
       <div class="action-stack">
         <button id="begin" class="primary-action"><span class="camera-dot"></span>Start camera</button>
         <button id="begin-screen" class="secondary" hidden>Read a window instead</button>

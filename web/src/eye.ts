@@ -42,6 +42,7 @@ const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
 const captureFps = document.querySelector<HTMLSelectElement>("#capture-fps")!;
 const captureSetting = document.querySelector<HTMLLabelElement>("#capture-setting")!;
+const transport = document.querySelector<HTMLSelectElement>("#transport")!;
 const liveState = document.querySelector<HTMLSpanElement>(".live-state")!;
 const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
@@ -81,6 +82,10 @@ const recent: Outcome[] = [];
 let last: Extract<FromWorker, { kind: "status" }> | null = null;
 let busy = false;
 let done = false;
+
+function currentTransport(): "custom" | "qr" {
+  return transport.value === "qr" ? "qr" : "custom";
+}
 
 /**
  * Rolling event rate over the last [`RATE_WINDOW`] seconds.
@@ -233,6 +238,7 @@ function finish(bytes: Uint8Array, name: string, mime: string): void {
   // reason. `done` already stopped the capture loop.
   releaseCamera();
   void awake.release();
+  transport.disabled = false;
   const blob = new Blob([bytes as BlobPart], {
     type: mime || "application/octet-stream",
   });
@@ -278,6 +284,7 @@ function sized(): boolean {
  * gate naturally sheds frames while the more expensive decode is running.
  */
 function adjustDetail(message: Extract<FromWorker, { kind: "status" }>): void {
+  if (currentTransport() === "qr") return;
   if (message.profile) {
     searchingFrames = 0;
   } else {
@@ -394,6 +401,7 @@ function offerRetry(message: string): void {
   begin.textContent = "Try again";
   beginScreen.hidden = !hasScreenCapture;
   beginScreen.disabled = false;
+  transport.disabled = false;
 }
 
 /**
@@ -481,6 +489,7 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   begin.hidden = true;
   beginScreen.hidden = true;
   captureSetting.hidden = true;
+  transport.disabled = true;
   receiverState("scanning");
   const track = stream.getVideoTracks()[0];
   await steady(track);
@@ -546,6 +555,19 @@ function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>, ope
 wire(begin, openCamera, "Opening the camera…");
 wire(beginScreen, openScreen, "Pick the window showing the skin…");
 
+transport.addEventListener("change", () => {
+  if (video.srcObject) return;
+  last = null;
+  recent.length = 0;
+  newFrames = 0;
+  dupFrames = 0;
+  firstSymbolAt = null;
+  progress.textContent = "Waiting for the first pulse";
+  counters.textContent = "";
+  barFill.style.width = "0%";
+  post({ kind: "init", profile: PROFILE, transport: currentTransport() });
+});
+
 worker.onmessage = (event: MessageEvent<FromWorker>) => {
   const message = event.data;
   switch (message.kind) {
@@ -578,4 +600,4 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
   }
 };
 
-post({ kind: "init", profile: PROFILE });
+post({ kind: "init", profile: PROFILE, transport: currentTransport() });

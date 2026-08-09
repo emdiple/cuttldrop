@@ -3,9 +3,10 @@
 // Everything that decides *what* to paint is in WASM. This file owns only the
 // things a browser does better: reading a file, sizing a canvas, and pacing.
 
-import init, { Skin } from "../pkg/cuttl_wasm.js";
+import init, { ReferenceSkin, Skin } from "../pkg/cuttl_wasm.js";
 import { PulsePacer, QUIET_CELLS, fitPhysicalScale, rasterizePulse } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
+import { QR_REFERENCE_SIZE, rasterizeReferencePacket } from "./qr-reference.js";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
@@ -26,7 +27,7 @@ const statusText = document.querySelector<HTMLSpanElement>("#status-text")!;
 const size = document.querySelector<HTMLInputElement>("#size")!;
 const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
-let skin: Skin | null = null;
+let skin: Skin | ReferenceSkin | null = null;
 let selectedFile: File | null = null;
 let prepareGen = 0;
 const LOOKAHEAD = 3;
@@ -48,6 +49,7 @@ const awake = new ScreenAwake();
  * this immediately after choosing a profile — the human remains the back
  * channel. */
 const PROFILE_RATE: Record<string, number> = {
+  qr: 24,
   m1: 20,
   m2: 25,
   m3: 25,
@@ -94,7 +96,17 @@ function overlayRoom(): number {
 /** Display dimensions after adding the four-cell border on every edge. */
 function rasterSize(): { cols: number; rows: number } {
   if (!skin) return { cols: 1, rows: 1 };
+  if (isReferenceSkin(skin)) return { cols: QR_REFERENCE_SIZE, rows: QR_REFERENCE_SIZE };
   return { cols: skin.cols + QUIET_CELLS * 2, rows: skin.rows + QUIET_CELLS * 2 };
+}
+
+function isReferenceSkin(value: Skin | ReferenceSkin | null): value is ReferenceSkin {
+  return value instanceof ReferenceSkin;
+}
+
+function frameCount(): number {
+  if (!skin) return 0;
+  return isReferenceSkin(skin) ? skin.packetCount : skin.pulseCount;
 }
 
 /**
@@ -150,6 +162,12 @@ function resize(): void {
 
 function makeFrame(): ImageData {
   if (!skin) throw new Error("no prepared stream");
+  if (isReferenceSkin(skin)) {
+    const packet = skin.packet(nextIndex);
+    nextIndex = (nextIndex + 1) % skin.packetCount;
+    const qr = rasterizeReferencePacket(packet);
+    return new ImageData(qr.rgba, qr.width, qr.height);
+  }
   const rgba = skin.pulseRgba(nextIndex);
   nextIndex = (nextIndex + 1) % skin.pulseCount;
   const framed = rasterizePulse(rgba, skin.cols, skin.rows);
@@ -260,7 +278,10 @@ async function prepare(chosen: File): Promise<void> {
   try {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
-    skin = new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
+    skin =
+      profile.value === "qr"
+        ? new ReferenceSkin(bytes, chosen.name, chosen.type, streamId, OVERHEAD)
+        : new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
   } catch (error) {
     if (gen !== prepareGen) return;
     detail.textContent = `Could not encode: ${error}`;
@@ -279,13 +300,15 @@ async function prepare(chosen: File): Promise<void> {
     label();
     refit();
   }
-  detail.textContent =
-    `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-    `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
+  detail.textContent = isReferenceSkin(skin)
+    ? `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
+      `${skin.packetCount} QR packets at version 27-L`
+    : `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
+      `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
   // A short loop is the one thing that can starve a transfer outright: the
   // fountain has too few distinct symbols to route around a bad frame. The
   // skin repeats forever so it recovers, but slowly — worth saying.
-  if (skin.pulseCount < 32) {
+  if (frameCount() < 32) {
     detail.textContent += " · short loop for this density, expect repeats";
   }
   start.disabled = false;
@@ -357,7 +380,7 @@ function label(): void {
   if (!skin) return;
   statusText.textContent =
     taught || wide.matches
-      ? `${rate.value} Hz target · ${skin.pulseCount} pulses`
+      ? `${rate.value} Hz target · ${frameCount()} ${isReferenceSkin(skin) ? "QR packets" : "pulses"}`
       : `${rate.value} Hz target · tap the pulse for these controls`;
 }
 
