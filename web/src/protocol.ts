@@ -7,9 +7,18 @@
 
 import type { Outcome } from "../pkg/cuttl_wasm.js";
 
+/**
+ * Which optical carrier the eye should read.
+ *
+ * `qr` is one black-and-white standard QR per frame; `qr-rgb` is three
+ * standard QR symbols multiplexed into the R, G and B channels of one frame.
+ * Both feed the same `ReferenceEye` packet sink.
+ */
+export type Transport = "custom" | "qr" | "qr-rgb";
+
 /** Page → worker. Frames only start once `ready` has come back. */
 export type ToWorker =
-  | { kind: "init"; profile: string; transport: "custom" | "qr" }
+  | { kind: "init"; profile: string; transport: Transport }
   | { kind: "frame"; buffer: ArrayBuffer; width: number; height: number };
 
 /** Worker → page: `ready` once, one `status` per frame, `complete` at most once. */

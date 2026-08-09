@@ -29,6 +29,7 @@ it.
 | Dense/colour eye path | adaptive 1280→1920 capture, five-point cell sampling, pilot calibration |
 | Skin display discipline | four-cell black quiet zone, physical-pixel fit, two-refresh pulse floor |
 | QR Reference ladder | fixed standard QR v27/v35/v40-L writer + local ZXing reader; same RaptorQ, manifest, and BLAKE3 stream |
+| QR RGB colour trial | three standard QR symbols multiplexed into R/G/B per frame, 3× payload; write→ZXing→ingest seam tested in Node |
 | **A real file across a real air gap** | **not done** — needs two physical devices |
 
 That last row is the honest headline. Everything upstream of the camera is verified;
@@ -72,6 +73,16 @@ the most data (2,920 RaptorQ bytes per packet) but needs the largest, sharpest m
 The QR layer alone changes; the file still goes through Cuttldrop's compression, RaptorQ,
 manifest, CRC gate, and mandatory BLAKE3 verification. The ZXing reader WASM ships inside
 the web build, so it does not fetch a decoder from a CDN while receiving.
+
+Each rung also has a **QR RGB** variant (skin: *QR RGB v27/v35/v40*; eye: *QR RGB · one
+QR per colour channel*): three standard symbols of the same version multiplexed into the
+red, green and blue channels of a single frame, for three packets — up to 8.8 KB — per
+refresh. Function patterns coincide across same-version symbols, so finders, timing and
+alignment stay black and ZXing detects each separated channel as an ordinary QR code.
+This is JAB Code's colour thesis on standard-QR geometry, and it sits deliberately
+*between* the black-and-white control and the custom chroma cells: if b/w QR works where
+QR RGB fails, the camera's colour handling is implicated before Cuttldrop's raster ever
+enters the conversation.
 
 `npm run cert` is not optional if either device is a phone. `navigator.mediaDevices`
 does not exist outside a secure context — `localhost` counts, the `https://192.168.x.x`
@@ -155,6 +166,13 @@ standard finder/alignment patterns, and mature detector make it the control expe
 the custom chroma-cell renderer—not a replacement for it. If the reference profile works
 in the same physical setup and a custom profile does not, the evidence points at
 Cuttldrop's optical raster rather than its transport or file-integrity layers.
+
+The **QR RGB** variant multiplexes three of those symbols into one frame's colour
+channels. Nothing changes in Rust — which packets share a frame is a rasterization
+detail, and every packet still crosses the CRC gate alone, so a channel ruined by
+Bayer-filter or subpixel crosstalk costs one symbol, never the frame. It extends the A/B
+ladder into colour: b/w QR isolates the optics, QR RGB adds only colour separation on
+top, and the custom profiles add Cuttldrop's own raster on top of that.
 
 **The eye locates the grid rather than being told where it is.** Four QR-style
 concentric-square finders, found by scanning for the 1:1:3:1:1 run-length ratio, then

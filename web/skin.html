@@ -50,6 +50,11 @@
               <option value="qr35">QR v35-L · 2.2 KB/packet · dense</option>
               <option value="qr40">QR v40-L · 2.9 KB/packet · maximum density</option>
             </optgroup>
+            <optgroup label="QR RGB · one QR per colour channel">
+              <option value="rgb27">QR RGB v27-L · 4.3 KB/frame · colour trial</option>
+              <option value="rgb35">QR RGB v35-L · 6.8 KB/frame · dense colour</option>
+              <option value="rgb40">QR RGB v40-L · 8.8 KB/frame · maximum colour</option>
+            </optgroup>
             <optgroup label="Custom chroma cells">
             <option value="m1" selected>M1 · Safe mono · 160 B/pulse</option>
             <option value="m2">M2 · Dense mono · 2.1 KB/pulse</option>
@@ -57,7 +62,7 @@
             <option value="m4">M4 · Dense colour · 6.3 KB/pulse</option>
             </optgroup>
           </select>
-          <span class="hint">QR Reference is a standard black-and-white baseline. v35 and v40 carry more per packet but need larger, sharper modules; choose QR mode on the eye when comparing it.</span>
+          <span class="hint">QR Reference is a standard black-and-white baseline; QR RGB multiplexes three standard symbols into the colour channels for 3× the payload, at the mercy of the camera's colour handling. Match the mode on the eye when comparing.</span>
         </label>
 
         <label class="field">

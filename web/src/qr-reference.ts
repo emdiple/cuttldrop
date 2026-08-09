@@ -44,9 +44,11 @@ export function referenceProfile(name: string): QrReferenceSpec {
   return profile;
 }
 
-/** Turn one Cuttldrop packet into a fixed QR-L raster at one px/module. */
-export function rasterizeReferencePacket(packet: Uint8Array, profile: string): PulseRaster {
-  const spec = referenceProfile(profile);
+/** QR symbols carried by one colored frame — one per RGB channel. */
+export const RGB_CHANNELS = 3;
+
+/** Encode one packet at a fixed version, or throw if it would not fit. */
+function moduleMatrix(packet: Uint8Array, spec: QrReferenceSpec, profile: string) {
   const qr = QRCode.create([{ data: packet, mode: "byte" }], {
     version: spec.version,
     errorCorrectionLevel: QR_REFERENCE_ECC,
@@ -55,6 +57,13 @@ export function rasterizeReferencePacket(packet: Uint8Array, profile: string): P
   if (qr.modules.size !== spec.modules) {
     throw new Error(`reference QR ${profile} changed size to ${qr.modules.size}`);
   }
+  return qr.modules.data;
+}
+
+/** Turn one Cuttldrop packet into a fixed QR-L raster at one px/module. */
+export function rasterizeReferencePacket(packet: Uint8Array, profile: string): PulseRaster {
+  const spec = referenceProfile(profile);
+  const modules = moduleMatrix(packet, spec, profile);
 
   const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(
     spec.size * spec.size * 4,
@@ -62,11 +71,48 @@ export function rasterizeReferencePacket(packet: Uint8Array, profile: string): P
   rgba.fill(255); // opaque white modules and the required quiet zone
   for (let y = 0; y < spec.modules; y += 1) {
     for (let x = 0; x < spec.modules; x += 1) {
-      if (!qr.modules.data[y * spec.modules + x]) continue;
+      if (!modules[y * spec.modules + x]) continue;
       const at = ((y + QR_QUIET_MODULES) * spec.size + x + QR_QUIET_MODULES) * 4;
       rgba[at] = 0;
       rgba[at + 1] = 0;
       rgba[at + 2] = 0;
+    }
+  }
+  return { width: spec.size, height: spec.size, rgba };
+}
+
+/**
+ * Turn three packets into one colored raster — one standard QR per RGB channel.
+ *
+ * JAB Code's colour thesis on standard-QR geometry. Same-version symbols put
+ * their function patterns (finders, timing, alignment, format) on the same
+ * modules, and byte mode with a fixed mask keeps every structural module
+ * identical across the three symbols — so those modules go dark in all three
+ * channels at once and render black, exactly as a plain QR would. Only data
+ * modules diverge into colour. Each channel, separated by the eye, is a
+ * complete standards-compliant symbol for an unmodified ZXing reader; a
+ * channel ruined by crosstalk costs its packet, never the frame, because every
+ * packet still crosses the CRC gate on its own.
+ */
+export function rasterizeRgbReferencePackets(
+  packets: readonly Uint8Array[],
+  profile: string,
+): PulseRaster {
+  if (packets.length !== RGB_CHANNELS) {
+    throw new Error(`RGB reference frame needs ${RGB_CHANNELS} packets, got ${packets.length}`);
+  }
+  const spec = referenceProfile(profile);
+  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(
+    spec.size * spec.size * 4,
+  );
+  rgba.fill(255); // white quiet zone in every channel
+  for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
+    const modules = moduleMatrix(packets[channel], spec, profile);
+    for (let y = 0; y < spec.modules; y += 1) {
+      for (let x = 0; x < spec.modules; x += 1) {
+        if (!modules[y * spec.modules + x]) continue;
+        rgba[((y + QR_QUIET_MODULES) * spec.size + x + QR_QUIET_MODULES) * 4 + channel] = 0;
+      }
     }
   }
   return { width: spec.size, height: spec.size, rgba };

@@ -8,7 +8,7 @@
     "cert": "sh scripts/cert.sh",
     "dev": "npm run wasm && vite --configLoader runner",
     "build": "npm run wasm && tsc --noEmit && vite build --configLoader runner",
-    "test": "npm run wasm && node --experimental-strip-types test/optical-display.test.ts && node test/roundtrip.mjs",
+    "test": "npm run wasm && node --experimental-strip-types test/optical-display.test.ts && node test/roundtrip.mjs && node test/qr-optical.mjs",
     "preview": "vite preview --configLoader runner"
   },
   "devDependencies": {

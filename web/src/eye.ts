@@ -7,7 +7,7 @@
 // is busy is simply dropped — the skin repeats everything anyway.
 
 import { Outcome } from "../pkg/cuttl_wasm.js";
-import type { FromWorker, ToWorker } from "./protocol.js";
+import type { FromWorker, ToWorker, Transport } from "./protocol.js";
 import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.js";
 
 // "auto": the eye works the density out from the first frame it understands,
@@ -83,8 +83,9 @@ let last: Extract<FromWorker, { kind: "status" }> | null = null;
 let busy = false;
 let done = false;
 
-function currentTransport(): "custom" | "qr" {
-  return transport.value === "qr" ? "qr" : "custom";
+function currentTransport(): Transport {
+  const value = transport.value;
+  return value === "qr" || value === "qr-rgb" ? value : "custom";
 }
 
 /**
@@ -284,7 +285,7 @@ function sized(): boolean {
  * gate naturally sheds frames while the more expensive decode is running.
  */
 function adjustDetail(message: Extract<FromWorker, { kind: "status" }>): void {
-  if (currentTransport() === "qr") return;
+  if (currentTransport() !== "custom") return;
   if (message.profile) {
     searchingFrames = 0;
   } else {

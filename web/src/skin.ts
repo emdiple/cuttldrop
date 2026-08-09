@@ -6,7 +6,12 @@
 import init, { ReferenceSkin, Skin } from "../pkg/cuttl_wasm.js";
 import { PulsePacer, QUIET_CELLS, fitPhysicalScale, rasterizePulse } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
-import { rasterizeReferencePacket, referenceProfile } from "./qr-reference.js";
+import {
+  RGB_CHANNELS,
+  rasterizeReferencePacket,
+  rasterizeRgbReferencePackets,
+  referenceProfile,
+} from "./qr-reference.js";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
@@ -52,11 +57,32 @@ const PROFILE_RATE: Record<string, number> = {
   qr27: 24,
   qr35: 20,
   qr40: 15,
+  // RGB rungs cost the eye three ZXing passes per frame, so the sender
+  // defaults slower; the per-frame payload is 3× so goodput still leads.
+  rgb27: 15,
+  rgb35: 12,
+  rgb40: 10,
   m1: 20,
   m2: 25,
   m3: 25,
   m4: 25,
 };
+
+/**
+ * How a profile menu value maps onto the reference transport, if it does.
+ *
+ * The WASM `ReferenceSkin` only knows density rungs (`qr27`…): whether the
+ * packets travel one per black-and-white frame or three per RGB frame is
+ * purely a rasterization decision, so it lives here, not in Rust.
+ */
+function referenceChoice(value: string): { rung: string; channels: number } | null {
+  if (value.startsWith("rgb")) return { rung: `qr${value.slice(3)}`, channels: RGB_CHANNELS };
+  if (value.startsWith("qr")) return { rung: value, channels: 1 };
+  return null;
+}
+
+/** Channels per reference frame for the prepared stream; 1 outside RGB mode. */
+let referenceChannels = 1;
 
 /** One physical pixel per raster cell; the visible canvas is an integer-scaled blit. */
 const raster = document.createElement("canvas");
@@ -168,9 +194,22 @@ function resize(): void {
 function makeFrame(): ImageData {
   if (!skin) throw new Error("no prepared stream");
   if (isReferenceSkin(skin)) {
-    const packet = skin.packet(nextIndex);
-    nextIndex = (nextIndex + 1) % skin.packetCount;
-    const qr = rasterizeReferencePacket(packet, skin.profile);
+    const reference = skin;
+    const take = () => {
+      const packet = reference.packet(nextIndex);
+      nextIndex = (nextIndex + 1) % reference.packetCount;
+      return packet;
+    };
+    if (referenceChannels === RGB_CHANNELS) {
+      // Three consecutive packets share one frame. When the loop length is
+      // not a multiple of three, the wrap rotates which packets travel
+      // together — a receiver that lost a frame gets those packets back in
+      // different company next loop, which suits a fountain fine.
+      const packets = Array.from({ length: RGB_CHANNELS }, take);
+      const qr = rasterizeRgbReferencePackets(packets, reference.profile);
+      return new ImageData(qr.rgba, qr.width, qr.height);
+    }
+    const qr = rasterizeReferencePacket(take(), reference.profile);
     return new ImageData(qr.rgba, qr.width, qr.height);
   }
   const rgba = skin.pulseRgba(nextIndex);
@@ -283,10 +322,11 @@ async function prepare(chosen: File): Promise<void> {
   try {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
-    skin =
-      profile.value.startsWith("qr")
-        ? new ReferenceSkin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD)
-        : new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
+    const reference = referenceChoice(profile.value);
+    skin = reference
+      ? new ReferenceSkin(bytes, chosen.name, chosen.type, reference.rung, streamId, OVERHEAD)
+      : new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
+    referenceChannels = reference?.channels ?? 1;
   } catch (error) {
     if (gen !== prepareGen) return;
     detail.textContent = `Could not encode: ${error}`;
@@ -307,7 +347,8 @@ async function prepare(chosen: File): Promise<void> {
   }
   detail.textContent = isReferenceSkin(skin)
     ? `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-      `${skin.packetCount} QR packets at version ${skin.qrVersion}-L`
+      `${skin.packetCount} QR packets at version ${skin.qrVersion}-L` +
+      (referenceChannels === RGB_CHANNELS ? " · 3 per frame across R/G/B" : "")
     : `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
       `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
   // A short loop is the one thing that can starve a transfer outright: the
