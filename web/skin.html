@@ -45,13 +45,19 @@
         <label class="field">
           <span class="field-line"><span class="label">Profile</span><span class="field-meta">density + colour</span></span>
           <select id="profile">
-            <option value="qr">QR Reference · v27-L · 1.4 KB/packet</option>
+            <optgroup label="QR Reference · standard QR">
+              <option value="qr27">QR v27-L · 1.4 KB/packet · reliable</option>
+              <option value="qr35">QR v35-L · 2.2 KB/packet · dense</option>
+              <option value="qr40">QR v40-L · 2.9 KB/packet · maximum density</option>
+            </optgroup>
+            <optgroup label="Custom chroma cells">
             <option value="m1" selected>M1 · Safe mono · 160 B/pulse</option>
             <option value="m2">M2 · Dense mono · 2.1 KB/pulse</option>
             <option value="m3">M3 · Colour · 1.4 KB/pulse</option>
             <option value="m4">M4 · Dense colour · 6.3 KB/pulse</option>
+            </optgroup>
           </select>
-          <span class="hint">QR Reference uses a standard black-and-white QR code for a camera baseline. The eye detects m1–m4 automatically; choose QR mode on the eye when comparing it.</span>
+          <span class="hint">QR Reference is a standard black-and-white baseline. v35 and v40 carry more per packet but need larger, sharper modules; choose QR mode on the eye when comparing it.</span>
         </label>
 
         <label class="field">

@@ -6,7 +6,7 @@
 import init, { ReferenceSkin, Skin } from "../pkg/cuttl_wasm.js";
 import { PulsePacer, QUIET_CELLS, fitPhysicalScale, rasterizePulse } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
-import { QR_REFERENCE_SIZE, rasterizeReferencePacket } from "./qr-reference.js";
+import { rasterizeReferencePacket, referenceProfile } from "./qr-reference.js";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
@@ -49,7 +49,9 @@ const awake = new ScreenAwake();
  * this immediately after choosing a profile — the human remains the back
  * channel. */
 const PROFILE_RATE: Record<string, number> = {
-  qr: 24,
+  qr27: 24,
+  qr35: 20,
+  qr40: 15,
   m1: 20,
   m2: 25,
   m3: 25,
@@ -96,7 +98,10 @@ function overlayRoom(): number {
 /** Display dimensions after adding the four-cell border on every edge. */
 function rasterSize(): { cols: number; rows: number } {
   if (!skin) return { cols: 1, rows: 1 };
-  if (isReferenceSkin(skin)) return { cols: QR_REFERENCE_SIZE, rows: QR_REFERENCE_SIZE };
+  if (isReferenceSkin(skin)) {
+    const { size } = referenceProfile(skin.profile);
+    return { cols: size, rows: size };
+  }
   return { cols: skin.cols + QUIET_CELLS * 2, rows: skin.rows + QUIET_CELLS * 2 };
 }
 
@@ -165,7 +170,7 @@ function makeFrame(): ImageData {
   if (isReferenceSkin(skin)) {
     const packet = skin.packet(nextIndex);
     nextIndex = (nextIndex + 1) % skin.packetCount;
-    const qr = rasterizeReferencePacket(packet);
+    const qr = rasterizeReferencePacket(packet, skin.profile);
     return new ImageData(qr.rgba, qr.width, qr.height);
   }
   const rgba = skin.pulseRgba(nextIndex);
@@ -279,8 +284,8 @@ async function prepare(chosen: File): Promise<void> {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
     skin =
-      profile.value === "qr"
-        ? new ReferenceSkin(bytes, chosen.name, chosen.type, streamId, OVERHEAD)
+      profile.value.startsWith("qr")
+        ? new ReferenceSkin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD)
         : new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
   } catch (error) {
     if (gen !== prepareGen) return;
@@ -302,7 +307,7 @@ async function prepare(chosen: File): Promise<void> {
   }
   detail.textContent = isReferenceSkin(skin)
     ? `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-      `${skin.packetCount} QR packets at version 27-L`
+      `${skin.packetCount} QR packets at version ${skin.qrVersion}-L`
     : `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
       `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
   // A short loop is the one thing that can starve a transfer outright: the

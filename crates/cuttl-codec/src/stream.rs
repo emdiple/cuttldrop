@@ -77,14 +77,64 @@ const FLAG_MANIFEST: u8 = 1;
 /// of colour's (§3c sketched ~1-in-16).
 pub const MANIFEST_PERIOD: usize = 8;
 
-/// Largest RaptorQ payload used by the standard-QR reference transport.
+/// Standard-QR density rungs for the reference transport.
 ///
-/// The complete packet is 24 B of header, a 4 B RaptorQ packet id, this
-/// symbol, and a 4 B CRC: 1432 B in total. That fits in a version-27 QR code
-/// at level L (the deliberately conservative reference setting used by the
-/// browser), while retaining Cuttldrop's own fountain, manifest and BLAKE3
-/// semantics.
-pub const REFERENCE_SYMBOL_CAPACITY: u16 = 1400;
+/// The number is the RaptorQ payload, not the complete QR byte payload. Every
+/// packet also carries a 24 B stream header, a 4 B RaptorQ id and a 4 B CRC.
+/// Each value is therefore the largest eight-byte-aligned symbol that fits the
+/// named QR version at L-level ECC when encoded in byte mode with mask 4:
+///
+/// ```text
+/// QR v27-L: 1465 QR bytes - 32 B framing -> 1432 B symbol
+/// QR v35-L: 2303 QR bytes - 32 B framing -> 2264 B symbol
+/// QR v40-L: 2953 QR bytes - 32 B framing -> 2920 B symbol
+/// ```
+///
+/// Alignment is deliberately applied here rather than relying on RaptorQ to
+/// round down invisibly. That keeps the QR writer's fixed dimensions a hard
+/// invariant: no packet can make it silently select a larger matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceProfile {
+    V27,
+    V35,
+    V40,
+}
+
+impl ReferenceProfile {
+    pub const ALL: [Self; 3] = [Self::V27, Self::V35, Self::V40];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::V27 => "qr27",
+            Self::V35 => "qr35",
+            Self::V40 => "qr40",
+        }
+    }
+
+    pub const fn version(self) -> u8 {
+        match self {
+            Self::V27 => 27,
+            Self::V35 => 35,
+            Self::V40 => 40,
+        }
+    }
+
+    pub const fn symbol_capacity(self) -> u16 {
+        match self {
+            Self::V27 => 1432,
+            Self::V35 => 2264,
+            Self::V40 => 2920,
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|profile| profile.name() == name)
+    }
+}
+
+/// Backward-compatible name for the original v27 reference rung.
+pub const REFERENCE_SYMBOL_CAPACITY: u16 = ReferenceProfile::V27.symbol_capacity();
 
 /// Stream header bytes, carried by band 0 only.
 pub const STREAM_HEADER_LEN: usize = 24;
@@ -431,6 +481,7 @@ pub struct ReferenceEncoder {
 }
 
 impl ReferenceEncoder {
+    /// Construct the original v27-L reference stream.
     pub fn new(
         object: &[u8],
         name: &str,
@@ -438,15 +489,35 @@ impl ReferenceEncoder {
         stream_id: u32,
         overhead: f32,
     ) -> Result<Self> {
+        Self::with_profile(
+            object,
+            name,
+            mime,
+            ReferenceProfile::V27,
+            stream_id,
+            overhead,
+        )
+    }
+
+    /// Construct a standard-QR stream at a fixed density rung.
+    pub fn with_profile(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        profile: ReferenceProfile,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<Self> {
+        let symbol_capacity = profile.symbol_capacity();
         let (encoded, compression) = prepare_object(object, mime)?;
-        let fountain = RaptorQ::new(&encoded, REFERENCE_SYMBOL_CAPACITY)?;
+        let fountain = RaptorQ::new(&encoded, symbol_capacity)?;
         let manifest = Manifest::describe_encoded(name, mime, object, compression);
         let hash_head: [u8; 4] = manifest.hash[..4].try_into().expect("hash has 32 bytes");
         let manifest = manifest.to_bytes();
-        if manifest.len() > REFERENCE_SYMBOL_CAPACITY as usize {
+        if manifest.len() > symbol_capacity as usize {
             return Err(Error::PayloadTooLarge {
                 len: manifest.len(),
-                capacity: REFERENCE_SYMBOL_CAPACITY as usize,
+                capacity: symbol_capacity as usize,
             });
         }
 

@@ -49,6 +49,11 @@ fn profile_of(name: &str) -> Result<Profile, String> {
     Profile::parse(name).ok_or_else(|| format!("unknown profile {name:?}"))
 }
 
+fn reference_profile_of(name: &str) -> Result<stream::ReferenceProfile, String> {
+    stream::ReferenceProfile::parse(name)
+        .ok_or_else(|| format!("unknown QR reference profile {name:?}"))
+}
+
 /// The sending side: prepares RaptorQ once, then generates pulses as painted.
 #[wasm_bindgen]
 pub struct Skin {
@@ -64,6 +69,7 @@ pub struct Skin {
 #[wasm_bindgen]
 pub struct ReferenceSkin {
     stream: stream::ReferenceEncoder,
+    profile: stream::ReferenceProfile,
 }
 
 #[wasm_bindgen]
@@ -73,12 +79,24 @@ impl ReferenceSkin {
         object: &[u8],
         name: &str,
         mime: &str,
+        profile: &str,
         stream_id: u32,
         overhead: f32,
     ) -> Result<ReferenceSkin, JsValue> {
-        stream::ReferenceEncoder::new(object, name, mime, stream_id, overhead)
-            .map(|stream| Self { stream })
+        let profile = reference_profile_of(profile).map_err(|error| JsValue::from_str(&error))?;
+        stream::ReferenceEncoder::with_profile(object, name, mime, profile, stream_id, overhead)
+            .map(|stream| Self { stream, profile })
             .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn profile(&self) -> String {
+        self.profile.name().to_string()
+    }
+
+    #[wasm_bindgen(getter, js_name = qrVersion)]
+    pub fn qr_version(&self) -> u8 {
+        self.profile.version()
     }
 
     #[wasm_bindgen(getter, js_name = packetCount)]
@@ -519,17 +537,28 @@ mod tests {
     #[test]
     fn qr_reference_skin_and_eye_share_the_verified_stream() {
         let object: Vec<u8> = (0..11_000u32).map(|n| (n * 13) as u8).collect();
-        let skin =
-            ReferenceSkin::new(&object, "reference.bin", "application/test", 41, 0.5).unwrap();
-        let mut eye = ReferenceEye::new();
-        for index in 0..skin.packet_count() {
-            if eye.ingest(&skin.packet(index)) == Outcome::Completed {
-                break;
+        for profile in stream::ReferenceProfile::ALL {
+            let skin = ReferenceSkin::new(
+                &object,
+                "reference.bin",
+                "application/test",
+                profile.name(),
+                41,
+                0.5,
+            )
+            .unwrap();
+            let mut eye = ReferenceEye::new();
+            for index in 0..skin.packet_count() {
+                if eye.ingest(&skin.packet(index)) == Outcome::Completed {
+                    break;
+                }
             }
+            assert_eq!(skin.profile(), profile.name());
+            assert_eq!(skin.qr_version(), profile.version());
+            assert_eq!(eye.profile(), "qr");
+            assert_eq!(eye.file_name().as_deref(), Some("reference.bin"));
+            assert_eq!(eye.take_object().unwrap(), object);
         }
-        assert_eq!(eye.profile(), "qr");
-        assert_eq!(eye.file_name().as_deref(), Some("reference.bin"));
-        assert_eq!(eye.take_object().unwrap(), object);
     }
 
     /// The eye works out the profile for itself, for every profile there is.
