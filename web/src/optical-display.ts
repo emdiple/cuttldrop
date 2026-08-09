@@ -1,8 +1,5 @@
 /** Pure optical-display primitives shared by the skin and its Node tests. */
 
-/** Dark cells around every edge of a pulse, matching QR's registration margin. */
-export const QUIET_CELLS = 4;
-
 export interface PulseRaster {
   readonly width: number;
   readonly height: number;
@@ -17,49 +14,6 @@ export interface PhysicalFit {
   readonly backingHeight: number;
   readonly cssWidth: number;
   readonly cssHeight: number;
-}
-
-/**
- * Put an opaque-black quiet zone around a wire-format pulse.
- *
- * The pulse bytes are copied verbatim into the centre. This border belongs to
- * the display transport only: it is never fed back into the codec and cannot
- * alter a pulse's framing, FEC, profile, or payload.
- */
-export function rasterizePulse(
-  source: Uint8Array | Uint8ClampedArray,
-  cols: number,
-  rows: number,
-  quiet = QUIET_CELLS,
-): PulseRaster {
-  if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) {
-    throw new RangeError("pulse dimensions must be positive integers");
-  }
-  if (!Number.isInteger(quiet) || quiet < 0) {
-    throw new RangeError("quiet zone must be a non-negative integer");
-  }
-  if (source.byteLength !== cols * rows * 4) {
-    throw new RangeError("pulse RGBA length does not match its dimensions");
-  }
-
-  const width = cols + quiet * 2;
-  const height = rows + quiet * 2;
-  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(width * height * 4);
-
-  // Typed arrays start RGB at zero. Fill alpha explicitly so the surround is
-  // opaque black instead of transparent black, which browsers may composite
-  // against a non-black ancestor.
-  for (let alpha = 3; alpha < rgba.length; alpha += 4) rgba[alpha] = 255;
-
-  const sourceStride = cols * 4;
-  const targetStride = width * 4;
-  for (let row = 0; row < rows; row += 1) {
-    const sourceStart = row * sourceStride;
-    const targetStart = (row + quiet) * targetStride + quiet * 4;
-    rgba.set(source.subarray(sourceStart, sourceStart + sourceStride), targetStart);
-  }
-
-  return { width, height, rgba };
 }
 
 /**

@@ -1,32 +1,25 @@
-//! Browser bindings over `cuttl-codec` (`DESIGN.md` §4).
+//! Browser bindings over `cuttl-codec`.
 //!
-//! Two objects, matching the vocabulary: a [`Skin`] that turns a file into
-//! pulses to paint, and an [`Eye`] that turns camera frames back into the file.
+//! Two objects, matching the vocabulary: a [`ReferenceSkin`] that turns a file
+//! into QR packets to paint, and a [`ReferenceEye`] that turns decoded QR
+//! payloads back into the file.
 //!
 //! ## What is deliberately *not* here
 //!
 //! Anything the browser already does better. No canvas, no `getUserMedia`, no
-//! pacing, no UI — that is all TypeScript. This crate is the codec boundary and
-//! nothing else, which keeps the surface small enough to be obviously correct.
-//!
-//! Also absent: the optical channel. Warp, blur and tear are simulation, and
-//! simulation belongs in `cuttl-sim` where a real camera would only get in the
-//! way. The browser has an actual camera.
-//!
-//! ## Zero-copy on the hot path
-//!
-//! [`Eye::ingest`] takes RGBA exactly as `ImageData.data` provides it and
-//! borrows it as a `Raster`. No conversion pass over a multi-megabyte frame,
-//! and no allocation per capture beyond what the decoder itself needs.
+//! QR rasterization, no ZXing, no pacing, no UI — that is all TypeScript. This
+//! crate is the transport boundary and nothing else, which keeps the surface
+//! small enough to be obviously correct: packets out, packets in, and the
+//! fountain/manifest/BLAKE3 state machine between them.
 
-use cuttl_codec::{Grid, Ingest, Profile, Raster, Receiver, eye, stream};
+use cuttl_codec::{Ingest, Receiver, stream};
 use wasm_bindgen::prelude::*;
 
 /// What happened to one captured frame.
 ///
 /// Every variant except `Completed` is routine — a looping skin produces far
-/// more frames than the transfer needs. Only a *rising* rate of `Torn` or
-/// `Unlocatable` means the human should do something (§1e).
+/// more frames than the transfer needs. Only a *rising* rate of `Unlocatable`
+/// means the human should do something.
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -38,15 +31,9 @@ pub enum Outcome {
     Duplicate,
     /// Failed the CRC gate, or belongs to another transfer.
     Rejected,
-    /// The beacon strips disagreed — rolling-shutter tear. Hold steadier, or
-    /// slow the pulse rate.
-    Torn,
-    /// No four finders found. Usually framing: move closer, or hold still.
+    /// No QR symbol decoded from this camera frame. Usually framing: move
+    /// closer, or hold still.
     Unlocatable,
-}
-
-fn profile_of(name: &str) -> Result<Profile, String> {
-    Profile::parse(name).ok_or_else(|| format!("unknown profile {name:?}"))
 }
 
 fn reference_profile_of(name: &str) -> Result<stream::ReferenceProfile, String> {
@@ -54,17 +41,20 @@ fn reference_profile_of(name: &str) -> Result<stream::ReferenceProfile, String> 
         .ok_or_else(|| format!("unknown QR reference profile {name:?}"))
 }
 
-/// The sending side: prepares RaptorQ once, then generates pulses as painted.
-#[wasm_bindgen]
-pub struct Skin {
-    stream: stream::StreamEncoder,
-    grid: Grid,
+fn outcome(ingest: Ingest) -> Outcome {
+    match ingest {
+        Ingest::Accepted => Outcome::Accepted,
+        Ingest::Completed => Outcome::Completed,
+        Ingest::Duplicate => Outcome::Duplicate,
+        Ingest::Rejected => Outcome::Rejected,
+    }
 }
 
-/// The skin-side packet producer for the standard QR reference transport.
+/// The skin-side packet producer.
 ///
 /// It intentionally has no raster methods. The browser turns each packet into
-/// a standards-compliant QR matrix; every transport detail above that matrix
+/// a standards-compliant QR matrix — one per black-and-white frame, or three
+/// per RGB-multiplexed frame; every transport detail above that matrix
 /// remains Cuttldrop's own RaptorQ/manifest/BLAKE3 stream.
 #[wasm_bindgen]
 pub struct ReferenceSkin {
@@ -83,15 +73,29 @@ impl ReferenceSkin {
         stream_id: u32,
         overhead: f32,
     ) -> Result<ReferenceSkin, JsValue> {
-        let profile = reference_profile_of(profile).map_err(|error| JsValue::from_str(&error))?;
-        stream::ReferenceEncoder::with_profile(object, name, mime, profile, stream_id, overhead)
-            .map(|stream| Self { stream, profile })
-            .map_err(|error| JsValue::from_str(&error.to_string()))
+        Self::create(object, name, mime, profile, stream_id, overhead)
+            .map_err(|error| JsValue::from_str(&error))
     }
 
     #[wasm_bindgen(getter)]
     pub fn profile(&self) -> String {
         self.profile.name().to_string()
+    }
+
+    /// The JsValue-free constructor body, so native tests can exercise the
+    /// failure path — JsValue cannot even be *created* off wasm32.
+    fn create(
+        object: &[u8],
+        name: &str,
+        mime: &str,
+        profile: &str,
+        stream_id: u32,
+        overhead: f32,
+    ) -> Result<ReferenceSkin, String> {
+        let profile = reference_profile_of(profile)?;
+        stream::ReferenceEncoder::new(object, name, mime, profile, stream_id, overhead)
+            .map(|stream| Self { stream, profile })
+            .map_err(|error| error.to_string())
     }
 
     #[wasm_bindgen(getter, js_name = qrVersion)]
@@ -110,93 +114,7 @@ impl ReferenceSkin {
     }
 }
 
-#[wasm_bindgen]
-impl Skin {
-    /// Encode a file into a looping pulse sequence.
-    ///
-    /// `name` and `mime` ride in the manifest so the far end can display and
-    /// save the file as itself; pass what the `File` object says. `overhead` is
-    /// repair symbols per source symbol. The skin loops forever, so this only
-    /// bounds how long the loop is before it repeats — but a longer loop means
-    /// a receiver that missed a frame waits less time for a *different* one
-    /// rather than the same one again.
-    #[wasm_bindgen(constructor)]
-    pub fn new(
-        object: &[u8],
-        name: &str,
-        mime: &str,
-        profile: &str,
-        stream_id: u32,
-        overhead: f32,
-    ) -> Result<Skin, JsValue> {
-        Self::create(object, name, mime, profile, stream_id, overhead)
-            .map_err(|e| JsValue::from_str(&e))
-    }
-
-    fn create(
-        object: &[u8],
-        name: &str,
-        mime: &str,
-        profile: &str,
-        stream_id: u32,
-        overhead: f32,
-    ) -> Result<Skin, String> {
-        let (grid, palette) = profile_of(profile)?.parts();
-        let stream =
-            stream::StreamEncoder::new(object, name, mime, grid, palette, stream_id, overhead)
-                .map_err(|e| e.to_string())?;
-        Ok(Self { stream, grid })
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn cols(&self) -> u32 {
-        self.grid.cols as u32
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn rows(&self) -> u32 {
-        self.grid.rows as u32
-    }
-
-    #[wasm_bindgen(getter, js_name = pulseCount)]
-    pub fn pulse_count(&self) -> usize {
-        self.stream.pulse_count()
-    }
-
-    /// One pulse as RGBA, at *grid* resolution — `cols × rows`, not screen size.
-    ///
-    /// The caller blits this into an `ImageData` and scales it up with
-    /// smoothing disabled. Upscaling is the browser's job and it does it on the
-    /// GPU; sending full-screen pixels across the WASM boundary instead would
-    /// be thousands of times more data for an identical picture.
-    #[wasm_bindgen(js_name = pulseRgba)]
-    pub fn pulse_rgba(&self, index: usize) -> Vec<u8> {
-        let mut out = vec![255u8; (self.grid.cols as usize) * (self.grid.rows as usize) * 4];
-        // StreamEncoder wraps the index because the skin loops forever. Every
-        // failure mode was rejected by the constructor; per-pulse generation
-        // only performs deterministic framing/ECC over that prepared state.
-        let pulse = self.stream.pulse(index).expect("prepared stream renders");
-        for y in 0..self.grid.rows {
-            for x in 0..self.grid.cols {
-                let rgb = pulse.rgb(x, y).expect("cell within grid bounds");
-                let i = (y as usize * self.grid.cols as usize + x as usize) * 4;
-                out[i..i + 3].copy_from_slice(&rgb);
-            }
-        }
-        out
-    }
-}
-
-/// The receiving side: absorbs camera frames until the file falls out.
-#[wasm_bindgen]
-pub struct Eye {
-    /// The profile in force, or `None` while still being worked out.
-    locked: Option<Profile>,
-    receiver: Receiver,
-    unlocatable: u32,
-}
-
-/// The eye-side packet sink for the standard QR reference transport.
+/// The eye-side packet sink.
 #[wasm_bindgen]
 pub struct ReferenceEye {
     receiver: Receiver,
@@ -209,16 +127,6 @@ impl Default for ReferenceEye {
             receiver: Receiver::new(),
             unlocatable: 0,
         }
-    }
-}
-
-fn outcome(ingest: Ingest) -> Outcome {
-    match ingest {
-        Ingest::Accepted => Outcome::Accepted,
-        Ingest::Completed => Outcome::Completed,
-        Ingest::Duplicate => Outcome::Duplicate,
-        Ingest::Rejected => Outcome::Rejected,
-        Ingest::Torn => Outcome::Torn,
     }
 }
 
@@ -239,206 +147,16 @@ impl ReferenceEye {
         self.unlocatable += 1;
     }
 
-    #[wasm_bindgen(getter)]
-    pub fn profile(&self) -> String {
-        "qr".to_string()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn symbols(&self) -> u32 {
-        self.receiver.progress().0
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn needed(&self) -> u32 {
-        self.receiver.progress().1
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn torn(&self) -> u32 {
-        self.receiver.torn()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn rejected(&self) -> u32 {
-        self.receiver.rejected()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn unlocatable(&self) -> u32 {
-        self.unlocatable
-    }
-
-    #[wasm_bindgen(getter, js_name = fileName)]
-    pub fn file_name(&self) -> Option<String> {
-        self.receiver
-            .manifest()
-            .map(|manifest| manifest.safe_name())
-    }
-
-    #[wasm_bindgen(getter, js_name = fileMime)]
-    pub fn file_mime(&self) -> Option<String> {
-        self.receiver
-            .manifest()
-            .map(|manifest| manifest.mime.clone())
-    }
-
-    #[wasm_bindgen(getter, js_name = expectedBytes)]
-    pub fn expected_bytes(&self) -> Option<f64> {
-        self.receiver.expected_len().map(|len| len as f64)
-    }
-
-    #[wasm_bindgen(getter, js_name = symbolBytes)]
-    pub fn symbol_bytes(&self) -> Option<u32> {
-        self.receiver.symbol_len().map(|len| len as u32)
-    }
-
-    #[wasm_bindgen(getter, js_name = isComplete)]
-    pub fn is_complete(&self) -> bool {
-        self.receiver.is_complete()
-    }
-
-    #[wasm_bindgen(js_name = takeObject)]
-    pub fn take_object(&self) -> Option<Vec<u8>> {
-        self.receiver.finish().ok()
-    }
-}
-
-#[wasm_bindgen]
-impl Eye {
-    #[wasm_bindgen(constructor)]
-    pub fn new(profile: &str) -> Result<Eye, JsValue> {
-        Self::create(profile).map_err(|e| JsValue::from_str(&e))
-    }
-
-    fn create(profile: &str) -> Result<Eye, String> {
-        // `"auto"` means no profile is fixed yet: `locked` stays `None` and the
-        // first understood frame decides. Anything else pins one immediately.
-        let locked = match profile {
-            "auto" => None,
-            name => Some(profile_of(name)?),
-        };
-        Ok(Self {
-            locked,
-            receiver: Receiver::new(),
-            unlocatable: 0,
-        })
-    }
-
-    /// Feed one captured frame, RGBA, as `ImageData.data` provides it.
-    ///
-    /// With no profile locked, every known grid is tried in turn and the first
-    /// one that yields a pulse the receiver *accepts* is locked in for the rest
-    /// of the stream. This is deliberately trial decoding rather than a field
-    /// in the header: the header lives in cells, and cells cannot be sampled
-    /// until the grid is already known. Reading the grid's dimensions off the
-    /// finder geometry would break that circularity properly and is the better
-    /// answer eventually; trying four grids costs a few milliseconds once and
-    /// spares the human from setting a menu identically on two devices.
-    pub fn ingest(&mut self, rgba: &[u8], width: u32, height: u32) -> Outcome {
-        let Ok(raster) = Raster::new_rgba(width, height, rgba) else {
-            self.unlocatable += 1;
-            return Outcome::Unlocatable;
-        };
-
-        if self.locked.is_none() {
-            match self.detect(&raster) {
-                Some(outcome) => return outcome,
-                None => {
-                    self.unlocatable += 1;
-                    return Outcome::Unlocatable;
-                }
-            }
-        }
-
-        let locked = self.locked.unwrap_or_default();
-        let (grid, palette) = locked.parts();
-        let Ok(pulse) = eye::read(&raster, grid, palette) else {
-            // A sender may have changed density as well as object. The old grid
-            // cannot even sample that stream's header, so give the other grids
-            // a chance before calling the frame unlocatable. Receiver::adopt
-            // still requires two CRC-valid headers before any state changes.
-            if let Some(outcome) = self.detect_except(&raster, Some(locked)) {
-                return outcome;
-            }
-            self.unlocatable += 1;
-            return Outcome::Unlocatable;
-        };
-        let ingest = self.receiver.ingest(&pulse);
-        // A correctly located frame that fails the current grid's CRC can also
-        // be the first frame of a denser/sparser stream. Only pay the trial-
-        // decode cost on failure; duplicates on a healthy stream stay cheap.
-        if ingest == Ingest::Rejected
-            && let Some(outcome) = self.detect_except(&raster, Some(locked))
-        {
-            return outcome;
-        }
-        match ingest {
-            Ingest::Accepted => Outcome::Accepted,
-            Ingest::Completed => Outcome::Completed,
-            Ingest::Duplicate => Outcome::Duplicate,
-            Ingest::Rejected => Outcome::Rejected,
-            Ingest::Torn => Outcome::Torn,
-        }
-    }
-
-    /// Try every profile against one frame; lock the first that *accepts*.
-    ///
-    /// Acceptance, not merely "read without error", is the test. A dense grid
-    /// sampled at the wrong pitch still finds four finders often enough to
-    /// produce cells; what it cannot do is produce cells whose CRC passes. The
-    /// gate that already exists to keep corrupt symbols out of the fountain is
-    /// exactly the right oracle here, so nothing new has to be trusted.
-    ///
-    /// Returns `None` if no profile got anywhere, leaving the eye unlocked to
-    /// try again on the next frame.
-    fn detect(&mut self, raster: &Raster<'_>) -> Option<Outcome> {
-        self.detect_except(raster, None)
-    }
-
-    /// Trial-decode every profile except the one already attempted.
-    fn detect_except(&mut self, raster: &Raster<'_>, skip: Option<Profile>) -> Option<Outcome> {
-        for profile in Profile::ALL {
-            if Some(profile) == skip {
-                continue;
-            }
-            let (grid, palette) = profile.parts();
-            let Ok(pulse) = eye::read(raster, grid, palette) else {
-                continue;
-            };
-            let ingest = self.receiver.ingest(&pulse);
-            if matches!(ingest, Ingest::Accepted | Ingest::Completed) {
-                self.locked = Some(profile);
-                return Some(match ingest {
-                    Ingest::Completed => Outcome::Completed,
-                    _ => Outcome::Accepted,
-                });
-            }
-        }
-        None
-    }
-
-    /// The profile in force, or `undefined` while the eye is still searching.
-    #[wasm_bindgen(getter)]
-    pub fn profile(&self) -> Option<String> {
-        self.locked.map(|p| p.name().to_string())
-    }
-
     /// Symbols absorbed so far. Honest and monotonic — not a guessed percentage.
     #[wasm_bindgen(getter)]
     pub fn symbols(&self) -> u32 {
         self.receiver.progress().0
     }
 
-    /// Symbols needed at minimum. Zero until the first frame is understood.
+    /// Symbols needed at minimum. Zero until the first packet is understood.
     #[wasm_bindgen(getter)]
     pub fn needed(&self) -> u32 {
         self.receiver.progress().1
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn torn(&self) -> u32 {
-        self.receiver.torn()
     }
 
     #[wasm_bindgen(getter)]
@@ -452,30 +170,34 @@ impl Eye {
     }
 
     /// Filename from the manifest, already sanitised for a download attribute —
-    /// or `undefined` before the first manifest pulse. Arrives within
-    /// `MANIFEST_PERIOD` pulses of looking, usually long before the file (§3c).
+    /// or `undefined` before the first manifest packet. Arrives within
+    /// `MANIFEST_PERIOD` packets of looking, usually long before the file.
     #[wasm_bindgen(getter, js_name = fileName)]
     pub fn file_name(&self) -> Option<String> {
-        self.receiver.manifest().map(|m| m.safe_name())
+        self.receiver
+            .manifest()
+            .map(|manifest| manifest.safe_name())
     }
 
     /// Mime type from the manifest; empty if the sender did not know,
-    /// `undefined` before the first manifest pulse.
+    /// `undefined` before the first manifest packet.
     #[wasm_bindgen(getter, js_name = fileMime)]
     pub fn file_mime(&self) -> Option<String> {
-        self.receiver.manifest().map(|m| m.mime.clone())
+        self.receiver
+            .manifest()
+            .map(|manifest| manifest.mime.clone())
     }
 
-    /// Exact incoming file size in bytes, or `undefined` until the first pulse
-    /// is understood. An `f64` because JS numbers are doubles; RFC 6330 caps
-    /// transfers far below 2^53, so the value is always exact.
+    /// Exact incoming file size in bytes, or `undefined` until the first
+    /// packet is understood. An `f64` because JS numbers are doubles; RFC 6330
+    /// caps transfers far below 2^53, so the value is always exact.
     #[wasm_bindgen(getter, js_name = expectedBytes)]
     pub fn expected_bytes(&self) -> Option<f64> {
-        self.receiver.expected_len().map(|n| n as f64)
+        self.receiver.expected_len().map(|len| len as f64)
     }
 
     /// Object bytes each accepted symbol is worth, or `undefined` until the
-    /// first pulse is understood.
+    /// first packet is understood.
     ///
     /// The eye's goodput readout is `symbols × symbolBytes ÷ elapsed`. Without
     /// this the page would have to divide `expectedBytes` by `needed` and hope
@@ -483,7 +205,7 @@ impl Eye {
     /// reported as one.
     #[wasm_bindgen(getter, js_name = symbolBytes)]
     pub fn symbol_bytes(&self) -> Option<u32> {
-        self.receiver.symbol_len().map(|n| n as u32)
+        self.receiver.symbol_len().map(|len| len as u32)
     }
 
     #[wasm_bindgen(getter, js_name = isComplete)]
@@ -494,7 +216,7 @@ impl Eye {
     /// The reconstructed file, or `undefined` if it is not ready.
     ///
     /// Verified against the manifest's BLAKE3 hash before it is handed back —
-    /// an unverified file is never returned (§3f).
+    /// an unverified file is never returned.
     #[wasm_bindgen(js_name = takeObject)]
     pub fn take_object(&self) -> Option<Vec<u8>> {
         self.receiver.finish().ok()
@@ -505,35 +227,9 @@ impl Eye {
 mod tests {
     use super::*;
 
-    /// The shim must not reshape anything: a file through `Skin` and straight
-    /// back through `Eye` is the same file. Runs natively — no browser needed.
-    #[test]
-    fn skin_to_eye_roundtrips_without_a_browser() {
-        let object: Vec<u8> = (0..9000u32).map(|i| (i * 37) as u8).collect();
-        let skin =
-            Skin::create(&object, "ink.bin", "application/octet-stream", "m1", 5, 0.5).unwrap();
-        let mut eye = Eye::create("m1").unwrap();
-
-        let (w, h) = (skin.cols(), skin.rows());
-        for index in 0..skin.pulse_count() {
-            let rgba = skin.pulse_rgba(index);
-            let outcome = eye.ingest(&rgba, w, h);
-            if index == 0 {
-                // Pulse 0 carries the manifest: the eye knows what it is
-                // receiving before it has received anything.
-                assert_eq!(eye.file_name().as_deref(), Some("ink.bin"));
-                assert_eq!(eye.expected_bytes(), Some(object.len() as f64));
-                assert!(!eye.is_complete());
-            }
-            if outcome == Outcome::Completed {
-                break;
-            }
-        }
-        assert!(eye.is_complete());
-        assert_eq!(eye.take_object().unwrap(), object);
-        assert_eq!(eye.file_mime().as_deref(), Some("application/octet-stream"));
-    }
-
+    /// The shim must not reshape anything: a file through `ReferenceSkin` and
+    /// straight back through `ReferenceEye` is the same file, at every rung.
+    /// Runs natively — no browser needed.
     #[test]
     fn qr_reference_skin_and_eye_share_the_verified_stream() {
         let object: Vec<u8> = (0..11_000u32).map(|n| (n * 13) as u8).collect();
@@ -549,90 +245,53 @@ mod tests {
             .unwrap();
             let mut eye = ReferenceEye::new();
             for index in 0..skin.packet_count() {
-                if eye.ingest(&skin.packet(index)) == Outcome::Completed {
+                let out = eye.ingest(&skin.packet(index));
+                if index == 0 {
+                    // Packet 0 carries the manifest: the eye knows what it is
+                    // receiving before it has received anything.
+                    assert_eq!(eye.file_name().as_deref(), Some("reference.bin"));
+                    assert_eq!(eye.expected_bytes(), Some(object.len() as f64));
+                    assert!(!eye.is_complete());
+                }
+                if out == Outcome::Completed {
                     break;
                 }
             }
             assert_eq!(skin.profile(), profile.name());
             assert_eq!(skin.qr_version(), profile.version());
-            assert_eq!(eye.profile(), "qr");
-            assert_eq!(eye.file_name().as_deref(), Some("reference.bin"));
+            assert!(eye.is_complete());
+            assert_eq!(eye.file_mime().as_deref(), Some("application/test"));
             assert_eq!(eye.take_object().unwrap(), object);
         }
     }
 
-    /// The eye works out the profile for itself, for every profile there is.
-    ///
-    /// This is what keeps a density change from being a two-device chore: the
-    /// skin picks, the eye follows. The assertion that it locks onto the *same*
-    /// profile matters more than that it completes — a dense grid misread as a
-    /// sparse one could in principle limp along, and it must not.
-    #[test]
-    fn the_eye_locks_onto_whichever_profile_the_skin_chose() {
-        let object: Vec<u8> = (0..40000u32).map(|i| (i * 91 + i / 7) as u8).collect();
-        for profile in Profile::ALL {
-            let name = profile.name();
-            let skin = Skin::create(&object, "auto.bin", "", name, 5, 0.5).unwrap();
-            let mut eye = Eye::create("auto").unwrap();
-            assert_eq!(eye.profile(), None, "{name}: locked before seeing anything");
-
-            let (w, h) = (skin.cols(), skin.rows());
-            for index in 0..skin.pulse_count() {
-                if eye.ingest(&skin.pulse_rgba(index), w, h) == Outcome::Completed {
-                    break;
-                }
-            }
-            assert_eq!(eye.profile().as_deref(), Some(name), "{name}: locked wrong");
-            assert_eq!(eye.take_object().unwrap(), object, "{name}: bad object");
-        }
-    }
-
-    #[test]
-    fn the_eye_follows_a_new_object_and_profile_without_a_reload() {
-        let old = Skin::create(&[1u8; 20_000], "old.bin", "", "m1", 11, 0.5).unwrap();
-        let object = vec![2u8; 20_000];
-        let new = Skin::create(&object, "new.bin", "", "m2", 22, 0.5).unwrap();
-        let mut eye = Eye::create("auto").unwrap();
-
-        eye.ingest(&old.pulse_rgba(0), old.cols(), old.rows());
-        assert_eq!(eye.profile().as_deref(), Some("m1"));
-        assert_eq!(eye.file_name().as_deref(), Some("old.bin"));
-
-        // Receiver::adopt deliberately asks for two CRC-valid headers before
-        // abandoning useful progress. The profile trial-decode must carry that
-        // handover across a grid change too.
-        eye.ingest(&new.pulse_rgba(0), new.cols(), new.rows());
-        eye.ingest(&new.pulse_rgba(0), new.cols(), new.rows());
-        assert_eq!(eye.profile().as_deref(), Some("m2"));
-        assert_eq!(eye.file_name().as_deref(), Some("new.bin"));
-
-        for index in 0..new.pulse_count() {
-            if eye.ingest(&new.pulse_rgba(index), new.cols(), new.rows()) == Outcome::Completed {
-                break;
-            }
-        }
-        assert_eq!(eye.take_object().unwrap(), object);
-    }
-
     #[test]
     fn unknown_profiles_are_rejected() {
-        assert!(Skin::create(&[1, 2, 3], "f", "", "m9", 1, 0.0).is_err());
-        assert!(Eye::create("").is_err());
-    }
-
-    #[test]
-    fn pulse_rgba_is_grid_sized_and_opaque() {
-        let skin = Skin::create(&[7u8; 500], "f", "", "m1", 1, 0.0).unwrap();
-        let rgba = skin.pulse_rgba(0);
-        assert_eq!(rgba.len() as u32, skin.cols() * skin.rows() * 4);
-        assert!(rgba.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(ReferenceSkin::create(&[1, 2, 3], "f", "", "m1", 1, 0.0).is_err());
+        assert!(ReferenceSkin::create(&[1, 2, 3], "f", "", "qr41", 1, 0.0).is_err());
     }
 
     /// Indexing wraps, because the skin loops forever.
     #[test]
-    fn pulse_index_wraps() {
-        let skin = Skin::create(&[1u8; 300], "f", "", "m1", 1, 0.0).unwrap();
-        let count = skin.pulse_count();
-        assert_eq!(skin.pulse_rgba(0), skin.pulse_rgba(count));
+    fn packet_index_wraps() {
+        let skin = ReferenceSkin::new(&[1u8; 300], "f", "", "qr27", 1, 0.0).unwrap();
+        let count = skin.packet_count();
+        assert_eq!(skin.packet(0), skin.packet(count));
+    }
+
+    /// Rejected packets are counted, and garbage never breaks the stream.
+    #[test]
+    fn garbage_is_rejected_not_fatal() {
+        let object = vec![9u8; 5000];
+        let skin = ReferenceSkin::new(&object, "f", "", "qr27", 3, 0.5).unwrap();
+        let mut eye = ReferenceEye::new();
+        assert_eq!(eye.ingest(&[0u8; 40]), Outcome::Rejected);
+        for index in 0..skin.packet_count() {
+            if eye.ingest(&skin.packet(index)) == Outcome::Completed {
+                break;
+            }
+        }
+        assert_eq!(eye.rejected(), 0, "counters reset when the stream starts");
+        assert_eq!(eye.take_object().unwrap(), object);
     }
 }

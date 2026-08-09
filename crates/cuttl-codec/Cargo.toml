@@ -1,6 +1,6 @@
 [package]
 name = "cuttl-codec"
-description = "Cuttldrop codec: pulse geometry, palette, pilots, framing, FEC stack, manifest. One definition shared by skin and eye. Compiles native + wasm32."
+description = "Cuttldrop codec: packet framing, CRC gate, RaptorQ fountain, manifest, BLAKE3 verify. One definition shared by skin and eye. Compiles native + wasm32."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,6 @@ raptorq = { workspace = true }
 blake3 = { workspace = true }
 crc32fast = { workspace = true }
 flate2 = { workspace = true }
-reed-solomon = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

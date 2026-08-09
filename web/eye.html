@@ -51,11 +51,10 @@
       <label id="transport-setting" class="field compact">
         <span class="field-line"><span class="label">Receiver mode</span><span class="field-meta">optical raster</span></span>
         <select id="transport">
-          <option value="custom" selected>Custom chroma cells · m1–m4</option>
-          <option value="qr">QR Reference · standard QR</option>
+          <option value="qr" selected>QR · standard black and white</option>
           <option value="qr-rgb">QR RGB · one QR per colour channel</option>
         </select>
-        <span class="hint">Match the skin. QR Reference tests camera and display behaviour against ZXing; QR RGB reads each colour channel as its own standard QR. Neither is the custom colour transport.</span>
+        <span class="hint">Match the skin. Black-and-white reads one symbol per frame; QR RGB reads each colour channel as its own standard QR.</span>
       </label>
 
       <div class="action-stack">

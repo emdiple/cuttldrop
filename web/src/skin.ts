@@ -3,8 +3,8 @@
 // Everything that decides *what* to paint is in WASM. This file owns only the
 // things a browser does better: reading a file, sizing a canvas, and pacing.
 
-import init, { ReferenceSkin, Skin } from "../pkg/cuttl_wasm.js";
-import { PulsePacer, QUIET_CELLS, fitPhysicalScale, rasterizePulse } from "./optical-display.js";
+import init, { ReferenceSkin } from "../pkg/cuttl_wasm.js";
+import { PulsePacer, fitPhysicalScale } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
 import {
   RGB_CHANNELS,
@@ -32,7 +32,7 @@ const statusText = document.querySelector<HTMLSpanElement>("#status-text")!;
 const size = document.querySelector<HTMLInputElement>("#size")!;
 const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
-let skin: Skin | ReferenceSkin | null = null;
+let skin: ReferenceSkin | null = null;
 let selectedFile: File | null = null;
 let prepareGen = 0;
 const LOOKAHEAD = 3;
@@ -49,36 +49,30 @@ let pinnedToMax = true;
  */
 const awake = new ScreenAwake();
 
-/** Simulator peaks by profile. Dense mono/colour gain about 15% at 25 Hz;
- * m1 stays at the more forgiving 20 Hz bring-up point. The user can override
- * this immediately after choosing a profile — the human remains the back
- * channel. */
+/** Sender-rate defaults by profile. Denser rungs paint bigger symbols and
+ * cost the eye more decode time per frame; RGB rungs cost three ZXing passes,
+ * so their defaults sit lower still — the 3× per-frame payload keeps goodput
+ * ahead. The user can override this immediately after choosing a profile —
+ * the human remains the back channel. */
 const PROFILE_RATE: Record<string, number> = {
   qr27: 24,
   qr35: 20,
   qr40: 15,
-  // RGB rungs cost the eye three ZXing passes per frame, so the sender
-  // defaults slower; the per-frame payload is 3× so goodput still leads.
   rgb27: 15,
   rgb35: 12,
   rgb40: 10,
-  m1: 20,
-  m2: 25,
-  m3: 25,
-  m4: 25,
 };
 
 /**
- * How a profile menu value maps onto the reference transport, if it does.
+ * How a profile menu value maps onto the transport.
  *
  * The WASM `ReferenceSkin` only knows density rungs (`qr27`…): whether the
  * packets travel one per black-and-white frame or three per RGB frame is
  * purely a rasterization decision, so it lives here, not in Rust.
  */
-function referenceChoice(value: string): { rung: string; channels: number } | null {
+function referenceChoice(value: string): { rung: string; channels: number } {
   if (value.startsWith("rgb")) return { rung: `qr${value.slice(3)}`, channels: RGB_CHANNELS };
-  if (value.startsWith("qr")) return { rung: value, channels: 1 };
-  return null;
+  return { rung: value, channels: 1 };
 }
 
 /** Channels per reference frame for the prepared stream; 1 outside RGB mode. */
@@ -121,23 +115,15 @@ function overlayRoom(): number {
   return Math.max(0, Math.ceil(bottom - status.getBoundingClientRect().top));
 }
 
-/** Display dimensions after adding the four-cell border on every edge. */
+/** Display dimensions: QR modules plus the four-module quiet zone. */
 function rasterSize(): { cols: number; rows: number } {
   if (!skin) return { cols: 1, rows: 1 };
-  if (isReferenceSkin(skin)) {
-    const { size } = referenceProfile(skin.profile);
-    return { cols: size, rows: size };
-  }
-  return { cols: skin.cols + QUIET_CELLS * 2, rows: skin.rows + QUIET_CELLS * 2 };
-}
-
-function isReferenceSkin(value: Skin | ReferenceSkin | null): value is ReferenceSkin {
-  return value instanceof ReferenceSkin;
+  const { size } = referenceProfile(skin.profile);
+  return { cols: size, rows: size };
 }
 
 function frameCount(): number {
-  if (!skin) return 0;
-  return isReferenceSkin(skin) ? skin.packetCount : skin.pulseCount;
+  return skin?.packetCount ?? 0;
 }
 
 /**
@@ -193,29 +179,23 @@ function resize(): void {
 
 function makeFrame(): ImageData {
   if (!skin) throw new Error("no prepared stream");
-  if (isReferenceSkin(skin)) {
-    const reference = skin;
-    const take = () => {
-      const packet = reference.packet(nextIndex);
-      nextIndex = (nextIndex + 1) % reference.packetCount;
-      return packet;
-    };
-    if (referenceChannels === RGB_CHANNELS) {
-      // Three consecutive packets share one frame. When the loop length is
-      // not a multiple of three, the wrap rotates which packets travel
-      // together — a receiver that lost a frame gets those packets back in
-      // different company next loop, which suits a fountain fine.
-      const packets = Array.from({ length: RGB_CHANNELS }, take);
-      const qr = rasterizeRgbReferencePackets(packets, reference.profile);
-      return new ImageData(qr.rgba, qr.width, qr.height);
-    }
-    const qr = rasterizeReferencePacket(take(), reference.profile);
+  const reference = skin;
+  const take = () => {
+    const packet = reference.packet(nextIndex);
+    nextIndex = (nextIndex + 1) % reference.packetCount;
+    return packet;
+  };
+  if (referenceChannels === RGB_CHANNELS) {
+    // Three consecutive packets share one frame. When the loop length is
+    // not a multiple of three, the wrap rotates which packets travel
+    // together — a receiver that lost a frame gets those packets back in
+    // different company next loop, which suits a fountain fine.
+    const packets = Array.from({ length: RGB_CHANNELS }, take);
+    const qr = rasterizeRgbReferencePackets(packets, reference.profile);
     return new ImageData(qr.rgba, qr.width, qr.height);
   }
-  const rgba = skin.pulseRgba(nextIndex);
-  nextIndex = (nextIndex + 1) % skin.pulseCount;
-  const framed = rasterizePulse(rgba, skin.cols, skin.rows);
-  return new ImageData(framed.rgba, framed.width, framed.height);
+  const qr = rasterizeReferencePacket(take(), reference.profile);
+  return new ImageData(qr.rgba, qr.width, qr.height);
 }
 
 /** Keep only a few pulses ahead, like Decimen's sender. Preparing the RaptorQ
@@ -323,10 +303,8 @@ async function prepare(chosen: File): Promise<void> {
     // Name and mime ride in the manifest, so the eye can display and save the
     // file as itself rather than as received.bin (§3c).
     const reference = referenceChoice(profile.value);
-    skin = reference
-      ? new ReferenceSkin(bytes, chosen.name, chosen.type, reference.rung, streamId, OVERHEAD)
-      : new Skin(bytes, chosen.name, chosen.type, profile.value, streamId, OVERHEAD);
-    referenceChannels = reference?.channels ?? 1;
+    skin = new ReferenceSkin(bytes, chosen.name, chosen.type, reference.rung, streamId, OVERHEAD);
+    referenceChannels = reference.channels;
   } catch (error) {
     if (gen !== prepareGen) return;
     detail.textContent = `Could not encode: ${error}`;
@@ -345,12 +323,10 @@ async function prepare(chosen: File): Promise<void> {
     label();
     refit();
   }
-  detail.textContent = isReferenceSkin(skin)
-    ? `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-      `${skin.packetCount} QR packets at version ${skin.qrVersion}-L` +
-      (referenceChannels === RGB_CHANNELS ? " · 3 per frame across R/G/B" : "")
-    : `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-      `${skin.pulseCount} pulses at ${skin.cols}×${skin.rows}`;
+  detail.textContent =
+    `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
+    `${skin.packetCount} QR packets at version ${skin.qrVersion}-L` +
+    (referenceChannels === RGB_CHANNELS ? " · 3 per frame across R/G/B" : "");
   // A short loop is the one thing that can starve a transfer outright: the
   // fountain has too few distinct symbols to route around a bad frame. The
   // skin repeats forever so it recovers, but slowly — worth saying.
@@ -426,7 +402,7 @@ function label(): void {
   if (!skin) return;
   statusText.textContent =
     taught || wide.matches
-      ? `${rate.value} Hz target · ${frameCount()} ${isReferenceSkin(skin) ? "QR packets" : "pulses"}`
+      ? `${rate.value} Hz target · ${frameCount()} QR packets`
       : `${rate.value} Hz target · tap the pulse for these controls`;
 }
 

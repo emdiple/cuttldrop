@@ -1,10 +1,10 @@
-// The decode half of the eye, off the main thread (DESIGN.md §3e).
+// The decode half of the eye, off the main thread.
 //
-// Everything WASM happens here — locate, sample, inner RS, the CRC gate, the
+// Everything heavy happens here — ZXing detection, the CRC gate, the
 // fountain, the final BLAKE3 — so a slow frame can never stutter the video or
 // the feedback overlay. The page keeps the camera and the human.
 
-import init, { Eye, Outcome, ReferenceEye } from "../pkg/cuttl_wasm.js";
+import init, { Outcome, ReferenceEye } from "../pkg/cuttl_wasm.js";
 import type { FromWorker, ToWorker, Transport } from "./protocol.js";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
@@ -17,25 +17,21 @@ const scope = self as unknown as {
   onmessage: ((event: MessageEvent<ToWorker>) => void) | null;
 };
 
-type Decoder = Eye | ReferenceEye;
+let eye: ReferenceEye | null = null;
+let transport: Transport = "qr";
 
-let eye: Decoder | null = null;
-let transport: Transport = "custom";
-
-function status(outcome: Outcome, decoder: Decoder): FromWorker {
+function status(outcome: Outcome, decoder: ReferenceEye): FromWorker {
   return {
     kind: "status",
     outcome,
     symbols: decoder.symbols,
     needed: decoder.needed,
-    torn: decoder.torn,
     rejected: decoder.rejected,
     unlocatable: decoder.unlocatable,
     fileName: decoder.fileName,
     fileMime: decoder.fileMime,
     expectedBytes: decoder.expectedBytes,
     symbolBytes: decoder.symbolBytes,
-    profile: decoder.profile,
   };
 }
 
@@ -132,36 +128,27 @@ async function handle(message: ToWorker): Promise<void> {
   if (message.kind === "init") {
     await init();
     transport = message.transport;
-    if (transport !== "custom") {
-      await prepareZXingModule({
-        overrides: {
-          // Never accept the package default CDN URL. This reference mode must
-          // remain as air-gapped as Cuttldrop's custom raster once the page is
-          // loaded, and Vite emits this URL as a local build asset.
-          locateFile: (path, prefix) =>
-            path.endsWith(".wasm") ? zxingReaderWasm : prefix + path,
-        },
-      });
-      // Instantiation is expensive enough to make the first camera frame look
-      // broken. Warm it with a disposable image before the camera starts.
-      await readBarcodes(new ImageData(8, 8), { formats: ["QRCode"] }).catch(() => []);
-      eye = new ReferenceEye();
-    } else {
-      eye = new Eye(message.profile);
-    }
+    await prepareZXingModule({
+      overrides: {
+        // Never accept the package default CDN URL. The transfer must remain
+        // as air-gapped as its premise once the page is loaded, and Vite
+        // emits this URL as a local build asset.
+        locateFile: (path, prefix) =>
+          path.endsWith(".wasm") ? zxingReaderWasm : prefix + path,
+      },
+    });
+    // Instantiation is expensive enough to make the first camera frame look
+    // broken. Warm it with a disposable image before the camera starts.
+    await readBarcodes(new ImageData(8, 8), { formats: ["QRCode"] }).catch(() => []);
+    eye = new ReferenceEye();
     scope.postMessage({ kind: "ready" });
     return;
   }
   // A frame racing ahead of init is dropped, like any other missed frame.
   if (!eye) return;
 
-  let outcome: Outcome;
-  if (transport !== "custom") {
-    const rgba = new Uint8ClampedArray(message.buffer);
-    outcome = await ingestQrFrame(eye as ReferenceEye, rgba, message.width, message.height);
-  } else {
-    outcome = (eye as Eye).ingest(new Uint8Array(message.buffer), message.width, message.height);
-  }
+  const rgba = new Uint8ClampedArray(message.buffer);
+  const outcome = await ingestQrFrame(eye, rgba, message.width, message.height);
   scope.postMessage(status(outcome, eye));
 
   if (outcome === Outcome.Completed) {

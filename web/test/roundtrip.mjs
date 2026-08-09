@@ -1,13 +1,11 @@
 // End-to-end check of the JavaScript boundary, with no browser involved.
 //
-// The Rust side already has a Skin→Eye round trip, so this is not testing the
+// The Rust side already has a packet round trip, so this is not testing the
 // codec. It tests the part that only exists in JS: that wasm-bindgen's glue
-// hands back the types we think it does, that `pulseRgba` really is RGBA at
-// grid resolution, that `ingest` accepts exactly what `ImageData.data` would
-// give it, and that a decoded file comes back as bytes.
-//
-// Those are the assumptions the browser code is built on, and every one of them
-// would otherwise stay unverified until someone pointed a camera at a screen.
+// hands back the types we think it does, that `packet` really is bytes, that
+// `ingest` accepts exactly what a QR decoder returns, and that a decoded file
+// comes back as bytes. The picture itself — rasterize, ZXing, channel
+// separation — is qr-optical.mjs's job.
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -18,125 +16,60 @@ import { QR_REFERENCE_PROFILES } from "../src/qr-reference.ts";
 const pkg = new URL("../pkg/cuttl_wasm.js", import.meta.url);
 const wasm = new URL("../pkg/cuttl_wasm_bg.wasm", import.meta.url);
 
-const { default: init, ReferenceEye, ReferenceSkin, Skin, Eye, Outcome } = await import(pkg.href);
+const { default: init, ReferenceEye, ReferenceSkin, Outcome } = await import(pkg.href);
 // The `web` target normally fetches its own binary; in Node we hand it over.
 await init({ module_or_path: await readFile(fileURLToPath(wasm)) });
 
-const PROFILE = "m1";
 const NAME = "boundary.bin";
-const MIME = "application/test";
+// A mime the encoder treats as precompressed, so packets stay full-size and
+// the version-boundary check below tests the real limit, not a shrunk symbol.
+const MIME = "application/zip";
 const object = Uint8Array.from({ length: 12_000 }, (_, i) => (i * 37) & 0xff);
 
-const skin = new Skin(object, NAME, MIME, PROFILE, 0x5eed, 0.5);
-assert.ok(skin.pulseCount > 0, "skin produced no pulses");
-assert.equal(skin.cols, 64, "unexpected grid width");
-assert.equal(skin.rows, 36, "unexpected grid height");
-
-const first = skin.pulseRgba(0);
-assert.ok(first instanceof Uint8Array, "pulseRgba should hand back a Uint8Array");
-assert.equal(first.length, skin.cols * skin.rows * 4, "pulseRgba is not RGBA at grid size");
-assert.ok(
-  first.filter((_, i) => i % 4 === 3).every((a) => a === 255),
-  "every pixel should be fully opaque",
-);
-// Wraps, because the skin loops forever.
-assert.deepEqual(skin.pulseRgba(skin.pulseCount), first, "pulse indexing should wrap");
-
-// "auto", exactly as the browser eye constructs it: no profile is agreed
-// out of band, so the eye has to work the grid out from the frames alone.
-const eye = new Eye("auto");
-assert.equal(eye.profile, undefined, "eye should not claim a profile before seeing one");
-assert.equal(eye.symbols, 0);
-assert.equal(eye.isComplete, false);
-assert.equal(eye.fileName, undefined, "no manifest should mean no name");
-
-let frames = 0;
-for (let i = 0; i < skin.pulseCount; i += 1) {
-  frames += 1;
-  const outcome = eye.ingest(skin.pulseRgba(i), skin.cols, skin.rows);
-  if (i === 0) {
-    // Pulse 0 carries the manifest: the eye names the file before it has it.
-    assert.equal(eye.fileName, NAME, "manifest name should arrive with the first pulse");
-    assert.equal(eye.fileMime, MIME, "manifest mime should arrive with the first pulse");
-    assert.equal(eye.expectedBytes, object.length, "size should be known from the OTI");
-    assert.equal(eye.isComplete, false, "one pulse must not complete a transfer");
-    assert.equal(eye.profile, PROFILE, "eye should have locked onto the skin's profile");
-    assert.ok(eye.symbolBytes > 0, "goodput needs a symbol size to multiply by");
-  }
-  if (outcome === Outcome.Completed) break;
-  assert.notEqual(outcome, Outcome.Unlocatable, `frame ${i} could not be located`);
-}
-
-assert.ok(eye.isComplete, "eye never completed");
-const received = eye.takeObject();
-assert.ok(received instanceof Uint8Array, "takeObject should hand back a Uint8Array");
-assert.deepEqual(received, object, "received file differs from the sent one");
-
-// QR Reference changes only the optical raster. Its packet bytes use the same
-// manifest, RaptorQ and BLAKE3 path as the custom chroma-cell transport.
 for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
-  const referenceSkin = new ReferenceSkin(object, NAME, MIME, profile, 0xface, 0.5);
-  const referenceEye = new ReferenceEye();
-  assert.ok(referenceSkin.packetCount > 1, `${profile} produced no QR packets`);
-  for (let i = 0; i < referenceSkin.packetCount; i += 1) {
-    if (referenceEye.ingest(referenceSkin.packet(i)) === Outcome.Completed) break;
+  const skin = new ReferenceSkin(object, NAME, MIME, profile, 0xface, 0.5);
+  const eye = new ReferenceEye();
+  assert.ok(skin.packetCount > 1, `${profile} produced no QR packets`);
+  assert.equal(skin.profile, profile);
+  assert.equal(skin.qrVersion, spec.version);
+
+  const first = skin.packet(1);
+  assert.ok(first instanceof Uint8Array, "packet should hand back a Uint8Array");
+  // Wraps, because the skin loops forever.
+  assert.deepEqual(skin.packet(skin.packetCount + 1), first, "packet indexing should wrap");
+
+  for (let i = 0; i < skin.packetCount; i += 1) {
+    const outcome = eye.ingest(skin.packet(i));
+    if (i === 0) {
+      // Packet 0 carries the manifest: the eye knows what it is receiving
+      // before it has received anything.
+      assert.equal(eye.fileName, NAME);
+      assert.equal(eye.expectedBytes, object.length);
+      assert.ok(!eye.isComplete);
+    }
+    if (outcome === Outcome.Completed) break;
   }
-  assert.equal(referenceSkin.profile, profile);
-  assert.equal(referenceSkin.qrVersion, spec.version);
-  assert.equal(referenceEye.profile, "qr");
-  assert.equal(referenceEye.fileName, NAME);
-  assert.deepEqual(referenceEye.takeObject(), object, `${profile} packet round trip differs`);
+  assert.equal(eye.fileMime, MIME);
+  assert.deepEqual(eye.takeObject(), object, `${profile} packet round trip differs`);
 
   // Packets must remain inside the chosen standard QR version rather than
   // relying on the writer to silently enlarge the visual carrier.
-  const referenceQr = QRCode.create([{ data: referenceSkin.packet(1), mode: "byte" }], {
+  const qr = QRCode.create([{ data: first, mode: "byte" }], {
     version: spec.version,
     errorCorrectionLevel: "L",
     maskPattern: 4,
   });
-  assert.equal(referenceQr.modules.size, spec.modules, `${profile} escaped its fixed QR version`);
+  assert.equal(qr.modules.size, spec.modules, `${profile} escaped its fixed QR version`);
 }
 
-// A frame that is not a pulse must be reported, not thrown.
-const noise = new Uint8Array(skin.cols * skin.rows * 4).fill(0);
-assert.doesNotThrow(() => new Eye(PROFILE).ingest(noise, skin.cols, skin.rows));
-assert.equal(
-  new Eye(PROFILE).ingest(noise, skin.cols, skin.rows),
-  Outcome.Unlocatable,
-  "a blank frame should read as unlocatable",
-);
+// Bytes that are not a packet must be reported, not thrown — and a frame with
+// no symbol at all is a miss the page can count.
+const noiseEye = new ReferenceEye();
+assert.equal(noiseEye.ingest(new Uint8Array(64)), Outcome.Rejected);
+noiseEye.miss();
+assert.equal(noiseEye.unlocatable, 1);
+assert.equal(noiseEye.takeObject(), undefined);
 
-// A bad profile must reject rather than produce a broken object.
-assert.throws(() => new Eye("nonsense"), "unknown profiles should throw");
+assert.throws(() => new ReferenceSkin(object, NAME, MIME, "m1", 1, 0.5), "unknown profiles should throw");
 
-// Auto-detection must reach the dense profiles too, not just the default —
-// that is the whole reason the skin can offer a density menu on one device.
-for (const profile of ["m2", "m3", "m4"]) {
-  const dense = new Skin(object, NAME, MIME, profile, 0x5eed, 0.5);
-  const watcher = new Eye("auto");
-  for (let i = 0; i < dense.pulseCount; i += 1) {
-    if (watcher.ingest(dense.pulseRgba(i), dense.cols, dense.rows) === Outcome.Completed) break;
-  }
-  assert.equal(watcher.profile, profile, `auto-detect settled on the wrong grid for ${profile}`);
-  assert.deepEqual(watcher.takeObject(), object, `${profile} round trip differs`);
-}
-
-// A live eye follows a restarted skin, including a profile change. The first
-// differing CRC-valid header is only a candidate; the second is the handover.
-const oldSkin = new Skin(object, "old.bin", MIME, "m1", 0x1111, 0.5);
-const newSkin = new Skin(object, "new.bin", MIME, "m2", 0x2222, 0.5);
-const switcher = new Eye("auto");
-switcher.ingest(oldSkin.pulseRgba(0), oldSkin.cols, oldSkin.rows);
-assert.equal(switcher.profile, "m1");
-switcher.ingest(newSkin.pulseRgba(0), newSkin.cols, newSkin.rows);
-switcher.ingest(newSkin.pulseRgba(0), newSkin.cols, newSkin.rows);
-assert.equal(switcher.profile, "m2", "eye did not follow the new grid");
-assert.equal(switcher.fileName, "new.bin", "eye kept the old manifest");
-for (let i = 0; i < newSkin.pulseCount; i += 1) {
-  if (switcher.ingest(newSkin.pulseRgba(i), newSkin.cols, newSkin.rows) === Outcome.Completed) break;
-}
-assert.deepEqual(switcher.takeObject(), object, "restarted stream differs");
-
-console.log(
-  `ok — ${object.length} B through the JS boundary in ${frames} of ${skin.pulseCount} pulses`,
-);
+console.log(`ok — ${object.length} B through the JS boundary at every QR rung`);

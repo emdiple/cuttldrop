@@ -1,9 +1,9 @@
 // Messages between the eye page and its decode worker.
 //
-// The page owns the camera; the worker owns the WASM Eye. Frames cross as
-// *transferred* ArrayBuffers — no copy — and any frame captured while the
-// worker is still chewing is dropped on the page side: a decoder that falls
-// behind a live camera must shed load, not queue it.
+// The page owns the camera; the worker owns ZXing and the WASM ReferenceEye.
+// Frames cross as *transferred* ArrayBuffers — no copy — and any frame
+// captured while the worker is still chewing is dropped on the page side: a
+// decoder that falls behind a live camera must shed load, not queue it.
 
 import type { Outcome } from "../pkg/cuttl_wasm.js";
 
@@ -14,11 +14,11 @@ import type { Outcome } from "../pkg/cuttl_wasm.js";
  * standard QR symbols multiplexed into the R, G and B channels of one frame.
  * Both feed the same `ReferenceEye` packet sink.
  */
-export type Transport = "custom" | "qr" | "qr-rgb";
+export type Transport = "qr" | "qr-rgb";
 
 /** Page → worker. Frames only start once `ready` has come back. */
 export type ToWorker =
-  | { kind: "init"; profile: string; transport: Transport }
+  | { kind: "init"; transport: Transport }
   | { kind: "frame"; buffer: ArrayBuffer; width: number; height: number };
 
 /** Worker → page: `ready` once, one `status` per frame, `complete` at most once. */
@@ -30,7 +30,6 @@ export type FromWorker =
       outcome: Outcome;
       symbols: number;
       needed: number;
-      torn: number;
       rejected: number;
       unlocatable: number;
       /** From the manifest, once one has arrived — long before the file. */
@@ -39,7 +38,5 @@ export type FromWorker =
       expectedBytes?: number;
       /** Object bytes one symbol is worth — the goodput readout's multiplier. */
       symbolBytes?: number;
-      /** The grid the eye locked onto, once auto-detection has settled. */
-      profile?: string;
     }
   | { kind: "complete"; bytes: Uint8Array; fileName: string; fileMime: string };

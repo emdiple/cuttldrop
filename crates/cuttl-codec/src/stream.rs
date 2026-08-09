@@ -1,63 +1,52 @@
-//! Object → pulses → object, over the fountain layer.
+//! Object → packets → object, over the fountain layer.
 //!
-//! A pulse carries one fountain symbol *per band*. There is no pulse index and
-//! no total: a rateless stream has neither. The eye absorbs symbols in any
+//! A packet carries one fountain symbol. There is no packet index and no
+//! total: a rateless stream has neither. The eye absorbs symbols in any
 //! order, from any subset, and stops when the object falls out (§3c).
 //!
 //! ## Layout
 //!
 //! ```text
-//! band 0:  MAGIC ver flags stream_id config hash │ symbol or manifest │ crc32
-//! band 1:                                        │ symbol             │ crc32
-//! band n:                                        │ symbol             │ crc32
+//! packet:  MAGIC ver flags stream_id config hash │ symbol or manifest │ crc32
 //! ```
 //!
-//! Only band 0 carries the stream header, because those fields are identical in
-//! every pulse of a stream — the eye needs them once and then never again. Every
-//! band carries its own CRC, and that is what makes bands independent: damage
-//! confined to one band's rows costs one symbol, not the pulse (§3a).
-//!
-//! Losing band 0 to a tear therefore costs a symbol but not the transfer; the
-//! header arrives again on the next pulse, and the one after that.
+//! Every packet repeats the stream header — packets travel as standard QR
+//! symbols, any one of which can be the first a late-arriving eye decodes.
 //!
 //! ## The manifest
 //!
-//! Every [`MANIFEST_PERIOD`]-th pulse donates band 0's symbol slot to the
+//! Every [`MANIFEST_PERIOD`]-th packet donates its symbol slot to the
 //! [`Manifest`] — name, mime, and the BLAKE3 hash of the object — flagged in
-//! the header and protected by the same RS + CRC path as any symbol. The eye
-//! can say *"receiving cuttlefish.pdf — 2.4 MB"* within a second of looking,
-//! and nothing is ever handed back until the reconstruction matches the
+//! the header and protected by the same CRC as any symbol. The eye can say
+//! *"receiving cuttlefish.pdf — 2.4 MB"* within a second of looking, and
+//! nothing is ever handed back until the reconstruction matches the
 //! manifest's hash (§3c, §3f). The header repeats the hash's first four bytes
-//! in every pulse, binding symbols and manifest to one another.
+//! in every packet, binding symbols and manifest to one another.
 //!
 //! ## The CRC gate
 //!
-//! The most important check here is the per-band CRC. A fountain decoder assumes
-//! every symbol it receives is correct or absent; one silently corrupt symbol
-//! propagates through the XOR graph and poisons the whole object. The gate turns
-//! an *error* into an *erasure*, the one thing the fountain layer can repair
-//! (§1b). A rejected band is never an `Err` — it is routine.
+//! The most important check here is the per-packet CRC. A fountain decoder
+//! assumes every symbol it receives is correct or absent; one silently corrupt
+//! symbol propagates through the XOR graph and poisons the whole object. The
+//! gate turns an *error* into an *erasure*, the one thing the fountain layer
+//! can repair (§1b). A rejected packet is never an `Err` — it is routine.
 //!
 //! ## Order of operations
 //!
 //! ```text
-//! skin:  header ‖ symbol  →  + inner ECC  →  band cells
-//! eye:   band cells  →  inner correct  →  CRC gate  →  fountain  →  BLAKE3
+//! skin:  header ‖ symbol  →  QR writer  →  screen
+//! eye:   camera  →  QR decode  →  CRC gate  →  fountain  →  restore  →  BLAKE3
 //! ```
 //!
-//! The inner code repairs sparse cell errors, the CRC gate converts whatever
-//! survived into an erasure, and only then does anything reach the fountain —
-//! which repairs erasures and nothing else. The BLAKE3 check at the very end is
-//! the only statement about the *file*; everything before it is about bytes.
+//! QR's own ECC corrects a symbol or its decoder rejects it wholesale, the
+//! CRC gate converts whatever survived into an erasure, and only then does
+//! anything reach the fountain — which repairs erasures and nothing else. The
+//! BLAKE3 check at the very end is the only statement about the *file*;
+//! everything before it is about bytes.
 
-use crate::beacon::{self, Beacon};
 use crate::error::{Error, Result};
-use crate::fec;
 use crate::fountain::{CONFIG_LEN, Fountain, RaptorQ, RaptorQSink, SYMBOL_ID_LEN, Sink};
-use crate::geometry::Grid;
 use crate::manifest::{Compression as ObjectCompression, Manifest};
-use crate::palette::Palette;
-use crate::pulse::Pulse;
 use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
@@ -68,16 +57,15 @@ use std::io::{Read, Write};
 const MAGIC: [u8; 2] = *b"CD";
 const VERSION: u8 = 4;
 
-/// Band 0's payload is the manifest, not a fountain symbol.
+/// The packet's payload is the manifest, not a fountain symbol.
 const FLAG_MANIFEST: u8 = 1;
 
-/// Every pulse whose index is a multiple of this donates band 0's symbol slot
-/// to the manifest. At 10 pulses/s the eye learns the filename within 0.8 s of
-/// looking, whenever it starts; the price is 1/8 of mono's symbol slots, 1/16
-/// of colour's (§3c sketched ~1-in-16).
+/// Every packet whose index is a multiple of this donates its symbol slot to
+/// the manifest. At 10 packets/s the eye learns the filename within 0.8 s of
+/// looking, whenever it starts; the price is 1/8 of the symbol slots (§3c).
 pub const MANIFEST_PERIOD: usize = 8;
 
-/// Standard-QR density rungs for the reference transport.
+/// Standard-QR density rungs for the transport.
 ///
 /// The number is the RaptorQ payload, not the complete QR byte payload. Every
 /// packet also carries a 24 B stream header, a 4 B RaptorQ id and a 4 B CRC.
@@ -133,22 +121,17 @@ impl ReferenceProfile {
     }
 }
 
-/// Backward-compatible name for the original v27 reference rung.
-pub const REFERENCE_SYMBOL_CAPACITY: u16 = ReferenceProfile::V27.symbol_capacity();
-
-/// Stream header bytes, carried by band 0 only.
+/// Stream header bytes, carried by every packet.
 pub const STREAM_HEADER_LEN: usize = 24;
-/// Symbol id plus the trailing CRC, on every band.
-const BAND_OVERHEAD: usize = SYMBOL_ID_LEN + 4;
 
-/// Fields every pulse of a stream repeats verbatim.
+/// Fields every packet of a stream repeats verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamHeader {
     pub stream_id: u32,
     /// Fountain configuration; the RFC 6330 OTI for RaptorQ. Carries the exact
     /// object length, which is why the manifest does not.
     pub config: [u8; CONFIG_LEN],
-    /// First four bytes of the object's BLAKE3 hash. Binds every pulse to the
+    /// First four bytes of the object's BLAKE3 hash. Binds every packet to the
     /// manifest that can verify it; the full hash rides in the manifest.
     pub hash_head: [u8; 4],
 }
@@ -184,79 +167,17 @@ fn crc(bytes: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// How one band's cells split between inner ECC and everything else.
-pub fn band_layout(grid: Grid, palette: Palette, band: u8) -> Result<fec::Layout> {
-    fec::Layout::for_capacity(grid.band_payload_bytes(band, palette))
-}
-
-/// Bytes reserved before the symbol in a given band.
-const fn reserved_in(band: u8) -> usize {
-    if band == 0 {
-        STREAM_HEADER_LEN + BAND_OVERHEAD
-    } else {
-        BAND_OVERHEAD
-    }
-}
-
-/// Largest fountain symbol every band can carry.
-///
-/// The *smallest* band sets this, because a fountain code needs one symbol size
-/// for the whole object. Band 0 is usually the binding one: it pays for the
-/// stream header on top of everything else.
-pub fn symbol_capacity(grid: Grid, palette: Palette) -> Result<u16> {
-    let mut smallest = usize::MAX;
-    for band in 0..grid.bands.max(1) {
-        let data = band_layout(grid, palette, band)?.data_len();
-        let room = data
-            .checked_sub(reserved_in(band))
-            .filter(|&n| n > 0)
-            .ok_or(Error::NoRoomForSymbol {
-                capacity: data,
-                header: reserved_in(band),
-                symbol_id: SYMBOL_ID_LEN,
-            })?;
-        smallest = smallest.min(room);
-    }
-    Ok(smallest.min(u16::MAX as usize) as u16)
-}
-
-/// What one band carries on the wire.
+/// What one packet carries on the wire.
 enum Framed<'a> {
     Symbol(&'a [u8]),
     Manifest(&'a [u8]),
 }
 
-/// Frame one band: optional stream header, the payload, then a CRC over both.
-fn frame_band(band: u8, header: &StreamHeader, payload: Framed<'_>, data_len: usize) -> Vec<u8> {
-    debug_assert!(
-        band == 0 || matches!(payload, Framed::Symbol(_)),
-        "only band 0 may carry the manifest"
-    );
-    let mut buf = vec![0u8; data_len];
-    let mut at = 0;
-    if band == 0 {
-        let flags = match payload {
-            Framed::Manifest(_) => FLAG_MANIFEST,
-            Framed::Symbol(_) => 0,
-        };
-        header.write_into(&mut buf[..STREAM_HEADER_LEN], flags);
-        at = STREAM_HEADER_LEN;
-    }
-    let bytes = match payload {
-        Framed::Symbol(bytes) | Framed::Manifest(bytes) => bytes,
-    };
-    buf[at..at + bytes.len()].copy_from_slice(bytes);
-    let end = at + bytes.len();
-    let checksum = crc(&buf[..end]);
-    buf[end..end + 4].copy_from_slice(&checksum.to_le_bytes());
-    buf
-}
-
-/// Frame one complete packet for the standard-QR reference transport.
+/// Frame one complete packet: stream header, the payload, then a CRC over both.
 ///
-/// Unlike a chroma-cell band this has no padding and no inner RS layer: QR's
-/// own L-level ECC corrects a symbol or its decoder rejects it wholesale. The
-/// CRC remains because it is the firewall before RaptorQ in every transport.
+/// There is no padding and no inner ECC layer: QR's own L-level ECC corrects a
+/// symbol or its decoder rejects it wholesale. The CRC remains because it is
+/// the firewall before RaptorQ.
 fn frame_packet(header: &StreamHeader, payload: Framed<'_>) -> Vec<u8> {
     let flags = match payload {
         Framed::Manifest(_) => FLAG_MANIFEST,
@@ -274,51 +195,10 @@ fn frame_packet(header: &StreamHeader, payload: Framed<'_>) -> Vec<u8> {
     buf
 }
 
-/// What one band turned out to carry.
+/// What one packet turned out to carry.
 enum Payload<'a> {
     Symbol(&'a [u8]),
     Manifest(Manifest),
-}
-
-/// Split a band's decoded bytes back into header and payload, verifying the CRC.
-///
-/// `locked` is the symbol length from an already-adopted fountain config;
-/// band 0 can fall back to probing the config in its own header. The manifest
-/// needs neither — its wire form is self-delimiting. `None` means the band is
-/// unusable — an erasure, never an error.
-fn parse_band(
-    band: u8,
-    bytes: &[u8],
-    locked: Option<usize>,
-) -> Option<(Option<StreamHeader>, Payload<'_>)> {
-    let (header, flags, at) = if band == 0 {
-        let (header, flags) = StreamHeader::parse(bytes)?;
-        (Some(header), flags, STREAM_HEADER_LEN)
-    } else {
-        (None, 0, 0)
-    };
-
-    if flags & FLAG_MANIFEST != 0 {
-        let (manifest, used) = Manifest::parse(bytes.get(at..)?)?;
-        check_crc(bytes, at + used)?;
-        return Some((header, Payload::Manifest(manifest)));
-    }
-
-    // Symbol length comes from the fountain config, not the wire, because
-    // RaptorQ picks a symbol size that may be smaller than the space offered.
-    let symbol_len = match locked {
-        Some(len) => len,
-        None => RaptorQSink::probe(&header.as_ref()?.config)?,
-    };
-    let end = at
-        + if symbol_len == 0 {
-            0
-        } else {
-            SYMBOL_ID_LEN + symbol_len
-        };
-    let symbol = bytes.get(at..end)?;
-    check_crc(bytes, end)?;
-    Some((header, Payload::Symbol(symbol)))
 }
 
 fn check_crc(bytes: &[u8], end: usize) -> Option<()> {
@@ -326,7 +206,9 @@ fn check_crc(bytes: &[u8], end: usize) -> Option<()> {
     (crc(&bytes[..end]) == expected).then_some(())
 }
 
-/// Parse an exact, header-bearing QR reference packet.
+/// Parse an exact, header-bearing packet, verifying the CRC.
+///
+/// `None` means the packet is unusable — an erasure, never an error.
 fn parse_packet(bytes: &[u8]) -> Option<(StreamHeader, Payload<'_>)> {
     let (header, flags) = StreamHeader::parse(bytes)?;
     let at = STREAM_HEADER_LEN;
@@ -337,6 +219,8 @@ fn parse_packet(bytes: &[u8]) -> Option<(StreamHeader, Payload<'_>)> {
         return Some((header, Payload::Manifest(manifest)));
     }
 
+    // Symbol length comes from the fountain config, not the wire, because
+    // RaptorQ picks a symbol size that may be smaller than the space offered.
     let symbol_len = RaptorQSink::probe(&header.config)?;
     let end = at
         + if symbol_len == 0 {
@@ -350,128 +234,12 @@ fn parse_packet(bytes: &[u8]) -> Option<(StreamHeader, Payload<'_>)> {
     Some((header, Payload::Symbol(symbol)))
 }
 
-/// Prepared skin-side stream. The expensive RaptorQ intermediate-symbol solve
-/// happens once; pulses are rendered individually when the display asks for
-/// them. This keeps browser startup and memory proportional to the file rather
-/// than to `file × grid overhead × repair loop`.
-pub struct StreamEncoder {
-    grid: Grid,
-    palette: Palette,
-    fountain: RaptorQ,
-    manifest: Vec<u8>,
-    header: StreamHeader,
-    symbols: u32,
-    pulses: usize,
-}
-
-impl StreamEncoder {
-    pub fn new(
-        object: &[u8],
-        name: &str,
-        mime: &str,
-        grid: Grid,
-        palette: Palette,
-        stream_id: u32,
-        overhead: f32,
-    ) -> Result<Self> {
-        grid.validate()?;
-        let max_symbol = symbol_capacity(grid, palette)?;
-        let (encoded, compression) = prepare_object(object, mime)?;
-        let fountain = RaptorQ::new(&encoded, max_symbol)?;
-        let manifest = Manifest::describe_encoded(name, mime, object, compression);
-        let wire = manifest.to_bytes();
-
-        let band0 = band_layout(grid, palette, 0)?.data_len();
-        if STREAM_HEADER_LEN + wire.len() + 4 > band0 {
-            return Err(Error::PayloadTooLarge {
-                len: wire.len(),
-                capacity: band0.saturating_sub(STREAM_HEADER_LEN + 4),
-            });
-        }
-
-        let source = fountain.source_symbols();
-        let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
-        // An empty object still needs one empty symbol to make the sink produce
-        // the empty object; pulse 0 itself is occupied by the manifest on m1.
-        let symbols = if source == 0 { 1 } else { source + repair };
-        let bands = grid.bands.max(1) as usize;
-        let mut pulses = 0usize;
-        let mut slots = 0usize;
-        while slots < symbols as usize || pulses == 0 {
-            let manifest_slot = usize::from(pulses.is_multiple_of(MANIFEST_PERIOD));
-            slots += bands.saturating_sub(manifest_slot);
-            pulses += 1;
-        }
-
-        let header = StreamHeader {
-            stream_id,
-            config: fountain.config(),
-            hash_head: manifest.hash[..4].try_into().expect("hash has 32 bytes"),
-        };
-        Ok(Self {
-            grid,
-            palette,
-            fountain,
-            manifest: wire,
-            header,
-            symbols,
-            pulses,
-        })
-    }
-
-    pub fn pulse_count(&self) -> usize {
-        self.pulses
-    }
-
-    /// Generate pulse `index`. Indices wrap because the skin loops until a
-    /// human stops it.
-    pub fn pulse(&self, index: usize) -> Result<Pulse> {
-        let index = index % self.pulses;
-        let bands = self.grid.bands.max(1) as usize;
-        let manifests_before = index.div_ceil(MANIFEST_PERIOD);
-        let mut ordinal = index * bands - manifests_before;
-        let mut pulse = Pulse::new(self.grid, self.palette)?;
-
-        for band in 0..bands {
-            let layout = band_layout(self.grid, self.palette, band as u8)?;
-            let framed = if band == 0 && index.is_multiple_of(MANIFEST_PERIOD) {
-                frame_band(
-                    band as u8,
-                    &self.header,
-                    Framed::Manifest(&self.manifest),
-                    layout.data_len(),
-                )
-            } else if ordinal < self.symbols as usize {
-                let symbol = self.fountain.symbol(ordinal as u32);
-                ordinal += 1;
-                frame_band(
-                    band as u8,
-                    &self.header,
-                    Framed::Symbol(&symbol),
-                    layout.data_len(),
-                )
-            } else {
-                continue;
-            };
-            pulse.write_band(band as u8, &fec::encode(&framed, layout)?)?;
-        }
-        beacon::write(
-            &mut pulse,
-            Beacon {
-                stream_id: self.header.stream_id as u8,
-                counter: index as u32,
-            },
-        )?;
-        Ok(pulse)
-    }
-}
-
-/// Grid-independent packet stream for the standard-QR reference mode.
+/// Prepared skin-side packet stream. The expensive RaptorQ intermediate-symbol
+/// solve happens once; packets are framed individually when the display asks
+/// for them, so startup and memory stay proportional to the file.
 ///
-/// This deliberately shares every non-optical layer with chroma-cell pulses:
-/// compression, RaptorQ, stream identity, periodic manifest and final BLAKE3.
-/// Its only difference is that a packet is handed to a QR writer instead of
-/// Reed–Solomon-protected chroma cells.
+/// The name is historical — this began as the *reference* transport beside a
+/// custom optical raster, and the browser still calls the mode QR Reference.
 pub struct ReferenceEncoder {
     fountain: RaptorQ,
     manifest: Vec<u8>,
@@ -481,26 +249,15 @@ pub struct ReferenceEncoder {
 }
 
 impl ReferenceEncoder {
-    /// Construct the original v27-L reference stream.
+    /// Encode a file as a looping packet stream at a fixed density rung.
+    ///
+    /// `name` and `mime` ride in the manifest so the far end can display and
+    /// save the file as itself. `overhead` is repair symbols per source
+    /// symbol: the skin loops forever, so this only bounds how long the loop
+    /// is before it repeats — but a longer loop means a receiver that missed
+    /// a frame waits less time for a *different* one rather than the same one
+    /// again.
     pub fn new(
-        object: &[u8],
-        name: &str,
-        mime: &str,
-        stream_id: u32,
-        overhead: f32,
-    ) -> Result<Self> {
-        Self::with_profile(
-            object,
-            name,
-            mime,
-            ReferenceProfile::V27,
-            stream_id,
-            overhead,
-        )
-    }
-
-    /// Construct a standard-QR stream at a fixed density rung.
-    pub fn with_profile(
         object: &[u8],
         name: &str,
         mime: &str,
@@ -523,6 +280,8 @@ impl ReferenceEncoder {
 
         let source = fountain.source_symbols();
         let repair = (source as f32 * overhead.max(0.0)).ceil() as u32;
+        // An empty object still needs one empty symbol to make the sink
+        // produce the empty object; packet 0 itself carries the manifest.
         let symbols = if source == 0 { 1 } else { source + repair };
         let mut packets = 0usize;
         let mut slots = 0usize;
@@ -641,63 +400,21 @@ fn restore_object(manifest: &Manifest, encoded: &[u8]) -> Result<Vec<u8>> {
     Ok(object)
 }
 
-/// Encode an object as a finite batch of pulses for the CLI and simulator.
-/// The browser uses [`StreamEncoder`] directly and generates one pulse at a
-/// time.
-///
-/// `name` and `mime` may be empty — an anonymous transfer is legitimate, and
-/// the eye falls back to a safe placeholder name. The BLAKE3 hash is not
-/// optional (§3f).
-///
-/// `overhead` is the ratio of repair symbols to source symbols. It exists only
-/// because a directory of PNGs has to stand in for a skin that loops forever;
-/// at `0.0` the output is exactly the source symbols and survives no loss.
-pub fn encode_named(
-    object: &[u8],
-    name: &str,
-    mime: &str,
-    grid: Grid,
-    palette: Palette,
-    stream_id: u32,
-    overhead: f32,
-) -> Result<Vec<Pulse>> {
-    let encoder = StreamEncoder::new(object, name, mime, grid, palette, stream_id, overhead)?;
-    (0..encoder.pulse_count())
-        .map(|index| encoder.pulse(index))
-        .collect()
-}
-
-/// [`encode_named`] with no name and no mime — the convenience for tests and
-/// the simulator, where the metadata is noise. The manifest still travels: the
-/// hash is mandatory, only the labels are empty.
-pub fn encode(
-    object: &[u8],
-    grid: Grid,
-    palette: Palette,
-    stream_id: u32,
-    overhead: f32,
-) -> Result<Vec<Pulse>> {
-    encode_named(object, "", "", grid, palette, stream_id, overhead)
-}
-
-/// What a whole pulse amounted to. With bands, this is a summary: one frame can
-/// contribute several symbols, and they need not all fare the same.
+/// What one packet amounted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ingest {
-    /// At least one new symbol (or the manifest) absorbed.
+    /// A new symbol (or the manifest) absorbed.
     Accepted,
     /// Absorbed, and the object came out — reconstructed *and* manifest in
     /// hand, so [`Receiver::finish`] can verify it.
     Completed,
-    /// Every usable band carried something already held.
+    /// A symbol already held, or a packet arriving after completion.
     Duplicate,
-    /// No band survived its CRC.
+    /// Failed the CRC gate, or belongs to another transfer.
     Rejected,
-    /// Beacon strips disagreed and nothing could be salvaged.
-    Torn,
 }
 
-/// Absorbs pulses until the object falls out.
+/// Absorbs packets until the object falls out.
 pub struct Receiver {
     stream_id: Option<u32>,
     stream_config: Option<[u8; CONFIG_LEN]>,
@@ -711,7 +428,6 @@ pub struct Receiver {
     seen: HashSet<[u8; SYMBOL_ID_LEN]>,
     accepted: u32,
     rejected: u32,
-    torn: u32,
     object: Option<Vec<u8>>,
 }
 
@@ -733,117 +449,14 @@ impl Receiver {
             seen: HashSet::new(),
             accepted: 0,
             rejected: 0,
-            torn: 0,
             object: None,
         }
     }
 
-    pub fn ingest(&mut self, pulse: &Pulse) -> Ingest {
-        if self.is_complete() {
-            return Ingest::Duplicate;
-        }
-        let grid = pulse.grid();
-        let palette = pulse.palette();
-        let bands = grid.bands.max(1);
-
-        // A stitched frame is worth reporting either way, but with bands it is
-        // no longer worth discarding: the tear ruins the bands it crossed and
-        // leaves the rest perfectly readable. Only a single-band pulse has
-        // nothing left to salvage.
-        let torn = beacon::is_intact(pulse) == Some(false);
-        if torn {
-            self.torn += 1;
-            if bands == 1 {
-                return Ingest::Torn;
-            }
-        }
-
-        let mut fresh = 0;
-        let mut usable = 0;
-        for band in 0..bands {
-            let Ok(layout) = band_layout(grid, palette, band) else {
-                continue;
-            };
-            let Some(bytes) = fec::decode(&pulse.read_band(band), layout) else {
-                self.rejected += 1;
-                continue;
-            };
-
-            // Until a config is locked, only band 0 can be interpreted: every
-            // other band's symbol length is unknown.
-            let locked = self.sink.as_ref().map(|sink| sink.symbol_len());
-            if band != 0 && locked.is_none() {
-                continue;
-            }
-
-            let Some((header, payload)) = parse_band(band, &bytes, locked) else {
-                self.rejected += 1;
-                continue;
-            };
-            if let Some(header) = header
-                && !self.adopt(header)
-            {
-                self.rejected += 1;
-                continue;
-            }
-
-            match payload {
-                Payload::Manifest(manifest) => {
-                    // The header's hash head binds pulses to their manifest; a
-                    // manifest that disagrees belongs to some other transfer.
-                    if manifest.hash[..4] != self.hash_head {
-                        self.rejected += 1;
-                        continue;
-                    }
-                    usable += 1;
-                    if self.manifest.is_none() {
-                        self.manifest = Some(manifest);
-                        fresh += 1;
-                    }
-                }
-                Payload::Symbol(symbol) => {
-                    usable += 1;
-                    if self.object.is_some() {
-                        // Only the manifest is still wanted.
-                        continue;
-                    }
-                    if symbol.len() >= SYMBOL_ID_LEN {
-                        let id: [u8; SYMBOL_ID_LEN] =
-                            symbol[..SYMBOL_ID_LEN].try_into().expect("checked length");
-                        if !self.seen.insert(id) {
-                            continue;
-                        }
-                    }
-                    fresh += 1;
-                    self.accepted += 1;
-
-                    let Some(sink) = self.sink.as_mut() else {
-                        continue;
-                    };
-                    if let Some(object) = sink.absorb(symbol) {
-                        self.object = Some(object);
-                    }
-                }
-            }
-            if self.is_complete() {
-                return Ingest::Completed;
-            }
-        }
-
-        match (fresh, usable, torn) {
-            (0, 0, true) => Ingest::Torn,
-            (0, 0, false) => Ingest::Rejected,
-            (0, _, _) => Ingest::Duplicate,
-            _ => Ingest::Accepted,
-        }
-    }
-
-    /// Absorb one decoded standard-QR packet.
+    /// Absorb one decoded packet.
     ///
-    /// QR's decoder has already located, sampled and applied its own ECC. This
-    /// method deliberately begins at the same CRC gate that chroma-cell bands
-    /// reach after their inner RS layer, keeping the fountain and BLAKE3 path
-    /// identical between the reference and custom transports.
+    /// The QR decoder has already located, sampled and applied its own ECC, so
+    /// this begins at the CRC gate: nothing unverified reaches the fountain.
     pub fn ingest_packet(&mut self, bytes: &[u8]) -> Ingest {
         if self.is_complete() {
             return Ingest::Duplicate;
@@ -859,6 +472,8 @@ impl Receiver {
 
         match payload {
             Payload::Manifest(manifest) => {
+                // The header's hash head binds packets to their manifest; a
+                // manifest that disagrees belongs to some other transfer.
                 if manifest.hash[..4] != self.hash_head {
                     self.rejected += 1;
                     return Ingest::Rejected;
@@ -899,12 +514,11 @@ impl Receiver {
     /// Follow a stream, changing over only after two consecutive CRC-valid
     /// headers agree on the replacement.
     ///
-    /// The previous receiver locked onto the first stream forever. Selecting a
-    /// different file or profile on the skin creates a fresh stream, so a live
-    /// eye then rejected every pulse until the page was reloaded. One foreign
-    /// pulse is still ignored; seeing the same complete header twice is the
-    /// deliberate handover signal. The CRC gate has already accepted both
-    /// bands before this method runs.
+    /// A receiver locked onto the first stream forever would reject every
+    /// packet after the skin selects a new file, until the page reloaded. One
+    /// foreign packet is still ignored; seeing the same complete header twice
+    /// is the deliberate handover signal. The CRC gate has already accepted
+    /// the packet before this method runs.
     fn adopt(&mut self, header: StreamHeader) -> bool {
         let current = self.stream_id == Some(header.stream_id)
             && self.stream_config == Some(header.config)
@@ -941,7 +555,6 @@ impl Receiver {
         self.seen.clear();
         self.accepted = 0;
         self.rejected = 0;
-        self.torn = 0;
         self.object = None;
         true
     }
@@ -956,14 +569,14 @@ impl Receiver {
         )
     }
 
-    /// The manifest, from the first manifest pulse onward — typically long
+    /// The manifest, from the first manifest packet onward — typically long
     /// before the object converges, which is the point (§3c): the eye can say
     /// what it is receiving a second in.
     pub fn manifest(&self) -> Option<&Manifest> {
         self.manifest.as_ref()
     }
 
-    /// Exact object length, known as soon as any pulse is understood — the
+    /// Exact object length, known as soon as any packet is understood — the
     /// fountain config carries it.
     pub fn expected_len(&self) -> Option<u64> {
         self.manifest
@@ -980,15 +593,9 @@ impl Receiver {
         self.sink.as_ref().map(|sink| sink.symbol_len())
     }
 
-    /// Bands dropped by the CRC gate. Counts *bands*, not pulses.
+    /// Packets dropped by the CRC gate.
     pub fn rejected(&self) -> u32 {
         self.rejected
-    }
-
-    /// Frames whose beacon strips disagreed. A rising count is the signal
-    /// behind a `SLOW DOWN` hint to the human (§1e).
-    pub fn torn(&self) -> u32 {
-        self.torn
     }
 
     /// Object reconstructed *and* manifest in hand — everything
@@ -1023,72 +630,70 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    const M1: (Grid, Palette) = (Grid::M1_MONO, Palette::Mono1);
-    const M3: (Grid, Palette) = (Grid::M3_COLOR, Palette::Color3);
+    fn encode(object: &[u8], stream_id: u32, overhead: f32) -> ReferenceEncoder {
+        ReferenceEncoder::new(object, "", "", ReferenceProfile::V27, stream_id, overhead).unwrap()
+    }
 
-    fn absorb_all(pulses: &[Pulse]) -> Receiver {
+    fn absorb_all(skin: &ReferenceEncoder) -> Receiver {
         let mut rx = Receiver::new();
-        for pulse in pulses {
-            rx.ingest(pulse);
+        for index in 0..skin.packet_count() {
+            rx.ingest_packet(&skin.packet(index));
         }
         rx
     }
 
-    /// Flip `count` payload cells inside one band, spread so each lands in a
-    /// different byte and costs the inner code a full correction.
-    fn damage_band(pulse: &Pulse, band: u8, count: usize) -> Pulse {
-        let mut pulse = pulse.clone();
-        let coords: Vec<_> = pulse.grid().band_payload_coords(band).collect();
-        for i in 0..count {
-            let (x, y) = coords[(i * 8 + 24) % coords.len()];
-            let flipped = pulse.cell(x, y).unwrap() ^ 1;
-            pulse.set_cell(x, y, flipped).unwrap();
-        }
-        pulse
-    }
-
     #[test]
     fn empty_object_roundtrips() {
-        let pulses = encode(&[], M1.0, M1.1, 1, 0.0).unwrap();
-        assert_eq!(absorb_all(&pulses).finish().unwrap(), Vec::<u8>::new());
+        let skin = encode(&[], 1, 0.0);
+        assert_eq!(absorb_all(&skin).finish().unwrap(), Vec::<u8>::new());
     }
 
     #[test]
-    fn qr_reference_packets_share_the_verified_stream() {
+    fn every_profile_roundtrips_the_verified_stream() {
         let object: Vec<u8> = (0..18_000u32).map(|n| (n * 31) as u8).collect();
-        let skin =
-            ReferenceEncoder::new(&object, "reference.bin", "application/test", 19, 0.5).unwrap();
-        let mut eye = Receiver::new();
-        for index in 0..skin.packet_count() {
-            if eye.ingest_packet(&skin.packet(index)) == Ingest::Completed {
-                break;
+        for profile in ReferenceProfile::ALL {
+            let skin = ReferenceEncoder::new(
+                &object,
+                "reference.bin",
+                "application/test",
+                profile,
+                19,
+                0.5,
+            )
+            .unwrap();
+            let mut eye = Receiver::new();
+            for index in 0..skin.packet_count() {
+                if eye.ingest_packet(&skin.packet(index)) == Ingest::Completed {
+                    break;
+                }
             }
+            assert_eq!(
+                eye.manifest().map(|manifest| manifest.name.as_str()),
+                Some("reference.bin"),
+                "{}",
+                profile.name()
+            );
+            assert_eq!(eye.finish().unwrap(), object, "{}", profile.name());
         }
-        assert_eq!(
-            eye.manifest().map(|manifest| manifest.name.as_str()),
-            Some("reference.bin")
-        );
-        assert_eq!(eye.finish().unwrap(), object);
     }
 
     /// The manifest names the file long before the object converges (§3c).
     #[test]
     fn manifest_arrives_first_and_names_the_object() {
         let object = vec![0xABu8; 20_000];
-        let pulses = encode_named(
+        let skin = ReferenceEncoder::new(
             &object,
             "cuttlefish.pdf",
             "application/pdf",
-            M1.0,
-            M1.1,
+            ReferenceProfile::V27,
             7,
             0.5,
         )
         .unwrap();
         let mut rx = Receiver::new();
-        assert_eq!(rx.ingest(&pulses[0]), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&skin.packet(0)), Ingest::Accepted);
 
-        let manifest = rx.manifest().expect("pulse 0 carries the manifest");
+        let manifest = rx.manifest().expect("packet 0 carries the manifest");
         assert_eq!(manifest.name, "cuttlefish.pdf");
         assert_eq!(manifest.mime, "application/pdf");
         assert_eq!(rx.expected_len(), Some(object.len() as u64));
@@ -1100,152 +705,68 @@ mod tests {
     #[test]
     fn finish_requires_the_manifest() {
         let object = vec![0x3Cu8; 8_000];
-        let pulses = encode(&object, M1.0, M1.1, 2, 1.0).unwrap();
+        let skin = encode(&object, 2, 1.0);
         let mut rx = Receiver::new();
-        for (index, pulse) in pulses.iter().enumerate() {
+        for index in 0..skin.packet_count() {
             if index.is_multiple_of(MANIFEST_PERIOD) {
-                continue; // withhold every manifest pulse
+                continue; // withhold every manifest packet
             }
-            rx.ingest(pulse);
+            rx.ingest_packet(&skin.packet(index));
         }
         assert!(!rx.is_complete(), "complete without a manifest");
         assert!(matches!(rx.finish(), Err(Error::NoManifest)));
 
-        // The next manifest pulse is all that was missing.
-        assert_eq!(rx.ingest(&pulses[0]), Ingest::Completed);
+        // The next manifest packet is all that was missing.
+        assert_eq!(rx.ingest_packet(&skin.packet(0)), Ingest::Completed);
         assert_eq!(rx.finish().unwrap(), object);
     }
 
-    /// The point of bands: damage one stripe and the others still deliver.
-    #[test]
-    fn damage_to_one_band_spares_the_others() {
-        let (grid, palette) = M3;
-        assert!(grid.bands > 1, "this test needs a banded profile");
-
-        let object: Vec<u8> = (0..40_000u32).map(|i| (i ^ (i >> 4)) as u8).collect();
-        // Overhead 3.0 because wrecking one of two bands throws away half the
-        // symbols; the fountain has to make that up out of what is left.
-        let pulses = encode(&object, grid, palette, 3, 3.0).unwrap();
-
-        // Wreck the last band of every pulse, far past inner-code repair.
-        // Note the budget is per *block* and a colour band spans several, so
-        // this has to clear `correctable × blocks` — an earlier version of this
-        // test landed exactly on that total and the band was quietly repaired.
-        let victim = grid.bands - 1;
-        let layout = band_layout(grid, palette, victim).unwrap();
-        let ruin = layout.correctable_per_block() * layout.blocks() * 3;
-        let mangled: Vec<Pulse> = pulses
-            .iter()
-            .map(|p| damage_band(p, victim, ruin))
-            .collect();
-
-        let rx = absorb_all(&mangled);
-        assert_eq!(
-            rx.finish().unwrap(),
-            object,
-            "one ruined band should not cost the transfer"
-        );
-        assert!(
-            rx.rejected() > 0,
-            "the ruined band should have been rejected"
-        );
-    }
-
-    /// Losing band 0 costs its symbol and the stream header, but the header
-    /// arrives again on the next pulse — so the transfer still completes.
-    #[test]
-    fn losing_the_header_band_is_survivable() {
-        let (grid, palette) = M3;
-        let object: Vec<u8> = (0..30_000u32).map(|i| (i * 11) as u8).collect();
-        let pulses = encode(&object, grid, palette, 4, 2.0).unwrap();
-        let budget = band_layout(grid, palette, 0)
-            .unwrap()
-            .correctable_per_block();
-
-        // Every third pulse loses band 0 entirely — including pulse 0, which
-        // held a manifest copy; the copies at 8 and 16 survive.
-        let mangled: Vec<Pulse> = pulses
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                if i % 3 == 0 {
-                    damage_band(p, 0, budget * 4)
-                } else {
-                    p.clone()
-                }
-            })
-            .collect();
-        assert_eq!(absorb_all(&mangled).finish().unwrap(), object);
-    }
-
     /// With no repair symbols, loss must fail cleanly rather than return wrong
-    /// bytes. Pulse 1, not pulse 0: the first pulse carries the manifest, and
-    /// what this test needs to lose is a *symbol*.
+    /// bytes. Packet 1, not packet 0: the first packet carries the manifest,
+    /// and what this test needs to lose is a *symbol*.
     #[test]
     fn zero_overhead_plus_loss_fails_loudly() {
         let object = vec![3u8; 6000];
-        let pulses = encode(&object, M1.0, M1.1, 1, 0.0).unwrap();
-        let kept: Vec<Pulse> = pulses
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != 1)
-            .map(|(_, p)| p.clone())
-            .collect();
-        let rx = absorb_all(&kept);
+        let skin = encode(&object, 1, 0.0);
+        let mut rx = Receiver::new();
+        for index in 0..skin.packet_count() {
+            if index == 1 {
+                continue;
+            }
+            rx.ingest_packet(&skin.packet(index));
+        }
         assert!(matches!(rx.finish(), Err(Error::NotConverged { .. })));
     }
 
     #[test]
     fn duplicates_are_recognised_not_double_counted() {
-        let pulses = encode(&[3u8; 300], M1.0, M1.1, 1, 0.0).unwrap();
+        let skin = encode(&[3u8; 300], 1, 0.0);
         let mut rx = Receiver::new();
-        // Pulse 0 is the manifest copy; its first arrival is news, its second
-        // is not. Pulse 1 carries the first symbol.
-        assert_eq!(rx.ingest(&pulses[0]), Ingest::Accepted);
-        assert_eq!(rx.ingest(&pulses[0]), Ingest::Duplicate);
-        assert_eq!(rx.ingest(&pulses[1]), Ingest::Accepted);
-        assert_eq!(rx.ingest(&pulses[1]), Ingest::Duplicate);
+        // Packet 0 is the manifest copy; its first arrival is news, its second
+        // is not. Packet 1 carries the only symbol a 300 B object needs at
+        // this rung, so it completes the transfer — and repeats are still
+        // recognised, not double counted.
+        assert_eq!(rx.ingest_packet(&skin.packet(0)), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&skin.packet(0)), Ingest::Duplicate);
+        assert_eq!(rx.ingest_packet(&skin.packet(1)), Ingest::Completed);
+        assert_eq!(rx.ingest_packet(&skin.packet(1)), Ingest::Duplicate);
         assert_eq!(rx.progress().0, 1);
     }
 
-    /// A few cell errors are repaired by the inner code (§1b).
+    /// A corrupted packet is an erasure at the CRC gate, never an error — and
+    /// corruption must never reach the object.
     #[test]
-    fn a_few_cell_errors_are_repaired() {
-        let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
-        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
-        let mut rx = Receiver::new();
-        assert_eq!(
-            rx.ingest(&damage_band(&pulses[0], 0, budget)),
-            Ingest::Accepted
-        );
-        assert_eq!(rx.rejected(), 0);
-    }
-
-    /// Past that budget the CRC gate takes over.
-    #[test]
-    fn errors_past_the_inner_budget_hit_the_crc_gate() {
-        let pulses = encode(&[9u8; 2000], M1.0, M1.1, 1, 0.5).unwrap();
-        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
-        let mut rx = Receiver::new();
-        assert_eq!(
-            rx.ingest(&damage_band(&pulses[0], 0, budget * 4)),
-            Ingest::Rejected
-        );
-        assert_eq!(rx.rejected(), 1);
-    }
-
-    /// Corruption must never reach the object.
-    #[test]
-    fn corruption_never_reaches_the_object() {
+    fn corruption_hits_the_crc_gate() {
         let object = vec![0x5Au8; 4000];
-        let budget = band_layout(M1.0, M1.1, 0).unwrap().correctable_per_block();
-        let pulses = encode(&object, M1.0, M1.1, 1, 1.0).unwrap();
-        let mangled: Vec<Pulse> = pulses
-            .iter()
-            .map(|p| damage_band(p, 0, budget * 4))
-            .collect();
-
-        let rx = absorb_all(&mangled);
+        let skin = encode(&object, 1, 1.0);
+        let mut rx = Receiver::new();
+        for index in 0..skin.packet_count() {
+            let mut packet = skin.packet(index);
+            let flip = STREAM_HEADER_LEN + 5 + (index % 16);
+            packet[flip] ^= 0x40;
+            assert_eq!(rx.ingest_packet(&packet), Ingest::Rejected);
+        }
+        assert_eq!(rx.rejected(), skin.packet_count() as u32);
         assert!(!rx.is_complete());
         assert!(rx.finish().is_err());
     }
@@ -1254,43 +775,74 @@ mod tests {
     fn a_foreign_stream_in_view_is_ignored() {
         // This test is about handover, not compression. Mark the synthetic
         // bytes as already compressed so they still require several symbols.
-        let ours = encode_named(&[1u8; 2000], "", "application/zip", M1.0, M1.1, 111, 0.0).unwrap();
-        let theirs =
-            encode_named(&[2u8; 2000], "", "application/zip", M1.0, M1.1, 222, 0.0).unwrap();
+        let ours = ReferenceEncoder::new(
+            &[1u8; 4000],
+            "",
+            "application/zip",
+            ReferenceProfile::V27,
+            111,
+            0.0,
+        )
+        .unwrap();
+        let theirs = ReferenceEncoder::new(
+            &[2u8; 4000],
+            "",
+            "application/zip",
+            ReferenceProfile::V27,
+            222,
+            0.0,
+        )
+        .unwrap();
         let mut rx = Receiver::new();
-        assert_eq!(rx.ingest(&ours[0]), Ingest::Accepted);
-        assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
-        // Returning to the active stream cancels the one-frame candidate.
-        assert_eq!(rx.ingest(&ours[1]), Ingest::Accepted);
-        assert_eq!(rx.ingest(&theirs[0]), Ingest::Rejected);
-        assert_eq!(rx.ingest(&ours[2]), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&ours.packet(0)), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&theirs.packet(0)), Ingest::Rejected);
+        // Returning to the active stream cancels the one-packet candidate.
+        assert_eq!(rx.ingest_packet(&ours.packet(1)), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&theirs.packet(0)), Ingest::Rejected);
+        assert_eq!(rx.ingest_packet(&ours.packet(2)), Ingest::Accepted);
     }
 
     #[test]
     fn two_valid_headers_move_the_eye_to_a_new_stream() {
-        let old = encode_named(&[1u8; 4000], "", "application/zip", M1.0, M1.1, 111, 0.5).unwrap();
+        let old = ReferenceEncoder::new(
+            &[1u8; 4000],
+            "",
+            "application/zip",
+            ReferenceProfile::V27,
+            111,
+            0.5,
+        )
+        .unwrap();
         let object = vec![2u8; 4000];
-        let new = encode_named(&object, "", "application/zip", M1.0, M1.1, 222, 0.5).unwrap();
+        let new = ReferenceEncoder::new(
+            &object,
+            "",
+            "application/zip",
+            ReferenceProfile::V27,
+            222,
+            0.5,
+        )
+        .unwrap();
         let mut rx = Receiver::new();
 
-        assert_eq!(rx.ingest(&old[0]), Ingest::Accepted);
-        assert_eq!(rx.ingest(&old[1]), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&old.packet(0)), Ingest::Accepted);
+        assert_eq!(rx.ingest_packet(&old.packet(1)), Ingest::Accepted);
         assert_eq!(rx.progress().0, 1);
 
-        // One pulse could be a foreign screen briefly crossing the camera.
-        assert_eq!(rx.ingest(&new[0]), Ingest::Rejected);
+        // One packet could be a foreign screen briefly crossing the camera.
+        assert_eq!(rx.ingest_packet(&new.packet(0)), Ingest::Rejected);
         assert_eq!(rx.progress().0, 1);
         // The second CRC-valid header is intent. It resets the old progress and
-        // absorbs this pulse as the first contribution to the new stream.
-        assert_eq!(rx.ingest(&new[0]), Ingest::Accepted);
-        assert_eq!(rx.progress().0, 0); // pulse 0 is the manifest
+        // absorbs this packet as the first contribution to the new stream.
+        assert_eq!(rx.ingest_packet(&new.packet(0)), Ingest::Accepted);
+        assert_eq!(rx.progress().0, 0); // packet 0 is the manifest
         assert_eq!(
             rx.manifest().unwrap().hash,
             *blake3::hash(&object).as_bytes()
         );
 
-        for pulse in &new {
-            rx.ingest(pulse);
+        for index in 0..new.packet_count() {
+            rx.ingest_packet(&new.packet(index));
             if rx.is_complete() {
                 break;
             }
@@ -1301,16 +853,27 @@ mod tests {
     #[test]
     fn useful_compression_shortens_the_stream_and_restores_the_original() {
         let object = "chromatophore pulse\n".repeat(5000).into_bytes();
-        let compressed =
-            StreamEncoder::new(&object, "notes.txt", "text/plain", M1.0, M1.1, 7, 0.2).unwrap();
-        let raw = StreamEncoder::new(&object, "notes.txt", "application/zip", M1.0, M1.1, 8, 0.2)
-            .unwrap();
+        let compressed = ReferenceEncoder::new(
+            &object,
+            "notes.txt",
+            "text/plain",
+            ReferenceProfile::V27,
+            7,
+            0.2,
+        )
+        .unwrap();
+        let raw = ReferenceEncoder::new(
+            &object,
+            "notes.txt",
+            "application/zip",
+            ReferenceProfile::V27,
+            8,
+            0.2,
+        )
+        .unwrap();
 
-        assert!(compressed.pulse_count() * 10 < raw.pulse_count());
-        let pulses: Vec<_> = (0..compressed.pulse_count())
-            .map(|index| compressed.pulse(index).unwrap())
-            .collect();
-        let rx = absorb_all(&pulses);
+        assert!(compressed.packet_count() < raw.packet_count());
+        let rx = absorb_all(&compressed);
         assert_eq!(
             rx.manifest().unwrap().compression,
             ObjectCompression::Deflate
@@ -1322,14 +885,8 @@ mod tests {
     proptest! {
         #[test]
         fn object_roundtrips(data in prop::collection::vec(any::<u8>(), 0..4096)) {
-            let pulses = encode(&data, M1.0, M1.1, 1, 0.2).unwrap();
-            prop_assert_eq!(absorb_all(&pulses).finish().unwrap(), data);
-        }
-
-        #[test]
-        fn object_roundtrips_in_colour(data in prop::collection::vec(any::<u8>(), 0..20000)) {
-            let pulses = encode(&data, M3.0, M3.1, 1, 0.2).unwrap();
-            prop_assert_eq!(absorb_all(&pulses).finish().unwrap(), data);
+            let skin = encode(&data, 1, 0.2);
+            prop_assert_eq!(absorb_all(&skin).finish().unwrap(), data);
         }
 
         /// Names and mime types survive the trip exactly, whatever they are.
@@ -1338,8 +895,10 @@ mod tests {
             name in "[a-zA-Z0-9._ -]{0,40}",
             mime in "[a-z]{0,10}(/[a-z0-9.+-]{1,15})?",
         ) {
-            let pulses = encode_named(&[7u8; 600], &name, &mime, M1.0, M1.1, 6, 0.0).unwrap();
-            let rx = absorb_all(&pulses);
+            let skin = ReferenceEncoder::new(
+                &[7u8; 600], &name, &mime, ReferenceProfile::V27, 6, 0.0,
+            ).unwrap();
+            let rx = absorb_all(&skin);
             let manifest = rx.manifest().expect("manifest always travels");
             prop_assert_eq!(&manifest.name, &name);
             prop_assert_eq!(&manifest.mime, &mime);

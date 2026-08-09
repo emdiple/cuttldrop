@@ -2,8 +2,6 @@
 resolver = "3"
 members = [
     "crates/cuttl-codec",
-    "crates/cuttl-sim",
-    "crates/cuttl-cli",
     "crates/cuttl-wasm",
 ]
 
@@ -14,31 +12,19 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 cuttl-codec = { path = "crates/cuttl-codec" }
-cuttl-sim = { path = "crates/cuttl-sim" }
 
 raptorq = "2.0"    # outer fountain layer, RFC 6330 (DESIGN.md §1a)
 blake3 = "1.8"     # whole-object integrity (DESIGN.md §3c)
-crc32fast = "1.5"  # per-symbol error->erasure gate (DESIGN.md §1b)
+crc32fast = "1.5"  # per-packet error->erasure gate (DESIGN.md §1b)
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 thiserror = "2"
-
-# Inner RS layer (DESIGN.md §1b): GF(2^8), 255-byte blocks, byte symbols, no_std.
-# Explicitly NOT reed-solomon-32 -- despite the name that crate works in GF(2^5)
-# with 31-symbol, 5-bit blocks, so it would mean repacking every byte and running
-# ~90 blocks for one colour pulse. This is the GF(2^8) original it was forked from.
-reed-solomon = "0.2"
-
-image = { version = "0.25", default-features = false, features = ["png"] }
-clap = { version = "4", features = ["derive"] }
-anyhow = "1"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 
-# The simulator is the M0 deliverable and runs thousands of frames per test.
-# Unoptimised code makes `cargo test` unusably slow — and that applies to our
-# own crates too, now that the channel does per-pixel blur and noise.
+# RaptorQ's intermediate-symbol solve is real linear algebra; unoptimised
+# code makes the round-trip tests needlessly slow.
 [profile.test]
 opt-level = 2
 
