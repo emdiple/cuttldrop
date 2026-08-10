@@ -1,0 +1,138 @@
+// The detection half of the eye — one worker of a small pool.
+//
+// Each instance owns a ZXing reader and nothing else: it turns one captured
+// frame into whatever payloads its symbols carried and hands them straight
+// back. No stream state lives here — that is the sink worker's job — which
+// is exactly what makes it safe to run several of these side by side on one
+// camera feed.
+
+import type { FromDecoder, QuadPoint, ToDecoder, Transport } from "./protocol.js";
+import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
+import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
+import { RGB_CHANNELS } from "./qr-reference.js";
+
+// The DOM lib types `self` as a Window; this is the shape a dedicated worker
+// actually has, narrowed to what this file uses.
+const scope = self as unknown as {
+  postMessage(message: FromDecoder, transfer?: Transferable[]): void;
+  onmessage: ((event: MessageEvent<ToDecoder>) => void) | null;
+};
+
+let transport: Transport = "qr";
+let prepared = false;
+
+const ZXING_READ: Parameters<typeof readBarcodes>[1] = {
+  formats: ["QRCode"],
+  maxNumberOfSymbols: 1,
+};
+
+/**
+ * Scratch for channel separation, reused across channels and frames.
+ *
+ * Three fresh RGBA buffers per capture would churn ~25 MB of garbage per
+ * frame at 1920 wide. `readBarcodes` copies the pixels into the ZXing heap
+ * before it returns, so one buffer can safely serve every channel in turn.
+ */
+let channelScratch: Uint8ClampedArray<ArrayBuffer> | null = null;
+
+/** One channel of an RGBA frame, replicated to grey so ZXing's luminance
+ * conversion reads exactly that channel. */
+function channelImage(
+  rgba: Uint8ClampedArray<ArrayBuffer>,
+  width: number,
+  height: number,
+  channel: number,
+): ImageData {
+  if (!channelScratch || channelScratch.length !== rgba.length) {
+    channelScratch = new Uint8ClampedArray(rgba.length);
+    for (let alpha = 3; alpha < rgba.length; alpha += 4) channelScratch[alpha] = 255;
+  }
+  const out = channelScratch;
+  for (let at = 0; at < rgba.length; at += 4) {
+    const value = rgba[at + channel];
+    out[at] = value;
+    out[at + 1] = value;
+    out[at + 2] = value;
+  }
+  return new ImageData(out, width, height);
+}
+
+/**
+ * Read every QR symbol one captured frame carries.
+ *
+ * The black-and-white transport reads the frame once; the RGB transport
+ * separates the three colour channels and reads each as an independent
+ * standard symbol. A channel lost to crosstalk simply decodes nothing — it
+ * shortens the harvest, never poisons it.
+ *
+ * The quad is where ZXing saw a symbol, kept even when its payload could not
+ * be read — locating and reading fail separately, and the page draws that
+ * difference. In RGB mode the channels share one geometry, so the first
+ * channel to locate speaks for the frame.
+ */
+async function decodeFrame(
+  rgba: Uint8ClampedArray<ArrayBuffer>,
+  width: number,
+  height: number,
+): Promise<{ payloads: Uint8Array[]; quad: QuadPoint[] | null }> {
+  const images =
+    transport === "qr-rgb"
+      ? Array.from({ length: RGB_CHANNELS }, (_, c) => () => channelImage(rgba, width, height, c))
+      : [() => new ImageData(rgba, width, height)];
+
+  const payloads: Uint8Array[] = [];
+  let quad: QuadPoint[] | null = null;
+  for (const image of images) {
+    const results = await readBarcodes(image(), ZXING_READ);
+    const located = results[0];
+    if (located && !quad) {
+      const { topLeft, topRight, bottomRight, bottomLeft } = located.position;
+      quad = [topLeft, topRight, bottomRight, bottomLeft].map((p) => ({ x: p.x, y: p.y }));
+    }
+    const decoded = results.find((result) => result.isValid && result.bytes.length > 0);
+    if (decoded) payloads.push(decoded.bytes);
+  }
+  return { payloads, quad };
+}
+
+async function handle(message: ToDecoder): Promise<void> {
+  if (message.kind === "init") {
+    transport = message.transport;
+    // Re-inits only retune the transport; ZXing itself is prepared once.
+    if (!prepared) {
+      prepared = true;
+      await prepareZXingModule({
+        overrides: {
+          // Never accept the package default CDN URL. The transfer must
+          // remain as air-gapped as its premise once the page is loaded, and
+          // Vite emits this URL as a local build asset.
+          locateFile: (path, prefix) =>
+            path.endsWith(".wasm") ? zxingReaderWasm : prefix + path,
+        },
+      });
+      // Instantiation is expensive enough to make the first camera frame look
+      // broken. Warm it with a disposable image before the camera starts.
+      await readBarcodes(new ImageData(8, 8), { formats: ["QRCode"] }).catch(() => []);
+    }
+    scope.postMessage({ kind: "ready" });
+    return;
+  }
+
+  const rgba = new Uint8ClampedArray(message.buffer);
+  const { payloads, quad } = await decodeFrame(rgba, message.width, message.height);
+  // Payloads are a few KB each and ZXing owns their buffers' provenance —
+  // cloned, not transferred; a detached heap is not worth saving 3 KB.
+  scope.postMessage({
+    kind: "decoded",
+    payloads,
+    quad,
+    frameWidth: message.width,
+    frameHeight: message.height,
+  });
+}
+
+scope.onmessage = (event) => {
+  handle(event.data).catch((error: unknown) => {
+    scope.postMessage({ kind: "error", message: `Decode failed: ${error}` });
+  });
+};

@@ -138,10 +138,12 @@ colour only ever adds payload on top of a symbol a plain reader could refuse. If
 black-and-white works in a physical setup and RGB does not, the camera's colour handling
 is implicated — the ladder is an experiment you can climb one variable at a time.
 
-**The eye sheds load rather than queueing it.** Decoding runs in a worker; frames cross
-as transferred buffers, and a frame captured while the worker is busy is dropped — the
-skin repeats everything anyway. A rateless stream has no packet you cannot afford to
-miss.
+**The eye sheds load rather than queueing it.** ZXing detection runs in a small pool of
+workers — frames are independent, so they pipeline across cores, and the three passes an
+RGB frame costs no longer serialize the stream — while a single sink worker owns the
+stream state behind them. Frames cross as transferred buffers, and a frame captured
+while every decoder is busy is dropped — the skin repeats everything anyway. A rateless
+stream has no packet you cannot afford to miss.
 
 **The human is the back channel.** Nothing adapts automatically, because nothing can. The
 eye displays `FILL THE FRAME` / `HOLD STILL`, and a person acts on it. That is a real,

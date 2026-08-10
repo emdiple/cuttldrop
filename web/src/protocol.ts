@@ -1,9 +1,16 @@
-// Messages between the eye page and its decode worker.
+// Messages between the eye page and its workers.
 //
-// The page owns the camera; the worker owns ZXing and the WASM ReferenceEye.
-// Frames cross as *transferred* ArrayBuffers — no copy — and any frame
-// captured while the worker is still chewing is dropped on the page side: a
-// decoder that falls behind a live camera must shed load, not queue it.
+// Decoding is split so it can scale. A small pool of ZXing workers turns
+// captured frames into decoded payloads — that is the expensive part, and
+// frames are independent, so they pipeline across cores. A single sink worker
+// owns the WASM ReferenceEye: the CRC gate, the fountain and BLAKE3 need one
+// authoritative copy of the stream state. The page routes between the two,
+// owns the camera, and keeps the human informed.
+//
+// Frames cross to the decoders as *transferred* ArrayBuffers — no copy — and
+// a frame captured while every decoder is chewing is dropped on the page
+// side: a pipeline that falls behind a live camera must shed load, not queue
+// it. The fountain makes the drop free; the skin repeats everything.
 
 import type { Outcome } from "../pkg/cuttl_wasm.js";
 
@@ -22,26 +29,55 @@ export interface QuadPoint {
   y: number;
 }
 
-/** Page → worker. Frames only start once `ready` has come back. */
-export type ToWorker =
+/** Page → decoder. Frames only start once its `ready` has come back. */
+export type ToDecoder =
   | { kind: "init"; transport: Transport }
   | { kind: "frame"; buffer: ArrayBuffer; width: number; height: number };
 
-/** Worker → page: `ready` once, one `status` per frame, `complete` at most once. */
-export type FromWorker =
+/** Decoder → page: one `decoded` per frame, whatever it found. */
+export type FromDecoder =
+  | { kind: "ready" }
+  | { kind: "error"; message: string }
+  | {
+      kind: "decoded";
+      /**
+       * Every payload ZXing could read out of the frame — at most one for
+       * the black-and-white transport, up to three in RGB mode. Not yet
+       * packets: nothing here has crossed the CRC gate.
+       */
+      payloads: Uint8Array[];
+      /**
+       * Corners of the symbol ZXing located this frame — TL, TR, BR, BL — or
+       * null when nothing was found. Present even when no payload could be
+       * read: "seen but unreadable" is exactly what the page's overlay needs
+       * to distinguish from "not seen".
+       */
+      quad: QuadPoint[] | null;
+      /** Dimensions of the captured frame the quad is measured in. */
+      frameWidth: number;
+      frameHeight: number;
+    };
+
+/** Page → sink. `init` builds a fresh stream state; `ingest` is one frame's harvest. */
+export type ToSink =
+  | { kind: "init" }
+  | {
+      kind: "ingest";
+      payloads: Uint8Array[];
+      /** Passed through untouched so `status` can echo where the symbol was. */
+      quad: QuadPoint[] | null;
+      frameWidth: number;
+      frameHeight: number;
+    };
+
+/** Sink → page: `ready` once per init, one `status` per frame, `complete` at most once. */
+export type FromSink =
   | { kind: "ready" }
   | { kind: "error"; message: string }
   | {
       kind: "status";
       outcome: Outcome;
-      /**
-       * Corners of the symbol ZXing located this frame — TL, TR, BR, BL — or
-       * null when nothing was found. Present even when the payload was then
-       * rejected: "seen but unreadable" is exactly what the page's overlay
-       * needs to distinguish from "not seen".
-       */
       quad: QuadPoint[] | null;
-      /** Dimensions of the captured frame the quad is measured in. */
       frameWidth: number;
       frameHeight: number;
       symbols: number;

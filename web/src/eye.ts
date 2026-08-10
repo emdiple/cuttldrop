@@ -1,13 +1,15 @@
 // The eye: read QR frames off a camera and rebuild the file.
 //
-// Split across two threads. This file owns the camera, the capture loop and
-// the feedback overlay; decoding — ZXing plus the WASM packet sink — lives in
-// eye-worker.ts, so a slow frame can never stutter the video or the overlay.
-// Frames cross as transferred buffers, and a frame captured while the worker
-// is busy is simply dropped — the skin repeats everything anyway.
+// Split across threads. This file owns the camera, the capture loop and the
+// feedback overlay; ZXing detection runs in a small pool of zxing-worker.ts
+// instances, and every payload they decode funnels into the one packet sink
+// in eye-worker.ts — so a slow frame can never stutter the video or the
+// overlay. Frames cross as transferred buffers, and a frame captured while
+// every decoder is busy is simply dropped — the skin repeats everything
+// anyway.
 
 import { Outcome } from "../pkg/cuttl_wasm.js";
-import type { FromWorker, ToWorker, Transport } from "./protocol.js";
+import type { FromDecoder, FromSink, ToDecoder, ToSink, Transport } from "./protocol.js";
 import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.js";
 
 /**
@@ -66,15 +68,38 @@ function receiverState(state: "ready" | "scanning" | "attention" | "complete"): 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
 
-const worker = new Worker(new URL("./eye-worker.ts", import.meta.url), {
+/**
+ * How many ZXing workers run side by side.
+ *
+ * Decode throughput, not camera rate, is what caps goodput — an RGB frame
+ * costs three ZXing passes, and with a single worker every frame captured
+ * while it chewed was shed. Frames are independent (a fountain has no
+ * ordering), so they pipeline across a small pool instead; the cap leaves
+ * cores for the camera pipeline, the sink and the page itself.
+ */
+const DECODER_POOL = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 4) - 2));
+
+interface Decoder {
+  worker: Worker;
+  /** Free for a frame — false from dispatch until its `decoded` comes back. */
+  idle: boolean;
+}
+
+const decoders: Decoder[] = Array.from({ length: DECODER_POOL }, () => ({
+  worker: new Worker(new URL("./zxing-worker.ts", import.meta.url), { type: "module" }),
+  idle: false,
+}));
+const decoderPost = (decoder: Decoder, message: ToDecoder, transfer: Transferable[] = []) =>
+  decoder.worker.postMessage(message, transfer);
+
+/** The one worker owning stream state; every decoded payload funnels here. */
+const sink = new Worker(new URL("./eye-worker.ts", import.meta.url), {
   type: "module",
 });
-const post = (message: ToWorker, transfer: Transferable[] = []) =>
-  worker.postMessage(message, transfer);
+const sinkPost = (message: ToSink) => sink.postMessage(message);
 
 const recent: Outcome[] = [];
-let last: Extract<FromWorker, { kind: "status" }> | null = null;
-let busy = false;
+let last: Extract<FromSink, { kind: "status" }> | null = null;
 let done = false;
 
 function currentTransport(): Transport {
@@ -85,9 +110,9 @@ function currentTransport(): Transport {
  * Rolling event rate over the last [`RATE_WINDOW`] seconds.
  *
  * Two of these run: one on captures, one on decodes. The *gap* between them is
- * the load the worker shed — frames dropped by the `busy` flag are invisible
- * everywhere else, and "capture 40, decode 12" is the difference between a
- * camera problem and a CPU problem.
+ * the load the pool shed — frames dropped because no decoder was free are
+ * invisible everywhere else, and "capture 40, decode 12" is the difference
+ * between a camera problem and a CPU problem.
  */
 class Rate {
   private readonly stamps: number[] = [];
@@ -177,7 +202,8 @@ let baseCameraMode = "";
 
 function showCameraMode(): void {
   if (!baseCameraMode) return;
-  cameraMode.textContent = `${baseCameraMode} · decoding at ${work.width || WORK_WIDTH}px wide`;
+  const workers = `${DECODER_POOL} decode worker${DECODER_POOL === 1 ? "" : "s"}`;
+  cameraMode.textContent = `${baseCameraMode} · decoding at ${work.width || WORK_WIDTH}px wide · ${workers}`;
 }
 
 function meter(now: number): void {
@@ -234,7 +260,7 @@ function lockDrop(): void {
  * offset per axis. The quad updates at the decode rate, not the display rate;
  * the CSS fade covers the frames in between.
  */
-function trackSymbol(message: Extract<FromWorker, { kind: "status" }>): void {
+function trackSymbol(message: Extract<FromSink, { kind: "status" }>): void {
   if (!message.quad || done) {
     lockDrop();
     return;
@@ -314,17 +340,19 @@ function sized(): boolean {
 
 function capture(): void {
   if (done) return;
-  // Counted even when dropped: this is the camera's rate, and a frame the
-  // worker was too busy to take still arrived.
+  // Counted even when dropped: this is the camera's rate, and a frame no
+  // decoder was free to take still arrived.
   captureRate.mark(performance.now());
-  if (busy || !sized()) return;
+  const free = decoders.find((decoder) => decoder.idle);
+  if (!free || !sized()) return;
 
   workCtx.drawImage(video, 0, 0, work.width, work.height);
   const frame = workCtx.getImageData(0, 0, work.width, work.height);
-  busy = true;
-  // Transferred, not copied: the worker borrows these bytes as RGBA directly,
-  // and the next capture allocates a fresh buffer.
-  post(
+  free.idle = false;
+  // Transferred, not copied: the decoder borrows these bytes as RGBA
+  // directly, and the next capture allocates a fresh buffer.
+  decoderPost(
+    free,
     { kind: "frame", buffer: frame.data.buffer, width: work.width, height: work.height },
     [frame.data.buffer],
   );
@@ -336,7 +364,7 @@ function capture(): void {
  * Every `pump` carries the generation it started in and stops the moment that
  * stops being current. Without it, a second successful `start()` — which the
  * retry path now makes reachable — leaves the first loop running against a
- * dead video element, and the two race for the `busy` flag: captures double,
+ * dead video element, and the two race for the decoder pool: captures double,
  * decode rate halves, and the readouts blame the camera. decimen shipped this
  * bug and fixed it with the same counter (R7).
  */
@@ -457,13 +485,15 @@ async function openCamera(): Promise<MediaStream> {
  * This is how the browser half gets tested without a second device: put the
  * skin in its own window, share that window here, and every stage downstream is
  * the one that runs for real — rVFC pacing, the transferred-buffer hop to the
- * worker, locate, homography, sampling, RS, the CRC gate, the fountain, BLAKE3.
+ * decoder pool, ZXing detection, channel separation in RGB mode, the CRC
+ * gate, the fountain, BLAKE3.
  *
  * What it deliberately does *not* test is the optics: no perspective, no
  * rolling-shutter tear, no glare, no lens blur, no auto-exposure fighting a
- * strobing panel. Those are exactly the things `cuttl-sim` models and the M1
- * observable exists to measure. A pass here means the software is right; it
- * says nothing about whether a camera can read the screen.
+ * strobing panel — and no colour crosstalk between a screen's subpixels and
+ * a camera's Bayer filter, the open question over the RGB mode. A pass here
+ * means the software is right; it says nothing about whether a camera can
+ * read the screen.
  */
 async function openScreen(): Promise<MediaStream> {
   const fps = wantedFps();
@@ -534,7 +564,7 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
 }
 
 /**
- * Resolves when the worker has its WASM up.
+ * Resolves when every worker has its WASM up.
  *
  * The camera used to start on this signal. It cannot: iOS wants a *user
  * gesture* behind `getUserMedia` and `play()`, and a page-load prompt is the
@@ -545,6 +575,12 @@ let workerReady!: () => void;
 const ready = new Promise<void>((resolve) => {
   workerReady = resolve;
 });
+/** Counts first-boot `ready` replies: every decoder plus the sink. */
+let waitingReady = decoders.length + 1;
+const markReady = () => {
+  waitingReady -= 1;
+  if (waitingReady === 0) workerReady();
+};
 
 /** Present on desktop, absent on every iOS browser. */
 const hasScreenCapture =
@@ -585,14 +621,15 @@ function stopReceiving(): void {
   void awake.release();
   lockDrop();
   done = false;
-  busy = false;
   last = null;
   recent.length = 0;
   newFrames = 0;
   dupFrames = 0;
   firstSymbolAt = null;
   baseCameraMode = "";
-  post({ kind: "init", transport: currentTransport() });
+  // A fresh stream state. The decoders hold no state beyond the transport,
+  // which cannot have changed while the camera held the select disabled.
+  sinkPost({ kind: "init" });
   receiverState("ready");
   hint.textContent = "Point this camera at the sending screen";
   progress.textContent = "Waiting for the first pulse";
@@ -624,20 +661,52 @@ transport.addEventListener("change", () => {
   progress.textContent = "Waiting for the first pulse";
   counters.textContent = "";
   barFill.style.width = "0%";
-  post({ kind: "init", transport: currentTransport() });
+  for (const decoder of decoders) {
+    decoderPost(decoder, { kind: "init", transport: currentTransport() });
+  }
+  sinkPost({ kind: "init" });
 });
 
-worker.onmessage = (event: MessageEvent<FromWorker>) => {
+for (const decoder of decoders) {
+  decoder.worker.onmessage = (event: MessageEvent<FromDecoder>) => {
+    const message = event.data;
+    switch (message.kind) {
+      case "ready":
+        decoder.idle = true;
+        markReady();
+        break;
+      case "error":
+        // Recover the slot — a decoder that failed one frame takes the next.
+        decoder.idle = true;
+        hint.textContent = message.message;
+        break;
+      case "decoded":
+        decoder.idle = true;
+        // A result still in flight when the camera was stopped would report
+        // into a stream state that has already been reset; drop it here.
+        if (done || !video.srcObject) break;
+        sinkPost({
+          kind: "ingest",
+          payloads: message.payloads,
+          quad: message.quad,
+          frameWidth: message.frameWidth,
+          frameHeight: message.frameHeight,
+        });
+        break;
+    }
+  };
+}
+
+sink.onmessage = (event: MessageEvent<FromSink>) => {
   const message = event.data;
   switch (message.kind) {
     case "ready":
-      workerReady();
+      markReady();
       break;
     case "error":
       hint.textContent = message.message;
       break;
     case "status": {
-      busy = false;
       // A frame still in flight when the camera was stopped reports into a
       // page that has already been reset; drop it rather than repaint it.
       if (!video.srcObject) break;
@@ -664,4 +733,7 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
   }
 };
 
-post({ kind: "init", transport: currentTransport() });
+for (const decoder of decoders) {
+  decoderPost(decoder, { kind: "init", transport: currentTransport() });
+}
+sinkPost({ kind: "init" });
