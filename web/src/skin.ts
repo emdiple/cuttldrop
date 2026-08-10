@@ -68,6 +68,14 @@ const PROFILE_RATE: Record<string, number> = {
   rgb27: 15,
   rgb35: 12,
   rgb40: 10,
+  // The hardened rungs paint the same geometry as their L counterpart, so
+  // the eye's cost per frame is identical and the defaults carry over.
+  qr27m: 24,
+  qr35m: 20,
+  qr40m: 15,
+  rgb27m: 15,
+  rgb35m: 12,
+  rgb40m: 10,
 };
 
 /**
@@ -333,7 +341,8 @@ async function prepare(chosen: File): Promise<void> {
   }
   detail.textContent =
     `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
-    `${skin.packetCount} QR packets at version ${skin.qrVersion}-L` +
+    `${skin.packetCount} QR packets at version ` +
+    `${skin.qrVersion}-${referenceProfile(skin.profile).eccLevel}` +
     (referenceChannels === RGB_CHANNELS ? " · 3 per frame across R/G/B" : "");
   // A short loop is the one thing that can starve a transfer outright: the
   // fountain has too few distinct symbols to route around a bad frame. The

@@ -21,7 +21,7 @@ RGB mode even strobes colour.
 | Transport: RaptorQ fountain, per-packet CRC gate, periodic manifest | done |
 | Mandatory BLAKE3 verify | done — files arrive named, typed, and hash-checked |
 | Adaptive compression | done — raw DEFLATE only when it pays for itself |
-| QR ladder | fixed standard QR v27/v35/v40-L writer + local ZXing reader |
+| QR ladder | fixed standard QR v27/v35/v40 writer, L and hardened-M rungs, local ZXing reader |
 | QR RGB colour mode | three standard symbols multiplexed into R/G/B per frame, 3× payload |
 | Optical seam test | every packet write→ZXing→ingest in Node, b/w and RGB, all rungs |
 | Product interface | responsive role flow, drag/drop skin, live eye states |
@@ -49,8 +49,11 @@ modules at the camera. The **QR RGB** rungs multiplex three standard symbols of 
 version into the red, green and blue channels of a single frame, for three packets — up
 to 8.8 KB — per refresh. Function patterns coincide across same-version symbols, so
 finders, timing and alignment stay black and ZXing detects each separated channel as an
-ordinary QR code. Match the mode in the eye's receiver menu before starting the camera:
-black-and-white reads one symbol per frame, QR RGB reads each colour channel as its own.
+ordinary QR code. Every rung also has a **hardened** ECC-M variant: same geometry,
+~24% less payload, double the codeword correction — for cameras that hand back
+marginal frames rather than cleanly good or ruined ones. Match the mode in the eye's
+receiver menu before starting the camera: black-and-white reads one symbol per frame,
+QR RGB reads each colour channel as its own.
 
 Whatever the rung, the file goes through the same stack: compression when it pays,
 RaptorQ, a periodic manifest, the CRC gate, and mandatory BLAKE3 verification. The ZXing
@@ -173,7 +176,10 @@ which is exactly what the eye's goodput readout exists to settle.
 
 The default rates encode a real trade: denser rungs cost the eye more detection time per
 frame, and the RGB rungs cost three ZXing passes, so their defaults sit lower — the
-tripled payload is what keeps them ahead. Real goodput will sit below every number in
+tripled payload is what keeps them ahead. Each rung's hardened ECC-M variant paints the
+same geometry at the same default rate with ~24% less payload (1,088 / 1,776 / 2,296 B
+per symbol), a price worth paying only if it converts enough rejected frames into
+accepted ones — a question for the camera. Real goodput will sit below every number in
 the last column, because some captures tear, blur, or miss; the eye's telemetry
 (capture rate, decode rate, new/duplicate, goodput, ETA) is the honest scoreboard.
 

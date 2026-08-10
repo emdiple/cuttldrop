@@ -9,14 +9,16 @@
 import QRCode from "qrcode";
 import type { PulseRaster } from "./optical-display.js";
 
-export const QR_REFERENCE_ECC = "L";
 export const QR_REFERENCE_MASK = 4;
 export const QR_QUIET_MODULES = 4;
 
-export type QrReferenceProfile = "qr27" | "qr35" | "qr40";
+export type QrReferenceProfile = "qr27" | "qr35" | "qr40" | "qr27m" | "qr35m" | "qr40m";
 
 export interface QrReferenceSpec {
   readonly version: 27 | 35 | 40;
+  /** L is the capacity half of the ladder; M the hardened half — same
+   * geometry, ~24% less payload, double the codeword correction. */
+  readonly eccLevel: "L" | "M";
   /** RaptorQ application bytes per packet, after its packet id. */
   readonly symbolBytes: number;
   /** QR Model 2 side length: 21 + 4 × (version - 1). */
@@ -29,13 +31,19 @@ export interface QrReferenceSpec {
  * Fixed QR configurations used for optical A/B testing.
  *
  * `symbolBytes` includes the eight-byte RFC 6330 alignment rule. With our
- * 32-byte header/id/CRC envelope, each value fits within byte-mode QR-L
- * capacity without allowing the writer to alter the QR version.
+ * 32-byte header/id/CRC envelope, each value fits within the byte-mode
+ * capacity of its QR version and ECC level without allowing the writer to
+ * alter the QR version. These must agree exactly with the Rust
+ * `ReferenceProfile` table — the seam test rasterizes real packets at every
+ * rung, so a drift fails loudly.
  */
 export const QR_REFERENCE_PROFILES: Record<QrReferenceProfile, QrReferenceSpec> = {
-  qr27: { version: 27, symbolBytes: 1432, modules: 125, size: 133 },
-  qr35: { version: 35, symbolBytes: 2264, modules: 157, size: 165 },
-  qr40: { version: 40, symbolBytes: 2920, modules: 177, size: 185 },
+  qr27: { version: 27, eccLevel: "L", symbolBytes: 1432, modules: 125, size: 133 },
+  qr35: { version: 35, eccLevel: "L", symbolBytes: 2264, modules: 157, size: 165 },
+  qr40: { version: 40, eccLevel: "L", symbolBytes: 2920, modules: 177, size: 185 },
+  qr27m: { version: 27, eccLevel: "M", symbolBytes: 1088, modules: 125, size: 133 },
+  qr35m: { version: 35, eccLevel: "M", symbolBytes: 1776, modules: 157, size: 165 },
+  qr40m: { version: 40, eccLevel: "M", symbolBytes: 2296, modules: 177, size: 185 },
 };
 
 export function referenceProfile(name: string): QrReferenceSpec {
@@ -51,7 +59,7 @@ export const RGB_CHANNELS = 3;
 function moduleMatrix(packet: Uint8Array, spec: QrReferenceSpec, profile: string) {
   const qr = QRCode.create([{ data: packet, mode: "byte" }], {
     version: spec.version,
-    errorCorrectionLevel: QR_REFERENCE_ECC,
+    errorCorrectionLevel: spec.eccLevel,
     maskPattern: QR_REFERENCE_MASK,
   });
   if (qr.modules.size !== spec.modules) {
@@ -60,7 +68,7 @@ function moduleMatrix(packet: Uint8Array, spec: QrReferenceSpec, profile: string
   return qr.modules.data;
 }
 
-/** Turn one Cuttldrop packet into a fixed QR-L raster at one px/module. */
+/** Turn one Cuttldrop packet into a fixed standard-QR raster at one px/module. */
 export function rasterizeReferencePacket(packet: Uint8Array, profile: string): PulseRaster {
   const spec = referenceProfile(profile);
   const modules = moduleMatrix(packet, spec, profile);

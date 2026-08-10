@@ -50,14 +50,20 @@
               <option value="qr27" selected>QR v27-L · 1.4 KB/packet · reliable</option>
               <option value="qr35">QR v35-L · 2.2 KB/packet · dense</option>
               <option value="qr40">QR v40-L · 2.9 KB/packet · maximum density</option>
+              <option value="qr27m">QR v27-M · 1.1 KB/packet · hardened</option>
+              <option value="qr35m">QR v35-M · 1.8 KB/packet · dense, hardened</option>
+              <option value="qr40m">QR v40-M · 2.3 KB/packet · densest, hardened</option>
             </optgroup>
             <optgroup label="QR RGB · one QR per colour channel">
               <option value="rgb27">QR RGB v27-L · 4.3 KB/frame · colour</option>
               <option value="rgb35">QR RGB v35-L · 6.8 KB/frame · dense colour</option>
               <option value="rgb40">QR RGB v40-L · 8.8 KB/frame · maximum colour</option>
+              <option value="rgb27m">QR RGB v27-M · 3.3 KB/frame · colour, hardened</option>
+              <option value="rgb35m">QR RGB v35-M · 5.3 KB/frame · dense, hardened</option>
+              <option value="rgb40m">QR RGB v40-M · 6.9 KB/frame · densest, hardened</option>
             </optgroup>
           </select>
-          <span class="hint">Black-and-white QR is the reliable baseline; QR RGB multiplexes three standard symbols into the colour channels for 3× the payload, at the mercy of the camera's colour handling. Match the mode on the eye.</span>
+          <span class="hint">Black-and-white QR is the reliable baseline; QR RGB multiplexes three standard symbols into the colour channels for 3× the payload, at the mercy of the camera's colour handling. Hardened rungs trade ~24% payload for double the error correction — for captures that arrive marginal rather than clean. Match the mode on the eye.</span>
         </label>
 
         <label class="field">

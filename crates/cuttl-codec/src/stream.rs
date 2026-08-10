@@ -110,13 +110,22 @@ const fn manifest_slots_before(index: usize) -> usize {
 /// The number is the RaptorQ payload, not the complete QR byte payload. Every
 /// packet also carries a 24 B stream header, a 4 B RaptorQ id and a 4 B CRC.
 /// Each value is therefore the largest eight-byte-aligned symbol that fits the
-/// named QR version at L-level ECC when encoded in byte mode with mask 4:
+/// named QR version at its ECC level when encoded in byte mode with mask 4:
 ///
 /// ```text
 /// QR v27-L: 1465 QR bytes - 32 B framing -> 1432 B symbol
 /// QR v35-L: 2303 QR bytes - 32 B framing -> 2264 B symbol
 /// QR v40-L: 2953 QR bytes - 32 B framing -> 2920 B symbol
+/// QR v27-M: 1125 QR bytes - 32 B framing -> 1088 B symbol
+/// QR v35-M: 1809 QR bytes - 32 B framing -> 1776 B symbol
+/// QR v40-M: 2331 QR bytes - 32 B framing -> 2296 B symbol
 /// ```
+///
+/// The M rungs are the *hardened* half of the ladder: same geometry as their
+/// L counterpart, ~24% less payload, double the codeword correction. They
+/// exist for captures that arrive marginal rather than cleanly good or
+/// ruined — whether a physical camera produces such frames is exactly what
+/// the ladder is for finding out.
 ///
 /// Alignment is deliberately applied here rather than relying on RaptorQ to
 /// round down invisibly. That keeps the QR writer's fixed dimensions a hard
@@ -126,24 +135,37 @@ pub enum ReferenceProfile {
     V27,
     V35,
     V40,
+    V27M,
+    V35M,
+    V40M,
 }
 
 impl ReferenceProfile {
-    pub const ALL: [Self; 3] = [Self::V27, Self::V35, Self::V40];
+    pub const ALL: [Self; 6] = [
+        Self::V27,
+        Self::V35,
+        Self::V40,
+        Self::V27M,
+        Self::V35M,
+        Self::V40M,
+    ];
 
     pub const fn name(self) -> &'static str {
         match self {
             Self::V27 => "qr27",
             Self::V35 => "qr35",
             Self::V40 => "qr40",
+            Self::V27M => "qr27m",
+            Self::V35M => "qr35m",
+            Self::V40M => "qr40m",
         }
     }
 
     pub const fn version(self) -> u8 {
         match self {
-            Self::V27 => 27,
-            Self::V35 => 35,
-            Self::V40 => 40,
+            Self::V27 | Self::V27M => 27,
+            Self::V35 | Self::V35M => 35,
+            Self::V40 | Self::V40M => 40,
         }
     }
 
@@ -152,6 +174,9 @@ impl ReferenceProfile {
             Self::V27 => 1432,
             Self::V35 => 2264,
             Self::V40 => 2920,
+            Self::V27M => 1088,
+            Self::V35M => 1776,
+            Self::V40M => 2296,
         }
     }
 

@@ -56,7 +56,7 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
   // relying on the writer to silently enlarge the visual carrier.
   const qr = QRCode.create([{ data: first, mode: "byte" }], {
     version: spec.version,
-    errorCorrectionLevel: "L",
+    errorCorrectionLevel: spec.eccLevel,
     maskPattern: 4,
   });
   assert.equal(qr.modules.size, spec.modules, `${profile} escaped its fixed QR version`);
