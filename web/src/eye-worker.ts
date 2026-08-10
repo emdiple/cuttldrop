@@ -8,7 +8,7 @@
 // not the page.
 
 import init, { Outcome, ReferenceEye } from "../pkg/cuttl_wasm.js";
-import type { FromSink, QuadPoint, ToSink } from "./protocol.js";
+import type { FromSink, QuadPoint, ToSink } from "./protocol.ts";
 
 // The DOM lib types `self` as a Window; this is the shape a dedicated worker
 // actually has, narrowed to what this file uses.

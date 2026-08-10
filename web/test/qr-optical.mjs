@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import {
+  QR_QUIET_MODULES,
   QR_REFERENCE_PROFILES,
   RGB_CHANNELS,
   TILE_COUNT,
@@ -27,6 +28,7 @@ import {
 } from "../src/qr-reference.ts";
 import { channelToGrey } from "../src/rgb-channel.ts";
 import { READER_OPTIONS } from "../src/reader-options.ts";
+import { applyUnmix, calibrateFrame } from "../src/rgb-calibration.ts";
 
 const pkg = new URL("../pkg/cuttl_wasm.js", import.meta.url);
 const wasm = new URL("../pkg/cuttl_wasm_bg.wasm", import.meta.url);
@@ -109,9 +111,12 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
       profile,
     );
     frames += 1;
-    // The frame must actually be colored: some pixel dark in one channel and
-    // light in another, or the channels have collapsed into one symbol.
-    for (let at = 0; at < raster.rgba.length && !colored; at += 4) {
+    // The frame must actually be colored *inside the symbol*: some module
+    // dark in one channel and light in another, or the channels collapsed
+    // into one symbol. Bounded to the square symbol region deliberately —
+    // the calibration strip below it is colored by construction and would
+    // make a whole-frame check pass vacuously.
+    for (let at = 0; at < raster.width * raster.width * 4 && !colored; at += 4) {
       colored = new Set([raster.rgba[at], raster.rgba[at + 1], raster.rgba[at + 2]]).size > 1;
     }
     for (let channel = 0; channel < RGB_CHANNELS && !done; channel += 1) {
@@ -179,6 +184,84 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
   assert.deepEqual(eye.takeObject(), object, "crosstalked round trip differs");
   console.log(
     `ok — ${Math.round(LEAK * 100)}% crosstalk and ${FLOOR}..${CEIL} compression undone by the contrast stretch`,
+  );
+}
+
+{
+  // Past ~25% leak the channels change ORDER: a module black here but white
+  // in the other two channels captures *brighter* than its opposite, and no
+  // monotone per-channel transform — no stretch, no threshold — can undo an
+  // order swap. The calibration strip can: its pure-colour patches measure
+  // the mixing matrix directly and inverting it restores the channels. This
+  // drives the eye's actual recovery path with the worker's own helpers.
+  const LEAK = 0.3;
+  const FLOOR = 96;
+  const CEIL = 190;
+  const spec = QR_REFERENCE_PROFILES.qr27;
+  const skin = new ReferenceSkin(object, NAME, MIME, "qr27", 0xca11b, 0.5);
+  const eye = new ReferenceEye();
+  let next = 0;
+  const take = () => {
+    const packet = skin.packet(next);
+    next = (next + 1) % skin.packetCount;
+    return packet;
+  };
+  const capture = (raster) => {
+    const mixed = new Uint8ClampedArray(raster.rgba.length);
+    for (let at = 0; at < raster.rgba.length; at += 4) {
+      for (let c = 0; c < RGB_CHANNELS; c += 1) {
+        const own = raster.rgba[at + c];
+        const others = raster.rgba[at + ((c + 1) % 3)] + raster.rgba[at + ((c + 2) % 3)];
+        const leaked = own * (1 - 2 * LEAK) + others * LEAK;
+        mixed[at + c] = FLOOR + (leaked * (CEIL - FLOOR)) / 255;
+      }
+      mixed[at + 3] = 255;
+    }
+    return mixed;
+  };
+  // The symbol's outer corners — what ZXing's quad reports on a real frame.
+  const edge = QR_QUIET_MODULES;
+  const quad = [
+    { x: edge, y: edge },
+    { x: edge + spec.modules, y: edge },
+    { x: edge + spec.modules, y: edge + spec.modules },
+    { x: edge, y: edge + spec.modules },
+  ];
+
+  const first = capture(rasterizeRgbReferencePackets(Array.from({ length: RGB_CHANNELS }, take), "qr27"));
+  const width = spec.size;
+  const height = spec.size + 4;
+  // The stretch alone must fail here — that is the whole reason the strip
+  // exists. If this ever starts passing, the leak model got weaker, not the
+  // transport stronger; move the threshold, don't delete the assertion.
+  const raw = [];
+  for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
+    raw.push(await decodeRaster(channelPlane(first, channel), width, height));
+  }
+  assert.ok(raw.some((bytes) => !bytes), "30% leak should defeat the per-channel stretch");
+
+  next = 0; // replay the stream through the calibrated path
+  let frames = 0;
+  let done = false;
+  const corrected = new Uint8ClampedArray(width * height * 4);
+  while (!done) {
+    assert.ok(frames <= skin.packetCount, "calibrated RGB never completed");
+    const mixed = capture(
+      rasterizeRgbReferencePackets(Array.from({ length: RGB_CHANNELS }, take), "qr27"),
+    );
+    frames += 1;
+    const unmix = calibrateFrame(mixed, width, height, quad, [spec.modules]);
+    assert.ok(unmix, `frame ${frames}: the calibration strip did not solve`);
+    applyUnmix(mixed, unmix, corrected);
+    for (let channel = 0; channel < RGB_CHANNELS && !done; channel += 1) {
+      const bytes = await decodeRaster(channelPlane(corrected, channel), width, height);
+      assert.ok(bytes, `calibrated frame ${frames} channel ${channel} did not decode`);
+      done = eye.ingest(bytes) === Outcome.Completed;
+    }
+  }
+  assert.deepEqual(eye.takeObject(), object, "calibrated round trip differs");
+  console.log(
+    `ok — ${Math.round(LEAK * 100)}% crosstalk defeats the stretch; the calibration strip undoes it`,
   );
 }
 

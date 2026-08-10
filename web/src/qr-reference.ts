@@ -7,7 +7,7 @@
  */
 
 import QRCode from "qrcode";
-import type { PulseRaster } from "./optical-display.js";
+import type { PulseRaster } from "./optical-display.ts";
 
 export const QR_REFERENCE_MASK = 4;
 export const QR_QUIET_MODULES = 4;
@@ -59,6 +59,32 @@ export const RGB_CHANNELS = 3;
 export const TILE_GRID = 2;
 /** Symbols per tiled frame. */
 export const TILE_COUNT = TILE_GRID * TILE_GRID;
+
+/**
+ * The calibration strip under every RGB symbol: five patches — pure red,
+ * green, blue, black, white — spanning the symbol's width.
+ *
+ * A screen's primaries land smeared across a camera's colour dyes, and past
+ * ~25% leak the channels *reorder*: a module black in this channel but white
+ * in the others captures brighter than its opposite, and no per-channel
+ * stretch or threshold can undo a reordering. The patches give the eye the
+ * mixing matrix itself, measured in-frame every frame — solved and inverted
+ * in rgb-calibration.ts. Black and white anchor the offset and validate the
+ * solve.
+ */
+export const CALIBRATION_PATCHES = 5;
+/** Patch height in modules. */
+export const CALIBRATION_ROWS = 3;
+/** Extra raster rows an RGB frame carries: the patches plus a white margin. */
+export const CALIBRATION_STRIP_MODULES = CALIBRATION_ROWS + 1;
+/** Patch colours in strip order: R, G, B, K, W. */
+export const CALIBRATION_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  [255, 0, 0],
+  [0, 255, 0],
+  [0, 0, 255],
+  [0, 0, 0],
+  [255, 255, 255],
+];
 
 /** Encode one packet at a fixed version, or throw if it would not fit. */
 function moduleMatrix(packet: Uint8Array, spec: QrReferenceSpec, profile: string) {
@@ -115,9 +141,8 @@ export function rasterizeRgbReferencePackets(
     throw new Error(`RGB reference frame needs ${RGB_CHANNELS} packets, got ${packets.length}`);
   }
   const spec = referenceProfile(profile);
-  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(
-    spec.size * spec.size * 4,
-  );
+  const height = spec.size + CALIBRATION_STRIP_MODULES;
+  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(spec.size * height * 4);
   rgba.fill(255); // white quiet zone in every channel
   for (let channel = 0; channel < RGB_CHANNELS; channel += 1) {
     const modules = moduleMatrix(packets[channel], spec, profile);
@@ -128,7 +153,23 @@ export function rasterizeRgbReferencePackets(
       }
     }
   }
-  return { width: spec.size, height: spec.size, rgba };
+  // The calibration strip sits below the symbol's own quiet zone — the
+  // reader still sees its required four white modules, and the eye finds
+  // the patches at a fixed offset from the corners ZXing reports.
+  for (let patch = 0; patch < CALIBRATION_PATCHES; patch += 1) {
+    const from = QR_QUIET_MODULES + Math.floor((patch * spec.modules) / CALIBRATION_PATCHES);
+    const to = QR_QUIET_MODULES + Math.floor(((patch + 1) * spec.modules) / CALIBRATION_PATCHES);
+    const [red, green, blue] = CALIBRATION_COLORS[patch];
+    for (let y = spec.size; y < spec.size + CALIBRATION_ROWS; y += 1) {
+      for (let x = from; x < to; x += 1) {
+        const at = (y * spec.size + x) * 4;
+        rgba[at] = red;
+        rgba[at + 1] = green;
+        rgba[at + 2] = blue;
+      }
+    }
+  }
+  return { width: spec.size, height, rgba };
 }
 
 /**
@@ -154,22 +195,26 @@ export function rasterizeTiledReferencePackets(
       `tiled reference frame needs ${TILE_COUNT * channels} packets, got ${packets.length}`,
     );
   }
-  const spec = referenceProfile(profile);
-  const side = spec.size * TILE_GRID;
-  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(side * side * 4);
+  const cells = Array.from({ length: TILE_COUNT }, (_, tile) => {
+    const group = packets.slice(tile * channels, (tile + 1) * channels);
+    return channels === RGB_CHANNELS
+      ? rasterizeRgbReferencePackets(group, profile)
+      : rasterizeReferencePacket(group[0], profile);
+  });
+  // RGB cells are taller than they are wide — the calibration strip rides
+  // below each tile's symbol — so the grid tracks both cell dimensions.
+  const width = cells[0].width * TILE_GRID;
+  const height = cells[0].height * TILE_GRID;
+  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(width * height * 4);
   rgba.fill(255);
   for (let tile = 0; tile < TILE_COUNT; tile += 1) {
-    const group = packets.slice(tile * channels, (tile + 1) * channels);
-    const cell =
-      channels === RGB_CHANNELS
-        ? rasterizeRgbReferencePackets(group, profile)
-        : rasterizeReferencePacket(group[0], profile);
-    const originX = (tile % TILE_GRID) * spec.size;
-    const originY = Math.floor(tile / TILE_GRID) * spec.size;
+    const cell = cells[tile];
+    const originX = (tile % TILE_GRID) * cell.width;
+    const originY = Math.floor(tile / TILE_GRID) * cell.height;
     for (let y = 0; y < cell.height; y += 1) {
       const from = y * cell.width * 4;
-      rgba.set(cell.rgba.subarray(from, from + cell.width * 4), ((originY + y) * side + originX) * 4);
+      rgba.set(cell.rgba.subarray(from, from + cell.width * 4), ((originY + y) * width + originX) * 4);
     }
   }
-  return { width: side, height: side, rgba };
+  return { width, height, rgba };
 }

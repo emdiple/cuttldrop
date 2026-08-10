@@ -6,12 +6,13 @@
 // is exactly what makes it safe to run several of these side by side on one
 // camera feed.
 
-import type { FromDecoder, QuadPoint, ToDecoder, Transport } from "./protocol.js";
+import type { FromDecoder, QuadPoint, ToDecoder, Transport } from "./protocol.ts";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
-import { RGB_CHANNELS, TILE_COUNT } from "./qr-reference.js";
-import { channelToGrey } from "./rgb-channel.js";
-import { READER_OPTIONS } from "./reader-options.js";
+import { QR_REFERENCE_PROFILES, RGB_CHANNELS, TILE_COUNT } from "./qr-reference.ts";
+import { channelToGrey } from "./rgb-channel.ts";
+import { READER_OPTIONS } from "./reader-options.ts";
+import { type Unmix, applyUnmix, calibrateFrame } from "./rgb-calibration.ts";
 
 // The DOM lib types `self` as a Window; this is the shape a dedicated worker
 // actually has, narrowed to what this file uses.
@@ -26,6 +27,21 @@ let prepared = false;
 /** The reader options for the current transport: tiled frames carry up to
  * [`TILE_COUNT`] symbols per image, everything else exactly one. */
 let readOptions = READER_OPTIONS;
+
+/** Module counts the calibration probe must consider; the strip's offset
+ * below the symbol depends on the rung, which this worker never learns. */
+const MODULE_CANDIDATES = [
+  ...new Set(Object.values(QR_REFERENCE_PROFILES).map((spec) => spec.modules)),
+];
+
+/** The last colour calibration that survived its white check. */
+let unmix: Unmix | null = null;
+/** Where a symbol was last seen, in *source* pixels — next frame's strip
+ * is sampled from there before any decode is attempted, which is what lets
+ * calibration bootstrap when crosstalk is too strong to decode raw. */
+let lastQuad: QuadPoint[] | null = null;
+/** Scratch for the unmixed frame, reused like `channelScratch`. */
+let unmixScratch: Uint8ClampedArray<ArrayBuffer> | null = null;
 
 /** Grow-only raster target for reading transferred ImageBitmaps back. */
 let rasterCanvas: OffscreenCanvas | null = null;
@@ -118,6 +134,9 @@ async function handle(message: ToDecoder): Promise<void> {
     readOptions = transport.includes("tile")
       ? { ...READER_OPTIONS, maxNumberOfSymbols: TILE_COUNT }
       : READER_OPTIONS;
+    // A new stream may be a new screen and a new camera pose.
+    unmix = null;
+    lastQuad = null;
     // Re-inits only retune the transport; ZXing itself is prepared once.
     if (!prepared) {
       prepared = true;
@@ -138,12 +157,41 @@ async function handle(message: ToDecoder): Promise<void> {
     return;
   }
 
-  const rgba =
+  let rgba =
     message.bitmap !== undefined
       ? bitmapToRgba(message.bitmap)
       : message.buffer !== undefined
         ? new Uint8ClampedArray(message.buffer)
         : null;
+  // Colour calibration, from the *previous* frame's quad: the strip is
+  // sampled before any decode, which is what lets it bootstrap when the
+  // crosstalk is too strong to decode anything raw — the finder patterns
+  // are black in every channel, so ZXing keeps locating (and reporting the
+  // quad) long after payloads stop surviving.
+  if (rgba && transport.includes("rgb")) {
+    if (lastQuad) {
+      const frameQuad = lastQuad.map((p) => ({
+        x: (p.x - message.originX) / message.scale,
+        y: (p.y - message.originY) / message.scale,
+      }));
+      const measured = calibrateFrame(
+        rgba,
+        message.width,
+        message.height,
+        frameQuad,
+        MODULE_CANDIDATES,
+      );
+      if (measured) unmix = measured;
+    }
+    if (unmix) {
+      if (!unmixScratch || unmixScratch.length !== rgba.length) {
+        unmixScratch = new Uint8ClampedArray(rgba.length);
+      }
+      applyUnmix(rgba, unmix, unmixScratch);
+      rgba = unmixScratch;
+    }
+  }
+
   // A frame with no pixels cannot happen from the page as written — but a
   // silent return here would leak the page's pool slot forever, so answer
   // with an empty harvest instead.
@@ -157,6 +205,7 @@ async function handle(message: ToDecoder): Promise<void> {
       x: message.originX + p.x * message.scale,
       y: message.originY + p.y * message.scale,
     })) ?? null;
+  if (mapped) lastQuad = mapped;
   // Payloads are a few KB each and ZXing owns their buffers' provenance —
   // cloned, not transferred; a detached heap is not worth saving 3 KB.
   scope.postMessage({

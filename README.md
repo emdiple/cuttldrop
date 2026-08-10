@@ -23,6 +23,7 @@ RGB mode even strobes colour.
 | Adaptive compression | done — raw DEFLATE only when it pays for itself |
 | QR ladder | fixed standard QR v27/v35/v40 writer, L and hardened-M rungs, local ZXing reader |
 | QR RGB colour mode | three standard symbols multiplexed into R/G/B per frame, 3× payload |
+| RGB colour calibration | a five-patch strip under every RGB symbol; the eye inverts the measured 3×3 crosstalk per frame |
 | QR tiled mode | a 2×2 grid of independent symbols per frame, alone or × RGB |
 | Optical seam test | every packet write→ZXing→ingest in Node, b/w and RGB, all rungs |
 | Product interface | responsive role flow, drag/drop skin, live eye states |
@@ -146,6 +147,18 @@ standard-QR geometry: the mature detector, finders and quiet zone are untouched,
 colour only ever adds payload on top of a symbol a plain reader could refuse. If
 black-and-white works in a physical setup and RGB does not, the camera's colour handling
 is implicated — the ladder is an experiment you can climb one variable at a time.
+
+Crosstalk gets two answers, in escalating order. Each separated channel is
+contrast-stretched against in-frame references (finders are black and the quiet zone
+white in every channel). But past ~25% leak the channels *reorder* — "black here, white
+elsewhere" captures brighter than its opposite — and no per-channel transform survives
+that, which is why every RGB frame carries a **calibration strip**: five patches (pure
+R, G, B, black, white) under the symbol. The eye projects the patch positions from the
+corner quad it already tracks, measures the screen-to-sensor mixing matrix, checks the
+solve against the white patch, and inverts it per frame — bootstrapping without a
+single decoded packet, because the finder patterns stay locatable in any channel long
+after payloads stop surviving. The seam test drives both paths: 20% leak falls to the
+stretch alone, 30% defeats it and is undone by the strip.
 
 **The eye sheds load rather than queueing it.** ZXing detection runs in a small pool of
 workers — frames are independent, so they pipeline across cores, and the three passes an

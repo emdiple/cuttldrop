@@ -4,9 +4,10 @@
 // things a browser does better: reading a file, sizing a canvas, and pacing.
 
 import init, { ReferenceSkin } from "../pkg/cuttl_wasm.js";
-import { PulsePacer, fitPhysicalScale } from "./optical-display.js";
-import { ScreenAwake } from "./platform.js";
+import { PulsePacer, fitPhysicalScale } from "./optical-display.ts";
+import { ScreenAwake } from "./platform.ts";
 import {
+  CALIBRATION_STRIP_MODULES,
   RGB_CHANNELS,
   TILE_COUNT,
   TILE_GRID,
@@ -14,7 +15,7 @@ import {
   rasterizeRgbReferencePackets,
   rasterizeTiledReferencePackets,
   referenceProfile,
-} from "./qr-reference.js";
+} from "./qr-reference.ts";
 
 /// Repair symbols per source symbol. The loop is longer, so a receiver that
 /// missed a frame waits for a *different* one rather than the same one again.
@@ -150,12 +151,14 @@ function overlayRoom(): number {
   return Math.max(0, Math.ceil(bottom - status.getBoundingClientRect().top));
 }
 
-/** Display dimensions: QR modules plus quiet zones, times the tile grid. */
+/** Display dimensions: QR modules plus quiet zones, times the tile grid —
+ * and RGB frames are taller by their calibration strip. */
 function rasterSize(): { cols: number; rows: number } {
   if (!skin) return { cols: 1, rows: 1 };
   const { size } = referenceProfile(skin.profile);
-  const side = size * (referenceTiles > 1 ? TILE_GRID : 1);
-  return { cols: side, rows: side };
+  const height = referenceChannels === RGB_CHANNELS ? size + CALIBRATION_STRIP_MODULES : size;
+  const scale = referenceTiles > 1 ? TILE_GRID : 1;
+  return { cols: size * scale, rows: height * scale };
 }
 
 function frameCount(): number {

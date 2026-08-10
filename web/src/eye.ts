@@ -16,8 +16,8 @@ import type {
   ToDecoder,
   ToSink,
   Transport,
-} from "./protocol.js";
-import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.js";
+} from "./protocol.ts";
+import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.ts";
 
 /**
  * Working width for the full-frame *search* pass, and the ceiling for
