@@ -11,6 +11,7 @@ import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
 import { RGB_CHANNELS } from "./qr-reference.js";
 import { channelToGrey } from "./rgb-channel.js";
+import { READER_OPTIONS } from "./reader-options.js";
 
 // The DOM lib types `self` as a Window; this is the shape a dedicated worker
 // actually has, narrowed to what this file uses.
@@ -21,11 +22,6 @@ const scope = self as unknown as {
 
 let transport: Transport = "qr";
 let prepared = false;
-
-const ZXING_READ: Parameters<typeof readBarcodes>[1] = {
-  formats: ["QRCode"],
-  maxNumberOfSymbols: 1,
-};
 
 /**
  * Scratch for channel separation, reused across channels and frames.
@@ -77,7 +73,7 @@ async function decodeFrame(
   const payloads: Uint8Array[] = [];
   let quad: QuadPoint[] | null = null;
   for (const image of images) {
-    const results = await readBarcodes(image(), ZXING_READ);
+    const results = await readBarcodes(image(), READER_OPTIONS);
     const located = results[0];
     if (located && !quad) {
       const { topLeft, topRight, bottomRight, bottomLeft } = located.position;
@@ -106,7 +102,7 @@ async function handle(message: ToDecoder): Promise<void> {
       });
       // Instantiation is expensive enough to make the first camera frame look
       // broken. Warm it with a disposable image before the camera starts.
-      await readBarcodes(new ImageData(8, 8), { formats: ["QRCode"] }).catch(() => []);
+      await readBarcodes(new ImageData(8, 8), READER_OPTIONS).catch(() => []);
     }
     scope.postMessage({ kind: "ready" });
     return;

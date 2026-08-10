@@ -24,6 +24,7 @@ import {
   rasterizeRgbReferencePackets,
 } from "../src/qr-reference.ts";
 import { channelToGrey } from "../src/rgb-channel.ts";
+import { READER_OPTIONS } from "../src/reader-options.ts";
 
 const pkg = new URL("../pkg/cuttl_wasm.js", import.meta.url);
 const wasm = new URL("../pkg/cuttl_wasm_bg.wasm", import.meta.url);
@@ -35,8 +36,9 @@ await init({ module_or_path: await readFile(fileURLToPath(wasm)) });
 const zxingWasm = fileURLToPath(import.meta.resolve("zxing-wasm/reader/zxing_reader.wasm"));
 await prepareZXingModule({ overrides: { wasmBinary: (await readFile(zxingWasm)).buffer } });
 
-// Exactly what the eye worker asks for, so the test exercises the same path.
-const ZXING_READ = { formats: ["QRCode"], maxNumberOfSymbols: 1 };
+// The decode workers' exact options — imported, not copied, so this test
+// cannot silently drift from the path the eye actually runs.
+const ZXING_READ = READER_OPTIONS;
 
 const NAME = "optical.bin";
 const MIME = "application/test";
@@ -175,6 +177,66 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
   assert.deepEqual(eye.takeObject(), object, "crosstalked round trip differs");
   console.log(
     `ok — ${Math.round(LEAK * 100)}% crosstalk and ${FLOOR}..${CEIL} compression undone by the contrast stretch`,
+  );
+}
+
+{
+  // Not an assertion — a scoreboard. Decode the densest rung with the tuned
+  // options and with the library's stock set, so any future knob change has
+  // a number to answer to. Node timings are indicative rather than gospel,
+  // but it is the same WASM the browser runs.
+  const skin = new ReferenceSkin(object, NAME, MIME, "qr40", 0x7e57, 0.5);
+  const rasters = [];
+  for (let i = 0; i < skin.packetCount; i += 1) {
+    rasters.push(rasterizeReferencePacket(skin.packet(i), "qr40"));
+  }
+  const time = async (options) => {
+    const begin = performance.now();
+    for (const raster of rasters) {
+      const results = await readBarcodes(
+        { data: raster.rgba, width: raster.width, height: raster.height },
+        options,
+      );
+      assert.ok(
+        results.some((result) => result.isValid),
+        "benchmark frame failed to decode",
+      );
+    }
+    return performance.now() - begin;
+  };
+  await time(ZXING_READ); // first pass pays one-off warm-up costs; discard it
+  const tuned = await time(ZXING_READ);
+  const stock = await time({ formats: ["QRCode"], maxNumberOfSymbols: 1 });
+  console.log(
+    `ok — qr40 ×${rasters.length}: ${tuned.toFixed(0)} ms tuned vs ${stock.toFixed(0)} ms stock options`,
+  );
+
+  // The knobs earn nothing on a frame that decodes first pass — the fallback
+  // passes they disable never ran. Where they pay is the frame that *fails*,
+  // which is the eye's steady state while the human is still aiming: stock
+  // options exhaust invert and rotate variants before giving up.
+  const noise = new Uint8ClampedArray(1280 * 720 * 4);
+  let rng = 0x5eed;
+  for (let at = 0; at < noise.length; at += 4) {
+    rng ^= rng << 13;
+    rng ^= rng >>> 17;
+    rng ^= rng << 5;
+    noise[at] = noise[at + 1] = noise[at + 2] = rng & 0xff;
+    noise[at + 3] = 255;
+  }
+  const miss = async (options) => {
+    const begin = performance.now();
+    for (let rep = 0; rep < 5; rep += 1) {
+      const results = await readBarcodes({ data: noise, width: 1280, height: 720 }, options);
+      assert.equal(results.filter((result) => result.isValid).length, 0);
+    }
+    return performance.now() - begin;
+  };
+  await miss(ZXING_READ); // warm-up, as above
+  const tunedMiss = await miss(ZXING_READ);
+  const stockMiss = await miss({ formats: ["QRCode"], maxNumberOfSymbols: 1 });
+  console.log(
+    `ok — 1280×720 miss ×5: ${tunedMiss.toFixed(0)} ms tuned vs ${stockMiss.toFixed(0)} ms stock options`,
   );
 }
 
