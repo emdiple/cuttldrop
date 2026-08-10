@@ -9,7 +9,7 @@
 import type { FromDecoder, QuadPoint, ToDecoder, Transport } from "./protocol.js";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
-import { RGB_CHANNELS } from "./qr-reference.js";
+import { RGB_CHANNELS, TILE_COUNT } from "./qr-reference.js";
 import { channelToGrey } from "./rgb-channel.js";
 import { READER_OPTIONS } from "./reader-options.js";
 
@@ -22,6 +22,10 @@ const scope = self as unknown as {
 
 let transport: Transport = "qr";
 let prepared = false;
+
+/** The reader options for the current transport: tiled frames carry up to
+ * [`TILE_COUNT`] symbols per image, everything else exactly one. */
+let readOptions = READER_OPTIONS;
 
 /** Grow-only raster target for reading transferred ImageBitmaps back. */
 let rasterCanvas: OffscreenCanvas | null = null;
@@ -86,22 +90,24 @@ async function decodeFrame(
   width: number,
   height: number,
 ): Promise<{ payloads: Uint8Array[]; quad: QuadPoint[] | null }> {
-  const images =
-    transport === "qr-rgb"
-      ? Array.from({ length: RGB_CHANNELS }, (_, c) => () => channelImage(rgba, width, height, c))
-      : [() => new ImageData(rgba, width, height)];
+  const images = transport.includes("rgb")
+    ? Array.from({ length: RGB_CHANNELS }, (_, c) => () => channelImage(rgba, width, height, c))
+    : [() => new ImageData(rgba, width, height)];
 
   const payloads: Uint8Array[] = [];
   let quad: QuadPoint[] | null = null;
   for (const image of images) {
-    const results = await readBarcodes(image(), READER_OPTIONS);
+    const results = await readBarcodes(image(), readOptions);
     const located = results[0];
     if (located && !quad) {
       const { topLeft, topRight, bottomRight, bottomLeft } = located.position;
       quad = [topLeft, topRight, bottomRight, bottomLeft].map((p) => ({ x: p.x, y: p.y }));
     }
-    const decoded = results.find((result) => result.isValid && result.bytes.length > 0);
-    if (decoded) payloads.push(decoded.bytes);
+    // Everything readable in the image — one symbol normally, up to four on
+    // the tiled rungs. Each payload crosses the CRC gate on its own.
+    for (const result of results) {
+      if (result.isValid && result.bytes.length > 0) payloads.push(result.bytes);
+    }
   }
   return { payloads, quad };
 }
@@ -109,6 +115,9 @@ async function decodeFrame(
 async function handle(message: ToDecoder): Promise<void> {
   if (message.kind === "init") {
     transport = message.transport;
+    readOptions = transport.includes("tile")
+      ? { ...READER_OPTIONS, maxNumberOfSymbols: TILE_COUNT }
+      : READER_OPTIONS;
     // Re-inits only retune the transport; ZXing itself is prepared once.
     if (!prepared) {
       prepared = true;

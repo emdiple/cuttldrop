@@ -23,6 +23,7 @@ RGB mode even strobes colour.
 | Adaptive compression | done — raw DEFLATE only when it pays for itself |
 | QR ladder | fixed standard QR v27/v35/v40 writer, L and hardened-M rungs, local ZXing reader |
 | QR RGB colour mode | three standard symbols multiplexed into R/G/B per frame, 3× payload |
+| QR tiled mode | a 2×2 grid of independent symbols per frame, alone or × RGB |
 | Optical seam test | every packet write→ZXing→ingest in Node, b/w and RGB, all rungs |
 | Product interface | responsive role flow, drag/drop skin, live eye states |
 | iOS camera handling | exact/ideal fps negotiation, classified errors, retry, wake lock |
@@ -51,9 +52,13 @@ to 8.8 KB — per refresh. Function patterns coincide across same-version symbol
 finders, timing and alignment stay black and ZXing detects each separated channel as an
 ordinary QR code. Every rung also has a **hardened** ECC-M variant: same geometry,
 ~24% less payload, double the codeword correction — for cameras that hand back
-marginal frames rather than cleanly good or ruined ones. Match the mode in the eye's
-receiver menu before starting the camera: black-and-white reads one symbol per frame,
-QR RGB reads each colour channel as its own.
+marginal frames rather than cleanly good or ruined ones. The **tiled** rungs climb
+density the other way: a 2×2 grid of v27 symbols carries nearly double a single v40's
+payload, but each symbol locates and decodes on its own, so glare across one corner
+costs that corner's packets rather than the whole frame — and the grid composes with
+RGB for twelve packets per refresh. Match the mode in the eye's receiver menu before
+starting the camera: black-and-white reads one symbol per frame, QR RGB reads each
+colour channel as its own, tiled modes read the grid.
 
 Whatever the rung, the file goes through the same stack: compression when it pays,
 RaptorQ, a periodic manifest, the CRC gate, and mandatory BLAKE3 verification. The ZXing
@@ -173,6 +178,8 @@ which is exactly what the eye's goodput readout exists to settle.
 | QR RGB v27-L | 125 × 125 × 3 | 4,296 B | 15 Hz | 64.4 KB/s |
 | QR RGB v35-L | 157 × 157 × 3 | 6,792 B | 12 Hz | 81.5 KB/s |
 | QR RGB v40-L | 177 × 177 × 3 | 8,760 B | 10 Hz | 87.6 KB/s |
+| QR tiled 4 × v27-L | 4 × 125 × 125 | 5,728 B | 12 Hz | 68.7 KB/s |
+| QR tiled RGB 4 × v27-L | 4 × 125 × 125 × 3 | 17,184 B | 8 Hz | 137.5 KB/s |
 
 The default rates encode a real trade: denser rungs cost the eye more detection time per
 frame, and the RGB rungs cost three ZXing passes, so their defaults sit lower — the

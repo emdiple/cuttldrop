@@ -62,6 +62,10 @@
               <option value="rgb35m">QR RGB v35-M · 5.3 KB/frame · dense, hardened</option>
               <option value="rgb40m">QR RGB v40-M · 6.9 KB/frame · densest, hardened</option>
             </optgroup>
+            <optgroup label="QR tiled · a 2×2 grid of symbols">
+              <option value="tile27">4 × QR v27-L · 5.7 KB/frame · tiled</option>
+              <option value="tilergb27">4 × QR RGB v27-L · 17.2 KB/frame · tiled colour</option>
+            </optgroup>
           </select>
           <span class="hint">Black-and-white QR is the reliable baseline; QR RGB multiplexes three standard symbols into the colour channels for 3× the payload, at the mercy of the camera's colour handling. Hardened rungs trade ~24% payload for double the error correction — for captures that arrive marginal rather than clean. Match the mode on the eye.</span>
         </label>

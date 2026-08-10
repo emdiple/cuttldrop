@@ -56,8 +56,10 @@
         <select id="transport">
           <option value="qr" selected>QR · standard black and white</option>
           <option value="qr-rgb">QR RGB · one QR per colour channel</option>
+          <option value="qr-tile">QR tiled · a 2×2 grid of symbols</option>
+          <option value="qr-rgb-tile">QR RGB tiled · grid × colour channels</option>
         </select>
-        <span class="hint">Match the skin. Black-and-white reads one symbol per frame; QR RGB reads each colour channel as its own standard QR.</span>
+        <span class="hint">Match the skin. Black-and-white reads one symbol per frame; QR RGB reads each colour channel as its own standard QR; tiled modes read a 2×2 grid of symbols.</span>
       </label>
 
       <div class="action-stack">

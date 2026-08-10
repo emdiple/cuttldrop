@@ -8,8 +8,11 @@ import { PulsePacer, fitPhysicalScale } from "./optical-display.js";
 import { ScreenAwake } from "./platform.js";
 import {
   RGB_CHANNELS,
+  TILE_COUNT,
+  TILE_GRID,
   rasterizeReferencePacket,
   rasterizeRgbReferencePackets,
+  rasterizeTiledReferencePackets,
   referenceProfile,
 } from "./qr-reference.js";
 
@@ -76,22 +79,39 @@ const PROFILE_RATE: Record<string, number> = {
   rgb27m: 15,
   rgb35m: 12,
   rgb40m: 10,
+  // Tiled frames cost the eye up to four locates per pass, so they start
+  // slower still; the multiplied payload is what keeps them ahead.
+  tile27: 12,
+  tilergb27: 8,
 };
 
 /**
  * How a profile menu value maps onto the transport.
  *
  * The WASM `ReferenceSkin` only knows density rungs (`qr27`…): whether the
- * packets travel one per black-and-white frame or three per RGB frame is
- * purely a rasterization decision, so it lives here, not in Rust.
+ * packets travel one per black-and-white frame, three per RGB frame, or in a
+ * 2×2 grid of symbols is purely a rasterization decision, so it lives here,
+ * not in Rust. Values compose as `[tile][rgb]<version>[m]`.
  */
-function referenceChoice(value: string): { rung: string; channels: number } {
-  if (value.startsWith("rgb")) return { rung: `qr${value.slice(3)}`, channels: RGB_CHANNELS };
-  return { rung: value, channels: 1 };
+function referenceChoice(value: string): { rung: string; channels: number; tiles: number } {
+  let rest = value;
+  let tiles = 1;
+  if (rest.startsWith("tile")) {
+    tiles = TILE_COUNT;
+    rest = rest.slice(4);
+  }
+  let channels = 1;
+  if (rest.startsWith("rgb")) {
+    channels = RGB_CHANNELS;
+    rest = rest.slice(3);
+  }
+  return { rung: rest.startsWith("qr") ? rest : `qr${rest}`, channels, tiles };
 }
 
 /** Channels per reference frame for the prepared stream; 1 outside RGB mode. */
 let referenceChannels = 1;
+/** Symbols per reference frame; TILE_COUNT on the tiled rungs. */
+let referenceTiles = 1;
 
 /** One physical pixel per raster cell; the visible canvas is an integer-scaled blit. */
 const raster = document.createElement("canvas");
@@ -130,11 +150,12 @@ function overlayRoom(): number {
   return Math.max(0, Math.ceil(bottom - status.getBoundingClientRect().top));
 }
 
-/** Display dimensions: QR modules plus the four-module quiet zone. */
+/** Display dimensions: QR modules plus quiet zones, times the tile grid. */
 function rasterSize(): { cols: number; rows: number } {
   if (!skin) return { cols: 1, rows: 1 };
   const { size } = referenceProfile(skin.profile);
-  return { cols: size, rows: size };
+  const side = size * (referenceTiles > 1 ? TILE_GRID : 1);
+  return { cols: side, rows: side };
 }
 
 function frameCount(): number {
@@ -200,11 +221,16 @@ function makeFrame(): ImageData {
     nextIndex = (nextIndex + 1) % reference.packetCount;
     return packet;
   };
+  // Consecutive packets share one frame. When the loop length is not a
+  // multiple of the group, the wrap rotates which packets travel together —
+  // a receiver that lost a frame gets those packets back in different
+  // company next loop, which suits a fountain fine.
+  if (referenceTiles > 1) {
+    const packets = Array.from({ length: referenceTiles * referenceChannels }, take);
+    const qr = rasterizeTiledReferencePackets(packets, reference.profile, referenceChannels);
+    return new ImageData(qr.rgba, qr.width, qr.height);
+  }
   if (referenceChannels === RGB_CHANNELS) {
-    // Three consecutive packets share one frame. When the loop length is
-    // not a multiple of three, the wrap rotates which packets travel
-    // together — a receiver that lost a frame gets those packets back in
-    // different company next loop, which suits a fountain fine.
     const packets = Array.from({ length: RGB_CHANNELS }, take);
     const qr = rasterizeRgbReferencePackets(packets, reference.profile);
     return new ImageData(qr.rgba, qr.width, qr.height);
@@ -321,6 +347,7 @@ async function prepare(chosen: File): Promise<void> {
     const reference = referenceChoice(profile.value);
     skin = new ReferenceSkin(bytes, chosen.name, chosen.type, reference.rung, streamId, OVERHEAD);
     referenceChannels = reference.channels;
+    referenceTiles = reference.tiles;
   } catch (error) {
     if (gen !== prepareGen) return;
     detail.textContent = `Could not encode: ${error}`;
@@ -339,11 +366,19 @@ async function prepare(chosen: File): Promise<void> {
     label();
     refit();
   }
+  const perFrame = referenceTiles * referenceChannels;
+  const grouping =
+    perFrame === 1
+      ? ""
+      : referenceTiles > 1
+        ? ` · ${perFrame} per frame — ${TILE_GRID}×${TILE_GRID} grid` +
+          (referenceChannels === RGB_CHANNELS ? " × R/G/B" : "")
+        : " · 3 per frame across R/G/B";
   detail.textContent =
     `${chosen.name} — ${bytes.length.toLocaleString()} B, ` +
     `${skin.packetCount} QR packets at version ` +
     `${skin.qrVersion}-${referenceProfile(skin.profile).eccLevel}` +
-    (referenceChannels === RGB_CHANNELS ? " · 3 per frame across R/G/B" : "");
+    grouping;
   // A short loop is the one thing that can starve a transfer outright: the
   // fountain has too few distinct symbols to route around a bad frame. The
   // skin repeats forever so it recovers, but slowly — worth saying.

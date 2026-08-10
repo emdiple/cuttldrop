@@ -20,8 +20,10 @@ import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import {
   QR_REFERENCE_PROFILES,
   RGB_CHANNELS,
+  TILE_COUNT,
   rasterizeReferencePacket,
   rasterizeRgbReferencePackets,
+  rasterizeTiledReferencePackets,
 } from "../src/qr-reference.ts";
 import { channelToGrey } from "../src/rgb-channel.ts";
 import { READER_OPTIONS } from "../src/reader-options.ts";
@@ -178,6 +180,76 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
   console.log(
     `ok — ${Math.round(LEAK * 100)}% crosstalk and ${FLOOR}..${CEIL} compression undone by the contrast stretch`,
   );
+}
+
+{
+  // The tiled rung: a 2×2 grid of standard symbols, each locating and
+  // decoding independently — and composing with RGB for twelve packets per
+  // frame. Raising maxNumberOfSymbols is the only reader change tiling asks
+  // of ZXing.
+  const TILED_READ = { ...ZXING_READ, maxNumberOfSymbols: TILE_COUNT };
+  const readAll = async (rgba, width, height) => {
+    const results = await readBarcodes({ data: rgba, width, height }, TILED_READ);
+    return results.filter((r) => r.isValid && r.bytes.length > 0).map((r) => r.bytes);
+  };
+
+  let skin = new ReferenceSkin(object, NAME, MIME, "qr27", 0x711e, 0.5);
+  let eye = new ReferenceEye();
+  let next = 0;
+  const take = () => {
+    const packet = skin.packet(next);
+    next = (next + 1) % skin.packetCount;
+    return packet;
+  };
+
+  let frames = 0;
+  let done = false;
+  while (!done) {
+    assert.ok(frames <= skin.packetCount, "tiled b/w never completed");
+    const raster = rasterizeTiledReferencePackets(
+      Array.from({ length: TILE_COUNT }, take),
+      "qr27",
+      1,
+    );
+    frames += 1;
+    const decoded = await readAll(raster.rgba, raster.width, raster.height);
+    assert.equal(decoded.length, TILE_COUNT, `tiled frame ${frames} read ${decoded.length}/4 symbols`);
+    for (const bytes of decoded) {
+      if (eye.ingest(bytes) === Outcome.Completed) {
+        done = true;
+        break;
+      }
+    }
+  }
+  assert.deepEqual(eye.takeObject(), object, "tiled b/w round trip differs");
+  console.log(`ok — qr27 tiled: ${object.length} B through ${frames} four-symbol frames`);
+
+  skin = new ReferenceSkin(object, NAME, MIME, "qr27", 0x711f, 0.5);
+  eye = new ReferenceEye();
+  next = 0;
+  frames = 0;
+  done = false;
+  while (!done) {
+    assert.ok(frames <= skin.packetCount, "tiled RGB never completed");
+    const raster = rasterizeTiledReferencePackets(
+      Array.from({ length: TILE_COUNT * RGB_CHANNELS }, take),
+      "qr27",
+      RGB_CHANNELS,
+    );
+    frames += 1;
+    for (let channel = 0; channel < RGB_CHANNELS && !done; channel += 1) {
+      const decoded = await readAll(channelPlane(raster.rgba, channel), raster.width, raster.height);
+      assert.equal(decoded.length, TILE_COUNT, `tiled RGB channel ${channel} read ${decoded.length}/4`);
+      for (const bytes of decoded) {
+        if (eye.ingest(bytes) === Outcome.Completed) {
+          done = true;
+          break;
+        }
+      }
+    }
+  }
+  assert.deepEqual(eye.takeObject(), object, "tiled RGB round trip differs");
+  console.log(`ok — qr27 RGB tiled: ${object.length} B through ${frames} twelve-packet frames`);
 }
 
 {

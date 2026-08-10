@@ -127,7 +127,9 @@ let roiQuad: QuadPoint[] | null = null;
 let roiSeenAt = 0;
 
 function currentTransport(): Transport {
-  return transport.value === "qr-rgb" ? "qr-rgb" : "qr";
+  const value = transport.value;
+  if (value === "qr-rgb" || value === "qr-tile" || value === "qr-rgb-tile") return value;
+  return "qr";
 }
 
 /**
@@ -505,7 +507,11 @@ function capture(): void {
   const free = decoders.find((decoder) => decoder.idle);
   if (!free || !sized()) return;
 
-  const region = roiRegion(now) ?? wholeRegion();
+  // A tiled frame carries four symbols but the quad marks only one of them —
+  // cropping to it would amputate the other three, so tiled transports
+  // always search the whole frame.
+  const tiled = currentTransport().includes("tile");
+  const region = (tiled ? null : roiRegion(now)) ?? wholeRegion();
   if (bitmapCapture) {
     captureBitmap(free, region);
     return;

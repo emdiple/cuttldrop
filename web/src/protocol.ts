@@ -18,10 +18,12 @@ import type { Outcome } from "../pkg/cuttl_wasm.js";
  * Which optical carrier the eye should read.
  *
  * `qr` is one black-and-white standard QR per frame; `qr-rgb` is three
- * standard QR symbols multiplexed into the R, G and B channels of one frame.
- * Both feed the same `ReferenceEye` packet sink.
+ * standard QR symbols multiplexed into the R, G and B channels of one frame;
+ * the `-tile` variants read a 2×2 grid of symbols per frame (times the
+ * colour channels for `qr-rgb-tile`). All feed the same `ReferenceEye`
+ * packet sink.
  */
-export type Transport = "qr" | "qr-rgb";
+export type Transport = "qr" | "qr-rgb" | "qr-tile" | "qr-rgb-tile";
 
 /** One corner of a located symbol, in captured-frame pixels. */
 export interface QuadPoint {

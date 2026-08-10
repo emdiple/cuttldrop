@@ -55,6 +55,11 @@ export function referenceProfile(name: string): QrReferenceSpec {
 /** QR symbols carried by one colored frame — one per RGB channel. */
 export const RGB_CHANNELS = 3;
 
+/** Side of the tiled rung's symbol grid. */
+export const TILE_GRID = 2;
+/** Symbols per tiled frame. */
+export const TILE_COUNT = TILE_GRID * TILE_GRID;
+
 /** Encode one packet at a fixed version, or throw if it would not fit. */
 function moduleMatrix(packet: Uint8Array, spec: QrReferenceSpec, profile: string) {
   const qr = QRCode.create([{ data: packet, mode: "byte" }], {
@@ -124,4 +129,47 @@ export function rasterizeRgbReferencePackets(
     }
   }
   return { width: spec.size, height: spec.size, rgba };
+}
+
+/**
+ * Turn `TILE_COUNT × channels` packets into a 2×2 grid of standard symbols.
+ *
+ * The tiled rung climbs density the other way: not a bigger symbol, more
+ * small ones. A v27 grid carries nearly double a single v40's payload at a
+ * similar overall module pitch, but each symbol locates and decodes on its
+ * own — glare across one corner costs that corner's packets, never the
+ * frame, where one big symbol is all-or-nothing. Every tile keeps its own
+ * four-module quiet zone, so neighbouring symbols sit eight white modules
+ * apart and an unmodified reader sees four ordinary QR codes. With
+ * `channels` = [`RGB_CHANNELS`] each tile is additionally
+ * colour-multiplexed; packets fill tile by tile, channels within a tile.
+ */
+export function rasterizeTiledReferencePackets(
+  packets: readonly Uint8Array[],
+  profile: string,
+  channels: number,
+): PulseRaster {
+  if (packets.length !== TILE_COUNT * channels) {
+    throw new Error(
+      `tiled reference frame needs ${TILE_COUNT * channels} packets, got ${packets.length}`,
+    );
+  }
+  const spec = referenceProfile(profile);
+  const side = spec.size * TILE_GRID;
+  const rgba: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(side * side * 4);
+  rgba.fill(255);
+  for (let tile = 0; tile < TILE_COUNT; tile += 1) {
+    const group = packets.slice(tile * channels, (tile + 1) * channels);
+    const cell =
+      channels === RGB_CHANNELS
+        ? rasterizeRgbReferencePackets(group, profile)
+        : rasterizeReferencePacket(group[0], profile);
+    const originX = (tile % TILE_GRID) * spec.size;
+    const originY = Math.floor(tile / TILE_GRID) * spec.size;
+    for (let y = 0; y < cell.height; y += 1) {
+      const from = y * cell.width * 4;
+      rgba.set(cell.rgba.subarray(from, from + cell.width * 4), ((originY + y) * side + originX) * 4);
+    }
+  }
+  return { width: side, height: side, rgba };
 }
