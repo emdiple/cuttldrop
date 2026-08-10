@@ -29,6 +29,8 @@ const PULSE_LIFE = 0.9; // seconds
 const AMBIENT_EVERY = 0.4; // seconds between idle cell twinkles
 const AMBIENT_LIFE = 1.8; // twinkle duration
 
+const CORNER = 0.3; // corner radius as a fraction of the cell's size
+
 interface Twinkle {
   index: number;
   age: number;
@@ -44,6 +46,17 @@ const canvas = document.getElementById("chroma-field") as HTMLCanvasElement | nu
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 if (canvas) start(canvas);
+
+/** Path one cell as a rounded square, falling back to a hard square. */
+function cellPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number): void {
+  const half = s / 2;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(cx - half, cy - half, s, s, s * CORNER);
+  } else {
+    ctx.rect(cx - half, cy - half, s, s);
+  }
+}
 
 function start(field: HTMLCanvasElement): void {
   const ctx = field.getContext("2d");
@@ -180,16 +193,16 @@ function start(field: HTMLCanvasElement): void {
         }
 
         const s = size[i];
-        const half = s / 2;
-        ctx.globalAlpha = Math.min(1, s / (SPACING * 0.4)) * 0.92;
+        ctx.globalAlpha = Math.min(1, s / (SPACING * 0.4)) * 0.5;
         const color = PALETTE[colorIndex[i]];
+        cellPath(ctx, cx, cy, s);
         if (hollow[i] === 1 && s > 5) {
           ctx.strokeStyle = color;
           ctx.lineWidth = Math.max(1, s / 7);
-          ctx.strokeRect(cx - half, cy - half, s, s);
+          ctx.stroke();
         } else {
           ctx.fillStyle = color;
-          ctx.fillRect(cx - half, cy - half, s, s);
+          ctx.fill();
         }
       }
     }
@@ -205,7 +218,8 @@ function start(field: HTMLCanvasElement): void {
       const cy = offsetY + Math.floor(i / cols) * SPACING;
       ctx.globalAlpha = envelope * 0.55;
       ctx.fillStyle = PALETTE[colorIndex[i]];
-      ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
+      cellPath(ctx, cx, cy, s);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
   };
