@@ -8,9 +8,10 @@
 // test. The RGB half additionally proves the colour-multiplexing claim: each
 // separated channel of a colored frame is a complete standard QR symbol.
 //
-// What this deliberately does not exercise is the optics — no perspective, no
-// blur, no channel crosstalk from a real screen and sensor. Clean channels
-// here mean the software is right; only a camera can say the rest.
+// What this deliberately does not exercise is the optics — no perspective and
+// no blur, and the channel crosstalk at the end is a linear *model* of a real
+// screen and sensor, not the thing itself. A pass here means the software is
+// right; only a camera can say the rest.
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ import {
   rasterizeReferencePacket,
   rasterizeRgbReferencePackets,
 } from "../src/qr-reference.ts";
+import { channelToGrey } from "../src/rgb-channel.ts";
 
 const pkg = new URL("../pkg/cuttl_wasm.js", import.meta.url);
 const wasm = new URL("../pkg/cuttl_wasm_bg.wasm", import.meta.url);
@@ -57,17 +59,9 @@ async function decodeRaster(rgba, width, height) {
   return decoded?.bytes ?? null;
 }
 
-/** One channel replicated to grey, as the worker separates a colored frame. */
+/** One channel replicated to grey — the exact separation the worker runs. */
 function channelPlane(rgba, channel) {
-  const out = new Uint8ClampedArray(rgba.length);
-  for (let at = 0; at < rgba.length; at += 4) {
-    const value = rgba[at + channel];
-    out[at] = value;
-    out[at + 1] = value;
-    out[at + 2] = value;
-    out[at + 3] = 255;
-  }
-  return out;
+  return channelToGrey(rgba, channel, new Uint8ClampedArray(rgba.length));
 }
 
 for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
@@ -132,6 +126,55 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
   console.log(
     `ok — ${profile} RGB: ${object.length} B through ${frames} colored frames, ` +
       `${spec.symbolBytes * RGB_CHANNELS} B carried per frame`,
+  );
+}
+
+{
+  // A camera never hands the eye clean channels: a screen's primaries and a
+  // sensor's colour dyes overlap, and ambient light plus panel brightness
+  // compress the range. Model that capture — 20% of each neighbouring
+  // channel leaking in, then the whole scale squeezed into 96..190 — and
+  // require the separated channels to still decode. The compression alone
+  // defeats any fixed mid-scale threshold, so this is the contrast stretch
+  // in channelToGrey earning its keep. Linear leak keeps brightness *order*
+  // intact until 25%, where the channels collapse; a real sensor's curve is
+  // the physical test's question.
+  const LEAK = 0.2;
+  const FLOOR = 96;
+  const CEIL = 190;
+  const skin = new ReferenceSkin(object, NAME, MIME, "qr27", 0xbead, 0.5);
+  const eye = new ReferenceEye();
+  let next = 0;
+  const take = () => {
+    const packet = skin.packet(next);
+    next = (next + 1) % skin.packetCount;
+    return packet;
+  };
+  let frames = 0;
+  let done = false;
+  while (!done) {
+    assert.ok(frames <= skin.packetCount, "crosstalked RGB never completed");
+    const raster = rasterizeRgbReferencePackets(Array.from({ length: RGB_CHANNELS }, take), "qr27");
+    frames += 1;
+    const mixed = new Uint8ClampedArray(raster.rgba.length);
+    for (let at = 0; at < raster.rgba.length; at += 4) {
+      for (let c = 0; c < RGB_CHANNELS; c += 1) {
+        const own = raster.rgba[at + c];
+        const others = raster.rgba[at + ((c + 1) % 3)] + raster.rgba[at + ((c + 2) % 3)];
+        const leaked = own * (1 - 2 * LEAK) + others * LEAK;
+        mixed[at + c] = FLOOR + (leaked * (CEIL - FLOOR)) / 255;
+      }
+      mixed[at + 3] = 255;
+    }
+    for (let channel = 0; channel < RGB_CHANNELS && !done; channel += 1) {
+      const bytes = await decodeRaster(channelPlane(mixed, channel), raster.width, raster.height);
+      assert.ok(bytes, `crosstalked frame ${frames} channel ${channel} did not decode`);
+      done = eye.ingest(bytes) === Outcome.Completed;
+    }
+  }
+  assert.deepEqual(eye.takeObject(), object, "crosstalked round trip differs");
+  console.log(
+    `ok — ${Math.round(LEAK * 100)}% crosstalk and ${FLOOR}..${CEIL} compression undone by the contrast stretch`,
   );
 }
 

@@ -10,6 +10,7 @@ import type { FromDecoder, QuadPoint, ToDecoder, Transport } from "./protocol.js
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
 import { RGB_CHANNELS } from "./qr-reference.js";
+import { channelToGrey } from "./rgb-channel.js";
 
 // The DOM lib types `self` as a Window; this is the shape a dedicated worker
 // actually has, narrowed to what this file uses.
@@ -35,8 +36,8 @@ const ZXING_READ: Parameters<typeof readBarcodes>[1] = {
  */
 let channelScratch: Uint8ClampedArray<ArrayBuffer> | null = null;
 
-/** One channel of an RGBA frame, replicated to grey so ZXing's luminance
- * conversion reads exactly that channel. */
+/** One channel of an RGBA frame as grey, contrast-stretched against
+ * channel crosstalk — the details live with `channelToGrey`. */
 function channelImage(
   rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
@@ -45,16 +46,9 @@ function channelImage(
 ): ImageData {
   if (!channelScratch || channelScratch.length !== rgba.length) {
     channelScratch = new Uint8ClampedArray(rgba.length);
-    for (let alpha = 3; alpha < rgba.length; alpha += 4) channelScratch[alpha] = 255;
   }
-  const out = channelScratch;
-  for (let at = 0; at < rgba.length; at += 4) {
-    const value = rgba[at + channel];
-    out[at] = value;
-    out[at + 1] = value;
-    out[at + 2] = value;
-  }
-  return new ImageData(out, width, height);
+  channelToGrey(rgba, channel, channelScratch);
+  return new ImageData(channelScratch, width, height);
 }
 
 /**
