@@ -118,9 +118,10 @@ behind it is the load-bearing piece: it converts whatever survives into a clean
 accept-or-erase decision, which is the one thing the fountain layer can actually repair.
 Nothing unverified ever reaches the decoder — and the **BLAKE3 check** at the very end is
 the only statement about the *file*: the eye holds the expected hash (it rides in the
-manifest, every 8th packet, along with the filename and mime type) and refuses to hand
-anything back until the reconstruction matches. The same manifest is why the eye can
-say *"receiving cuttlefish.pdf — 2.4 MB"* a second after it starts looking.
+manifest, every 8th packet through the head of the loop and every 24th after, along
+with the filename and mime type) and refuses to hand anything back until the
+reconstruction matches. The same manifest is why the eye can say *"receiving
+cuttlefish.pdf — 2.4 MB"* a second after it starts looking.
 
 The skin prepares RaptorQ once and rasterizes packets on demand behind a three-frame
 lookahead; selecting a large file does not materialise its entire repair loop. Before

@@ -15,13 +15,14 @@
 //!
 //! ## The manifest
 //!
-//! Every [`MANIFEST_PERIOD`]-th packet donates its symbol slot to the
-//! [`Manifest`] — name, mime, and the BLAKE3 hash of the object — flagged in
-//! the header and protected by the same CRC as any symbol. The eye can say
-//! *"receiving cuttlefish.pdf — 2.4 MB"* within a second of looking, and
-//! nothing is ever handed back until the reconstruction matches the
-//! manifest's hash (§3c, §3f). The header repeats the hash's first four bytes
-//! in every packet, binding symbols and manifest to one another.
+//! Through the head of the loop, every [`MANIFEST_PERIOD`]-th packet donates
+//! its symbol slot to the [`Manifest`] — name, mime, and the BLAKE3 hash of
+//! the object — flagged in the header and protected by the same CRC as any
+//! symbol; past the head the cadence relaxes to every [`MANIFEST_STEADY`]-th.
+//! The eye can say *"receiving cuttlefish.pdf — 2.4 MB"* within a second of
+//! looking, and nothing is ever handed back until the reconstruction matches
+//! the manifest's hash (§3c, §3f). The header repeats the hash's first four
+//! bytes in every packet, binding symbols and manifest to one another.
 //!
 //! ## The CRC gate
 //!
@@ -60,10 +61,49 @@ const VERSION: u8 = 4;
 /// The packet's payload is the manifest, not a fountain symbol.
 const FLAG_MANIFEST: u8 = 1;
 
-/// Every packet whose index is a multiple of this donates its symbol slot to
-/// the manifest. At 10 packets/s the eye learns the filename within 0.8 s of
-/// looking, whenever it starts; the price is 1/8 of the symbol slots (§3c).
+/// Dense manifest period through the head of the loop: packets 0, 8, 16 and
+/// 24 donate their symbol slots to the manifest. An eye watching from the
+/// start — the common case for a human-coordinated transfer — learns the
+/// filename within the first second, and a small object never leaves the
+/// burst, keeping its manifests exactly this dense throughout (§3c).
 pub const MANIFEST_PERIOD: usize = 8;
+
+/// Steady manifest period past the head burst. A late joiner mid-loop waits
+/// at most this many frames to learn what it is receiving, while a long
+/// stream spends ~4% of its slots on the manifest instead of 12.5% — the
+/// difference goes straight into goodput.
+pub const MANIFEST_STEADY: usize = 24;
+
+/// Last index of the dense head burst.
+const MANIFEST_BURST_END: usize = 24;
+
+// `manifest_slots_before` counts the two schedules separately and needs them
+// to nest evenly.
+const _: () = assert!(MANIFEST_BURST_END.is_multiple_of(MANIFEST_PERIOD));
+const _: () = assert!(MANIFEST_BURST_END.is_multiple_of(MANIFEST_STEADY));
+const _: () = assert!(MANIFEST_STEADY.is_multiple_of(MANIFEST_PERIOD));
+
+/// Does packet `index` donate its symbol slot to the manifest?
+const fn is_manifest_slot(index: usize) -> bool {
+    index.is_multiple_of(MANIFEST_PERIOD)
+        && (index <= MANIFEST_BURST_END || index.is_multiple_of(MANIFEST_STEADY))
+}
+
+/// Manifest slots among indices `0..index` — the offset between a packet
+/// index and the fountain symbol ordinal it carries.
+const fn manifest_slots_before(index: usize) -> usize {
+    let burst_total = MANIFEST_BURST_END / MANIFEST_PERIOD + 1;
+    let dense = index.div_ceil(MANIFEST_PERIOD);
+    let dense = if dense > burst_total {
+        burst_total
+    } else {
+        dense
+    };
+    // Multiples of MANIFEST_STEADY inside the burst are already counted above.
+    let in_burst = MANIFEST_BURST_END / MANIFEST_STEADY + 1;
+    let steady = index.div_ceil(MANIFEST_STEADY).saturating_sub(in_burst);
+    dense + steady
+}
 
 /// Standard-QR density rungs for the transport.
 ///
@@ -286,7 +326,7 @@ impl ReferenceEncoder {
         let mut packets = 0usize;
         let mut slots = 0usize;
         while slots < symbols as usize || packets == 0 {
-            if !packets.is_multiple_of(MANIFEST_PERIOD) {
+            if !is_manifest_slot(packets) {
                 slots += 1;
             }
             packets += 1;
@@ -313,11 +353,10 @@ impl ReferenceEncoder {
     /// One complete QR payload, wrapping around as long as the skin sends.
     pub fn packet(&self, index: usize) -> Vec<u8> {
         let index = index % self.packets;
-        if index.is_multiple_of(MANIFEST_PERIOD) {
+        if is_manifest_slot(index) {
             return frame_packet(&self.header, Framed::Manifest(&self.manifest));
         }
-        let manifests_before = index.div_ceil(MANIFEST_PERIOD);
-        let ordinal = index - manifests_before;
+        let ordinal = index - manifest_slots_before(index);
         debug_assert!(ordinal < self.symbols as usize);
         let symbol = self.fountain.symbol(ordinal as u32);
         frame_packet(&self.header, Framed::Symbol(&symbol))
@@ -708,7 +747,7 @@ mod tests {
         let skin = encode(&object, 2, 1.0);
         let mut rx = Receiver::new();
         for index in 0..skin.packet_count() {
-            if index.is_multiple_of(MANIFEST_PERIOD) {
+            if is_manifest_slot(index) {
                 continue; // withhold every manifest packet
             }
             rx.ingest_packet(&skin.packet(index));
@@ -719,6 +758,30 @@ mod tests {
         // The next manifest packet is all that was missing.
         assert_eq!(rx.ingest_packet(&skin.packet(0)), Ingest::Completed);
         assert_eq!(rx.finish().unwrap(), object);
+    }
+
+    /// The cadence helpers must agree with each other exactly: `packet`
+    /// subtracts `manifest_slots_before` to find a symbol's ordinal, and an
+    /// off-by-one anywhere silently hands the eye the wrong symbol under the
+    /// right index. Walk the whole schedule and check the count at every
+    /// step.
+    #[test]
+    fn manifest_cadence_counts_agree() {
+        let mut seen = 0usize;
+        for index in 0..10_000 {
+            assert_eq!(
+                manifest_slots_before(index),
+                seen,
+                "count drifted at {index}"
+            );
+            if is_manifest_slot(index) {
+                seen += 1;
+            }
+        }
+        // Dense head, sparse steady state.
+        assert!(is_manifest_slot(0) && is_manifest_slot(8) && is_manifest_slot(24));
+        assert!(!is_manifest_slot(32) && !is_manifest_slot(40));
+        assert!(is_manifest_slot(48) && is_manifest_slot(72));
     }
 
     /// With no repair symbols, loss must fail cleanly rather than return wrong
