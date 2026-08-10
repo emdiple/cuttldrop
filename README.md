@@ -141,9 +141,11 @@ is implicated — the ladder is an experiment you can climb one variable at a ti
 **The eye sheds load rather than queueing it.** ZXing detection runs in a small pool of
 workers — frames are independent, so they pipeline across cores, and the three passes an
 RGB frame costs no longer serialize the stream — while a single sink worker owns the
-stream state behind them. Frames cross as transferred buffers, and a frame captured
-while every decoder is busy is dropped — the skin repeats everything anyway. A rateless
-stream has no packet you cannot afford to miss.
+stream state behind them. Frames cross as transferred GPU-backed bitmaps — the pixel
+readback happens in the worker, not on the page's thread — or as plain transferred
+buffers where the platform insists, and a frame captured while every decoder is busy is
+dropped — the skin repeats everything anyway. A rateless stream has no packet you
+cannot afford to miss.
 
 **The human is the back channel.** Nothing adapts automatically, because nothing can. The
 eye displays `FILL THE FRAME` / `HOLD STILL`, and a person acts on it. That is a real,

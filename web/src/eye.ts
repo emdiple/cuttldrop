@@ -4,9 +4,9 @@
 // feedback overlay; ZXing detection runs in a small pool of zxing-worker.ts
 // instances, and every payload they decode funnels into the one packet sink
 // in eye-worker.ts — so a slow frame can never stutter the video or the
-// overlay. Frames cross as transferred buffers, and a frame captured while
-// every decoder is busy is simply dropped — the skin repeats everything
-// anyway.
+// overlay. Frames cross as transferred ImageBitmaps (or RGBA buffers where
+// the platform insists), and a frame captured while every decoder is busy is
+// simply dropped — the skin repeats everything anyway.
 
 import { Outcome } from "../pkg/cuttl_wasm.js";
 import type {
@@ -227,7 +227,8 @@ let baseCameraMode = "";
 function showCameraMode(): void {
   if (!baseCameraMode) return;
   const workers = `${DECODER_POOL} decode worker${DECODER_POOL === 1 ? "" : "s"}`;
-  cameraMode.textContent = `${baseCameraMode} · search at ${work.width || WORK_WIDTH}px wide, crops at source · ${workers}`;
+  const path = bitmapCapture ? "bitmap capture" : "canvas capture";
+  cameraMode.textContent = `${baseCameraMode} · search at ${work.width || WORK_WIDTH}px wide, crops at source · ${workers} · ${path}`;
 }
 
 function meter(now: number): void {
@@ -362,27 +363,32 @@ function sized(): boolean {
   return true;
 }
 
-/** One captured frame plus the mapping from its pixels to source pixels. */
-interface Grab {
-  frame: ImageData;
-  originX: number;
-  originY: number;
+/** A capture region in source pixels, its output size, and the mapping. */
+interface Region {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  outWidth: number;
+  outHeight: number;
   scale: number;
 }
 
-/** Full-frame downscale — the search pass, and the fallback. */
-function grabWhole(): Grab {
-  workCtx.drawImage(video, 0, 0, work.width, work.height);
+/** The whole source frame, downscaled to the search width. */
+function wholeRegion(): Region {
   return {
-    frame: workCtx.getImageData(0, 0, work.width, work.height),
-    originX: 0,
-    originY: 0,
+    left: 0,
+    top: 0,
+    width: video.videoWidth,
+    height: video.videoHeight,
+    outWidth: work.width,
+    outHeight: work.height,
     scale: video.videoWidth / work.width,
   };
 }
 
 /**
- * Crop around the last located symbol, at native source resolution.
+ * The crop around the last located symbol, at native source resolution.
  *
  * The search pass hands ZXing a downscale because it has to look everywhere;
  * once the symbol has been *found*, looking everywhere is waste. Cropping
@@ -391,7 +397,7 @@ function grabWhole(): Grab {
  * that margin. The quad steers for at most `ROI_TTL_MS` after it was last
  * seen, so a lost lock falls back to searching within a couple of frames.
  */
-function grabRoi(now: number): Grab | null {
+function roiRegion(now: number): Region | null {
   if (!roiQuad || now - roiSeenAt > ROI_TTL_MS) return null;
   const xs = roiQuad.map((p) => p.x);
   const ys = roiQuad.map((p) => p.y);
@@ -404,20 +410,90 @@ function grabRoi(now: number): Grab | null {
   if (width < 32 || height < 32) return null;
   // Native resolution unless the crop out-sizes the search pass itself.
   const scale = Math.max(1, width / WORK_WIDTH, height / WORK_WIDTH);
-  const outWidth = Math.round(width / scale);
-  const outHeight = Math.round(height / scale);
-  // Grow-only: a canvas resize is an allocation, and the crop size jitters
-  // with the hand holding the phone. Stale pixels beyond the crop are never
-  // read — getImageData takes exactly the region just drawn.
-  if (roi.width < outWidth) roi.width = outWidth;
-  if (roi.height < outHeight) roi.height = outHeight;
-  roiCtx.drawImage(video, left, top, width, height, 0, 0, outWidth, outHeight);
   return {
-    frame: roiCtx.getImageData(0, 0, outWidth, outHeight),
-    originX: left,
-    originY: top,
+    left,
+    top,
+    width,
+    height,
+    outWidth: Math.round(width / scale),
+    outHeight: Math.round(height / scale),
     scale,
   };
+}
+
+/**
+ * Whether frames are captured as transferred ImageBitmaps instead of RGBA
+ * buffers. The bitmap path keeps crop and scale on the GPU and moves the
+ * pixel readback into the decode worker, so the main thread never blocks on
+ * `getImageData`. Gated on OffscreenCanvas — the worker needs one for the
+ * readback — and demoted permanently the first time the engine refuses a
+ * video source, which older Safari has history of doing.
+ */
+let bitmapCapture =
+  typeof createImageBitmap === "function" && typeof OffscreenCanvas === "function";
+
+/** Canvas fallback: draw and read the region back on the main thread. */
+function grabPixels(region: Region): ImageData {
+  const crop = region.outWidth !== work.width || region.outHeight !== work.height;
+  const canvas = crop ? roi : work;
+  const ctx = crop ? roiCtx : workCtx;
+  if (crop) {
+    // Grow-only: a canvas resize is an allocation, and the crop size jitters
+    // with the hand holding the phone. Stale pixels beyond the crop are
+    // never read — getImageData takes exactly the region just drawn.
+    if (canvas.width < region.outWidth) canvas.width = region.outWidth;
+    if (canvas.height < region.outHeight) canvas.height = region.outHeight;
+  }
+  ctx.drawImage(
+    video,
+    region.left,
+    region.top,
+    region.width,
+    region.height,
+    0,
+    0,
+    region.outWidth,
+    region.outHeight,
+  );
+  return ctx.getImageData(0, 0, region.outWidth, region.outHeight);
+}
+
+function captureBitmap(free: Decoder, region: Region): void {
+  free.idle = false;
+  const gen = captureGen;
+  createImageBitmap(video, region.left, region.top, region.width, region.height, {
+    resizeWidth: region.outWidth,
+    resizeHeight: region.outHeight,
+  }).then(
+    (bitmap) => {
+      // The camera may have stopped while the bitmap was being made.
+      if (done || gen !== captureGen || !video.srcObject) {
+        bitmap.close();
+        free.idle = true;
+        return;
+      }
+      decoderPost(
+        free,
+        {
+          kind: "frame",
+          bitmap,
+          width: region.outWidth,
+          height: region.outHeight,
+          originX: region.left,
+          originY: region.top,
+          scale: region.scale,
+          sourceWidth: video.videoWidth,
+          sourceHeight: video.videoHeight,
+        },
+        [bitmap],
+      );
+    },
+    () => {
+      bitmapCapture = false;
+      free.idle = true;
+      showCameraMode();
+    },
+  );
 }
 
 function capture(): void {
@@ -429,7 +505,12 @@ function capture(): void {
   const free = decoders.find((decoder) => decoder.idle);
   if (!free || !sized()) return;
 
-  const grab = grabRoi(now) ?? grabWhole();
+  const region = roiRegion(now) ?? wholeRegion();
+  if (bitmapCapture) {
+    captureBitmap(free, region);
+    return;
+  }
+  const frame = grabPixels(region);
   free.idle = false;
   // Transferred, not copied: the decoder borrows these bytes as RGBA
   // directly, and the next capture allocates a fresh buffer.
@@ -437,16 +518,16 @@ function capture(): void {
     free,
     {
       kind: "frame",
-      buffer: grab.frame.data.buffer,
-      width: grab.frame.width,
-      height: grab.frame.height,
-      originX: grab.originX,
-      originY: grab.originY,
-      scale: grab.scale,
+      buffer: frame.data.buffer,
+      width: frame.width,
+      height: frame.height,
+      originX: region.left,
+      originY: region.top,
+      scale: region.scale,
       sourceWidth: video.videoWidth,
       sourceHeight: video.videoHeight,
     },
-    [grab.frame.data.buffer],
+    [frame.data.buffer],
   );
 }
 

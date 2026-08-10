@@ -23,6 +23,27 @@ const scope = self as unknown as {
 let transport: Transport = "qr";
 let prepared = false;
 
+/** Grow-only raster target for reading transferred ImageBitmaps back. */
+let rasterCanvas: OffscreenCanvas | null = null;
+let rasterCtx: OffscreenCanvasRenderingContext2D | null = null;
+
+/** Read a transferred ImageBitmap back to RGBA — the readback the page's
+ * bitmap capture path deliberately left to this worker. */
+function bitmapToRgba(bitmap: ImageBitmap): Uint8ClampedArray<ArrayBuffer> {
+  if (!rasterCanvas || rasterCanvas.width < bitmap.width || rasterCanvas.height < bitmap.height) {
+    rasterCanvas = new OffscreenCanvas(
+      Math.max(bitmap.width, rasterCanvas?.width ?? 0),
+      Math.max(bitmap.height, rasterCanvas?.height ?? 0),
+    );
+    rasterCtx = rasterCanvas.getContext("2d", { willReadFrequently: true });
+  }
+  if (!rasterCtx) throw new Error("OffscreenCanvas refused a 2d context");
+  rasterCtx.drawImage(bitmap, 0, 0);
+  const rgba = rasterCtx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+  bitmap.close();
+  return rgba;
+}
+
 /**
  * Scratch for channel separation, reused across channels and frames.
  *
@@ -108,8 +129,18 @@ async function handle(message: ToDecoder): Promise<void> {
     return;
   }
 
-  const rgba = new Uint8ClampedArray(message.buffer);
-  const { payloads, quad } = await decodeFrame(rgba, message.width, message.height);
+  const rgba =
+    message.bitmap !== undefined
+      ? bitmapToRgba(message.bitmap)
+      : message.buffer !== undefined
+        ? new Uint8ClampedArray(message.buffer)
+        : null;
+  // A frame with no pixels cannot happen from the page as written — but a
+  // silent return here would leak the page's pool slot forever, so answer
+  // with an empty harvest instead.
+  const { payloads, quad } = rgba
+    ? await decodeFrame(rgba, message.width, message.height)
+    : { payloads: [], quad: null };
   // ZXing measured the quad in this buffer's pixels; answer in source pixels
   // so the page never cares whether the frame was a downscale or a crop.
   const mapped =

@@ -34,7 +34,16 @@ export type ToDecoder =
   | { kind: "init"; transport: Transport }
   | {
       kind: "frame";
-      buffer: ArrayBuffer;
+      /**
+       * Exactly one of these carries the pixels: a transferred RGBA buffer
+       * from the page's canvas readback, or a transferred ImageBitmap the
+       * decoder reads back itself on an OffscreenCanvas. The bitmap path is
+       * the cheaper one — crop and scale stay on the GPU and the readback
+       * happens off the main thread — and is used whenever the platform
+       * grants it.
+       */
+      buffer?: ArrayBuffer;
+      bitmap?: ImageBitmap;
       width: number;
       height: number;
       /**
