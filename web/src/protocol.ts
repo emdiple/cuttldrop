@@ -32,7 +32,26 @@ export interface QuadPoint {
 /** Page → decoder. Frames only start once its `ready` has come back. */
 export type ToDecoder =
   | { kind: "init"; transport: Transport }
-  | { kind: "frame"; buffer: ArrayBuffer; width: number; height: number };
+  | {
+      kind: "frame";
+      buffer: ArrayBuffer;
+      width: number;
+      height: number;
+      /**
+       * Mapping from this buffer's pixels back to camera-source pixels:
+       * `source = origin + px × scale`. The search path downscales the whole
+       * source frame (origin 0, scale > 1); the region-of-interest path crops
+       * around the last located symbol at native resolution (scale 1). The
+       * decoder answers in source coordinates either way, so the page's
+       * overlay and its next crop never care which path produced a frame.
+       */
+      originX: number;
+      originY: number;
+      scale: number;
+      /** Dimensions of the camera source the mapping lands in. */
+      sourceWidth: number;
+      sourceHeight: number;
+    };
 
 /** Decoder → page: one `decoded` per frame, whatever it found. */
 export type FromDecoder =
@@ -50,10 +69,11 @@ export type FromDecoder =
        * Corners of the symbol ZXing located this frame — TL, TR, BR, BL — or
        * null when nothing was found. Present even when no payload could be
        * read: "seen but unreadable" is exactly what the page's overlay needs
-       * to distinguish from "not seen".
+       * to distinguish from "not seen". Always in camera-source pixels,
+       * whatever crop or downscale the frame arrived as.
        */
       quad: QuadPoint[] | null;
-      /** Dimensions of the captured frame the quad is measured in. */
+      /** Dimensions of the camera source the quad is measured in. */
       frameWidth: number;
       frameHeight: number;
     };

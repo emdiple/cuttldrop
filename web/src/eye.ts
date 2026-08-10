@@ -9,21 +9,38 @@
 // anyway.
 
 import { Outcome } from "../pkg/cuttl_wasm.js";
-import type { FromDecoder, FromSink, ToDecoder, ToSink, Transport } from "./protocol.js";
+import type {
+  FromDecoder,
+  FromSink,
+  QuadPoint,
+  ToDecoder,
+  ToSink,
+  Transport,
+} from "./protocol.js";
 import { ScreenAwake, cameraError, probeCamera, tryConstraint } from "./platform.js";
 
 /**
- * Working resolution for decoding.
+ * Working width for the full-frame *search* pass, and the ceiling for
+ * region-of-interest crops.
  *
- * Not the camera's resolution — ZXing scans the whole frame, so this is the
- * single biggest lever on CPU cost. A v40 symbol is 185 modules across with
- * its quiet zone; at 1280 wide and ~70% frame fill that is ~4.8 px/module,
- * which ZXing's detector handles while keeping three-channel RGB decodes
- * cheap enough to run per frame. The camera is asked to *preserve* a
- * 1920-wide source so the downscale starts from real detail.
+ * Not the camera's resolution — ZXing scans whatever it is handed, so this is
+ * the single biggest lever on CPU cost. While the eye is still hunting, the
+ * whole source frame is downscaled to this width. Once a symbol is located,
+ * capture switches to cropping around it at *native* resolution (`grabRoi`):
+ * a v40 symbol filling 60% of a 1920-wide source jumps from ~4 px/module to
+ * ~6, exactly where its densest modules need the help — and the crop is
+ * smaller than a full frame, so the sharper pass is also the cheaper one.
+ * The camera is asked to *preserve* a 1920-wide source so both paths start
+ * from real detail.
  */
 const WORK_WIDTH = 1280;
 const SOURCE_WIDTH = 1920;
+
+/** How long a located quad keeps steering region-of-interest crops. */
+const ROI_TTL_MS = 1200;
+/** Margin around the located symbol, as a fraction of its larger side —
+ * covers the quiet zone plus a hand-held frame's worth of drift. */
+const ROI_PAD = 0.35;
 
 /** Frames to look back over when deciding what to tell the human. */
 const HINT_WINDOW = 30;
@@ -68,6 +85,10 @@ function receiverState(state: "ready" | "scanning" | "attention" | "complete"): 
 const work = document.createElement("canvas");
 const workCtx = work.getContext("2d", { willReadFrequently: true })!;
 
+/** Crop canvas for the region-of-interest path; grows, never shrinks. */
+const roi = document.createElement("canvas");
+const roiCtx = roi.getContext("2d", { willReadFrequently: true })!;
+
 /**
  * How many ZXing workers run side by side.
  *
@@ -101,6 +122,9 @@ const sinkPost = (message: ToSink) => sink.postMessage(message);
 const recent: Outcome[] = [];
 let last: Extract<FromSink, { kind: "status" }> | null = null;
 let done = false;
+/** Where a symbol was last seen, in source pixels — steers the next crops. */
+let roiQuad: QuadPoint[] | null = null;
+let roiSeenAt = 0;
 
 function currentTransport(): Transport {
   return transport.value === "qr-rgb" ? "qr-rgb" : "qr";
@@ -203,7 +227,7 @@ let baseCameraMode = "";
 function showCameraMode(): void {
   if (!baseCameraMode) return;
   const workers = `${DECODER_POOL} decode worker${DECODER_POOL === 1 ? "" : "s"}`;
-  cameraMode.textContent = `${baseCameraMode} · decoding at ${work.width || WORK_WIDTH}px wide · ${workers}`;
+  cameraMode.textContent = `${baseCameraMode} · search at ${work.width || WORK_WIDTH}px wide, crops at source · ${workers}`;
 }
 
 function meter(now: number): void {
@@ -338,23 +362,91 @@ function sized(): boolean {
   return true;
 }
 
+/** One captured frame plus the mapping from its pixels to source pixels. */
+interface Grab {
+  frame: ImageData;
+  originX: number;
+  originY: number;
+  scale: number;
+}
+
+/** Full-frame downscale — the search pass, and the fallback. */
+function grabWhole(): Grab {
+  workCtx.drawImage(video, 0, 0, work.width, work.height);
+  return {
+    frame: workCtx.getImageData(0, 0, work.width, work.height),
+    originX: 0,
+    originY: 0,
+    scale: video.videoWidth / work.width,
+  };
+}
+
+/**
+ * Crop around the last located symbol, at native source resolution.
+ *
+ * The search pass hands ZXing a downscale because it has to look everywhere;
+ * once the symbol has been *found*, looking everywhere is waste. Cropping
+ * the source instead of downscaling it cuts the pixels ZXing scans and
+ * raises px/module by the whole downscale factor — the dense rungs live on
+ * that margin. The quad steers for at most `ROI_TTL_MS` after it was last
+ * seen, so a lost lock falls back to searching within a couple of frames.
+ */
+function grabRoi(now: number): Grab | null {
+  if (!roiQuad || now - roiSeenAt > ROI_TTL_MS) return null;
+  const xs = roiQuad.map((p) => p.x);
+  const ys = roiQuad.map((p) => p.y);
+  const side = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const pad = side * ROI_PAD;
+  const left = Math.max(0, Math.floor(Math.min(...xs) - pad));
+  const top = Math.max(0, Math.floor(Math.min(...ys) - pad));
+  const width = Math.min(video.videoWidth, Math.ceil(Math.max(...xs) + pad)) - left;
+  const height = Math.min(video.videoHeight, Math.ceil(Math.max(...ys) + pad)) - top;
+  if (width < 32 || height < 32) return null;
+  // Native resolution unless the crop out-sizes the search pass itself.
+  const scale = Math.max(1, width / WORK_WIDTH, height / WORK_WIDTH);
+  const outWidth = Math.round(width / scale);
+  const outHeight = Math.round(height / scale);
+  // Grow-only: a canvas resize is an allocation, and the crop size jitters
+  // with the hand holding the phone. Stale pixels beyond the crop are never
+  // read — getImageData takes exactly the region just drawn.
+  if (roi.width < outWidth) roi.width = outWidth;
+  if (roi.height < outHeight) roi.height = outHeight;
+  roiCtx.drawImage(video, left, top, width, height, 0, 0, outWidth, outHeight);
+  return {
+    frame: roiCtx.getImageData(0, 0, outWidth, outHeight),
+    originX: left,
+    originY: top,
+    scale,
+  };
+}
+
 function capture(): void {
   if (done) return;
+  const now = performance.now();
   // Counted even when dropped: this is the camera's rate, and a frame no
   // decoder was free to take still arrived.
-  captureRate.mark(performance.now());
+  captureRate.mark(now);
   const free = decoders.find((decoder) => decoder.idle);
   if (!free || !sized()) return;
 
-  workCtx.drawImage(video, 0, 0, work.width, work.height);
-  const frame = workCtx.getImageData(0, 0, work.width, work.height);
+  const grab = grabRoi(now) ?? grabWhole();
   free.idle = false;
   // Transferred, not copied: the decoder borrows these bytes as RGBA
   // directly, and the next capture allocates a fresh buffer.
   decoderPost(
     free,
-    { kind: "frame", buffer: frame.data.buffer, width: work.width, height: work.height },
-    [frame.data.buffer],
+    {
+      kind: "frame",
+      buffer: grab.frame.data.buffer,
+      width: grab.frame.width,
+      height: grab.frame.height,
+      originX: grab.originX,
+      originY: grab.originY,
+      scale: grab.scale,
+      sourceWidth: video.videoWidth,
+      sourceHeight: video.videoHeight,
+    },
+    [grab.frame.data.buffer],
   );
 }
 
@@ -622,6 +714,8 @@ function stopReceiving(): void {
   lockDrop();
   done = false;
   last = null;
+  roiQuad = null;
+  roiSeenAt = 0;
   recent.length = 0;
   newFrames = 0;
   dupFrames = 0;
@@ -654,6 +748,8 @@ stopCamera.addEventListener("click", stopReceiving);
 transport.addEventListener("change", () => {
   if (video.srcObject) return;
   last = null;
+  roiQuad = null;
+  roiSeenAt = 0;
   recent.length = 0;
   newFrames = 0;
   dupFrames = 0;
@@ -713,6 +809,11 @@ sink.onmessage = (event: MessageEvent<FromSink>) => {
       last = message;
       const now = performance.now();
       decodeRate.mark(now);
+      // Wherever the symbol was — even unreadable — is where to crop next.
+      if (message.quad) {
+        roiQuad = message.quad;
+        roiSeenAt = now;
+      }
       if (message.outcome === Outcome.Duplicate) dupFrames += 1;
       if (message.outcome === Outcome.Accepted || message.outcome === Outcome.Completed) {
         newFrames += 1;

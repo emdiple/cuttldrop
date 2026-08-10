@@ -120,14 +120,21 @@ async function handle(message: ToDecoder): Promise<void> {
 
   const rgba = new Uint8ClampedArray(message.buffer);
   const { payloads, quad } = await decodeFrame(rgba, message.width, message.height);
+  // ZXing measured the quad in this buffer's pixels; answer in source pixels
+  // so the page never cares whether the frame was a downscale or a crop.
+  const mapped =
+    quad?.map((p) => ({
+      x: message.originX + p.x * message.scale,
+      y: message.originY + p.y * message.scale,
+    })) ?? null;
   // Payloads are a few KB each and ZXing owns their buffers' provenance —
   // cloned, not transferred; a detached heap is not worth saving 3 KB.
   scope.postMessage({
     kind: "decoded",
     payloads,
-    quad,
-    frameWidth: message.width,
-    frameHeight: message.height,
+    quad: mapped,
+    frameWidth: message.sourceWidth,
+    frameHeight: message.sourceHeight,
   });
 }
 
