@@ -5,7 +5,7 @@
 // the feedback overlay. The page keeps the camera and the human.
 
 import init, { Outcome, ReferenceEye } from "../pkg/cuttl_wasm.js";
-import type { FromWorker, ToWorker, Transport } from "./protocol.js";
+import type { FromWorker, QuadPoint, ToWorker, Transport } from "./protocol.js";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import zxingReaderWasm from "zxing-wasm/reader/zxing_reader.wasm?url";
 import { RGB_CHANNELS } from "./qr-reference.js";
@@ -20,10 +20,19 @@ const scope = self as unknown as {
 let eye: ReferenceEye | null = null;
 let transport: Transport = "qr";
 
-function status(outcome: Outcome, decoder: ReferenceEye): FromWorker {
+function status(
+  outcome: Outcome,
+  decoder: ReferenceEye,
+  quad: QuadPoint[] | null,
+  frameWidth: number,
+  frameHeight: number,
+): FromWorker {
   return {
     kind: "status",
     outcome,
+    quad,
+    frameWidth,
+    frameHeight,
     symbols: decoder.symbols,
     needed: decoder.needed,
     rejected: decoder.rejected,
@@ -96,21 +105,32 @@ function rank(outcome: Outcome): number {
  * standard symbol. A channel lost to crosstalk simply decodes nothing — the
  * frame's outcome is the best any channel achieved, and only a frame with no
  * symbol at all counts as a miss.
+ *
+ * The quad is where ZXing saw a symbol, kept even when its payload could not
+ * be used — locating and reading fail separately, and the page draws that
+ * difference. In RGB mode the channels share one geometry, so the first
+ * channel to locate speaks for the frame.
  */
 async function ingestQrFrame(
   qrEye: ReferenceEye,
   rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
   height: number,
-): Promise<Outcome> {
+): Promise<{ outcome: Outcome; quad: QuadPoint[] | null }> {
   const images =
     transport === "qr-rgb"
       ? Array.from({ length: RGB_CHANNELS }, (_, c) => () => channelImage(rgba, width, height, c))
       : [() => new ImageData(rgba, width, height)];
 
   let best: Outcome | null = null;
+  let quad: QuadPoint[] | null = null;
   for (const image of images) {
     const results = await readBarcodes(image(), ZXING_READ);
+    const located = results[0];
+    if (located && !quad) {
+      const { topLeft, topRight, bottomRight, bottomLeft } = located.position;
+      quad = [topLeft, topRight, bottomRight, bottomLeft].map((p) => ({ x: p.x, y: p.y }));
+    }
     const decoded = results.find((result) => result.isValid && result.bytes.length > 0);
     if (!decoded) continue;
     const outcome = qrEye.ingest(decoded.bytes);
@@ -119,9 +139,9 @@ async function ingestQrFrame(
   }
   if (best === null) {
     qrEye.miss();
-    return Outcome.Unlocatable;
+    return { outcome: Outcome.Unlocatable, quad };
   }
-  return best;
+  return { outcome: best, quad };
 }
 
 async function handle(message: ToWorker): Promise<void> {
@@ -148,8 +168,8 @@ async function handle(message: ToWorker): Promise<void> {
   if (!eye) return;
 
   const rgba = new Uint8ClampedArray(message.buffer);
-  const outcome = await ingestQrFrame(eye, rgba, message.width, message.height);
-  scope.postMessage(status(outcome, eye));
+  const { outcome, quad } = await ingestQrFrame(eye, rgba, message.width, message.height);
+  scope.postMessage(status(outcome, eye, quad, message.width, message.height));
 
   if (outcome === Outcome.Completed) {
     const bytes = eye.takeObject();

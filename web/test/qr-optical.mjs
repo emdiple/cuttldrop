@@ -134,3 +134,35 @@ for (const [profile, spec] of Object.entries(QR_REFERENCE_PROFILES)) {
       `${spec.symbolBytes * RGB_CHANNELS} B carried per frame`,
   );
 }
+
+{
+  // The eye's live overlay draws the corner quad ZXing reports alongside the
+  // bytes. Make sure the reader really reports one: four corners inside the
+  // raster, spanning the symbol rather than a degenerate point.
+  const skin = new ReferenceSkin(object, NAME, MIME, "qr27", 0xd0e, 0.5);
+  const raster = rasterizeReferencePacket(skin.packet(0), "qr27");
+  const [found] = await readBarcodes(
+    { data: raster.rgba, width: raster.width, height: raster.height },
+    ZXING_READ,
+  );
+  const corners = [
+    found.position.topLeft,
+    found.position.topRight,
+    found.position.bottomRight,
+    found.position.bottomLeft,
+  ];
+  for (const corner of corners) {
+    assert.ok(
+      corner.x >= 0 && corner.x <= raster.width && corner.y >= 0 && corner.y <= raster.height,
+      "corner quad landed outside the raster",
+    );
+  }
+  const xs = corners.map((corner) => corner.x);
+  const ys = corners.map((corner) => corner.y);
+  assert.ok(
+    Math.max(...xs) - Math.min(...xs) > raster.width / 2 &&
+      Math.max(...ys) - Math.min(...ys) > raster.height / 2,
+    "corner quad does not span the symbol",
+  );
+  console.log("ok — ZXing reports the corner quad the live overlay draws");
+}

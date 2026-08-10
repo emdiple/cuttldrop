@@ -30,8 +30,12 @@ const HINT_WINDOW = 30;
 const RATE_WINDOW = 2;
 
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
+const stage = document.querySelector<HTMLElement>(".camera-stage")!;
+const lock = document.querySelector<SVGSVGElement>("#lock")!;
+const lockQuad = lock.querySelector("polygon")!;
 const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
+const stopCamera = document.querySelector<HTMLButtonElement>("#stop-camera")!;
 const captureFps = document.querySelector<HTMLSelectElement>("#capture-fps")!;
 const captureSetting = document.querySelector<HTMLLabelElement>("#capture-setting")!;
 const transport = document.querySelector<HTMLSelectElement>("#transport")!;
@@ -215,14 +219,62 @@ function render(): void {
   hint.textContent = advise();
 }
 
+/** Let the live quad fade and bring the static aim frame back. */
+function lockDrop(): void {
+  lock.classList.remove("live");
+  stage.classList.remove("locked");
+}
+
+/**
+ * Draw ZXing's corner quad over the live video.
+ *
+ * The corners arrive in captured-frame pixels; the video is displayed with
+ * `object-fit: cover`, which scales the frame up to fill the stage and crops
+ * the overflow symmetrically — so the mapping is one scale and one centring
+ * offset per axis. The quad updates at the decode rate, not the display rate;
+ * the CSS fade covers the frames in between.
+ */
+function trackSymbol(message: Extract<FromWorker, { kind: "status" }>): void {
+  if (!message.quad || done) {
+    lockDrop();
+    return;
+  }
+  const { quad, frameWidth, frameHeight } = message;
+  const width = video.clientWidth;
+  const height = video.clientHeight;
+  if (!width || !height || !frameWidth || !frameHeight) return;
+  const scale = Math.max(width / frameWidth, height / frameHeight);
+  const dx = (width - frameWidth * scale) / 2;
+  const dy = (height - frameHeight * scale) / 2;
+  lock.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  lockQuad.setAttribute(
+    "points",
+    quad
+      .map((p) => `${(p.x * scale + dx).toFixed(1)},${(p.y * scale + dy).toFixed(1)}`)
+      .join(" "),
+  );
+  // Green while packets land; amber when the symbol is seen but its payload
+  // is not usable — the visual line between an aiming problem and a decode
+  // problem.
+  const landing =
+    message.outcome === Outcome.Accepted ||
+    message.outcome === Outcome.Completed ||
+    message.outcome === Outcome.Duplicate;
+  lock.classList.toggle("poor", !landing);
+  lock.classList.add("live");
+  stage.classList.add("locked");
+}
+
 function finish(bytes: Uint8Array, name: string, mime: string): void {
   done = true;
+  lockDrop();
   receiverState("complete");
   // The file is here and verified; holding the camera and the wake lock past
   // that point drains the battery and leaves the indicator light on for no
   // reason. `done` already stopped the capture loop.
   releaseCamera();
   void awake.release();
+  stopCamera.hidden = true;
   transport.disabled = false;
   const blob = new Blob([bytes as BlobPart], {
     type: mime || "application/octet-stream",
@@ -355,6 +407,7 @@ function releaseCamera(): void {
  */
 function offerRetry(message: string): void {
   releaseCamera();
+  lockDrop();
   receiverState("attention");
   hint.textContent = message;
   captureSetting.hidden = false;
@@ -363,6 +416,7 @@ function offerRetry(message: string): void {
   begin.textContent = "Try again";
   beginScreen.hidden = !hasScreenCapture;
   beginScreen.disabled = false;
+  stopCamera.hidden = true;
   transport.disabled = false;
 }
 
@@ -449,6 +503,7 @@ async function start(source: () => Promise<MediaStream> = openCamera): Promise<v
   begin.hidden = true;
   beginScreen.hidden = true;
   captureSetting.hidden = true;
+  stopCamera.hidden = false;
   transport.disabled = true;
   receiverState("scanning");
   const track = stream.getVideoTracks()[0];
@@ -515,6 +570,50 @@ function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>, ope
 wire(begin, openCamera, "Opening the camera…");
 wire(beginScreen, openScreen, "Pick the window showing the skin…");
 
+/**
+ * Stop the camera and put the page back to its opening state, in place.
+ *
+ * Not a navigation. A fountain either converges or it holds nothing, so an
+ * abandoned transfer has no half-result worth keeping — the honest outcome of
+ * stopping is a page identical to a fresh load, ready to point at the next
+ * screen. The worker is re-inited so the abandoned run's partial symbols
+ * cannot leak into it.
+ */
+function stopReceiving(): void {
+  captureGen += 1;
+  releaseCamera();
+  void awake.release();
+  lockDrop();
+  done = false;
+  busy = false;
+  last = null;
+  recent.length = 0;
+  newFrames = 0;
+  dupFrames = 0;
+  firstSymbolAt = null;
+  baseCameraMode = "";
+  post({ kind: "init", transport: currentTransport() });
+  receiverState("ready");
+  hint.textContent = "Point this camera at the sending screen";
+  progress.textContent = "Waiting for the first pulse";
+  counters.textContent = "";
+  barFill.style.width = "0%";
+  download.hidden = true;
+  stopCamera.hidden = true;
+  captureSetting.hidden = false;
+  begin.hidden = false;
+  begin.disabled = false;
+  begin.textContent = "Start camera";
+  beginScreen.hidden = !hasScreenCapture;
+  beginScreen.disabled = false;
+  transport.disabled = false;
+  cameraMode.textContent = "Camera not started";
+  for (const cell of Object.values(tiles)) cell.textContent = "—";
+  tiles.newdup.textContent = "0 / 0";
+}
+
+stopCamera.addEventListener("click", stopReceiving);
+
 transport.addEventListener("change", () => {
   if (video.srcObject) return;
   last = null;
@@ -539,6 +638,9 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
       break;
     case "status": {
       busy = false;
+      // A frame still in flight when the camera was stopped reports into a
+      // page that has already been reset; drop it rather than repaint it.
+      if (!video.srcObject) break;
       last = message;
       const now = performance.now();
       decodeRate.mark(now);
@@ -549,12 +651,15 @@ worker.onmessage = (event: MessageEvent<FromWorker>) => {
       }
       recent.push(message.outcome);
       if (recent.length > HINT_WINDOW) recent.shift();
+      trackSymbol(message);
       render();
       meter(now);
       break;
     }
     case "complete":
-      finish(message.bytes, message.fileName, message.fileMime);
+      // Same guard: completion from a run the user already walked away from
+      // must not resurrect its UI.
+      if (video.srcObject) finish(message.bytes, message.fileName, message.fileMime);
       break;
   }
 };

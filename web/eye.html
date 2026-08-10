@@ -21,8 +21,10 @@
 
       <div class="aim" aria-hidden="true">
         <span class="aim-frame"><i></i><i></i><i></i><i></i></span>
-        <small>Fit the entire pulse inside the frame</small>
+        <small>Fit the entire code inside the frame</small>
       </div>
+
+      <svg id="lock" class="lock" aria-hidden="true"><polygon points="" /></svg>
     </main>
 
     <aside class="readout tool-panel">
@@ -60,6 +62,7 @@
       <div class="action-stack">
         <button id="begin" class="primary-action"><span class="camera-dot"></span>Start camera</button>
         <button id="begin-screen" class="secondary" hidden>Read a window instead</button>
+        <button id="stop-camera" class="secondary stop-receive" hidden>Stop the camera</button>
       </div>
 
       <section class="progress-card">

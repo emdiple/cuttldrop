@@ -16,6 +16,12 @@ import type { Outcome } from "../pkg/cuttl_wasm.js";
  */
 export type Transport = "qr" | "qr-rgb";
 
+/** One corner of a located symbol, in captured-frame pixels. */
+export interface QuadPoint {
+  x: number;
+  y: number;
+}
+
 /** Page → worker. Frames only start once `ready` has come back. */
 export type ToWorker =
   | { kind: "init"; transport: Transport }
@@ -28,6 +34,16 @@ export type FromWorker =
   | {
       kind: "status";
       outcome: Outcome;
+      /**
+       * Corners of the symbol ZXing located this frame — TL, TR, BR, BL — or
+       * null when nothing was found. Present even when the payload was then
+       * rejected: "seen but unreadable" is exactly what the page's overlay
+       * needs to distinguish from "not seen".
+       */
+      quad: QuadPoint[] | null;
+      /** Dimensions of the captured frame the quad is measured in. */
+      frameWidth: number;
+      frameHeight: number;
       symbols: number;
       needed: number;
       rejected: number;

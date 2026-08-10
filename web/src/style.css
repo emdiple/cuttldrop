@@ -769,6 +769,16 @@ button.secondary:hover:not(:disabled) {
   color: var(--ink);
 }
 
+button.stop-receive {
+  border-color: #ff756d42;
+  color: var(--danger);
+}
+
+button.stop-receive:hover:not(:disabled) {
+  background: #ff756d14;
+  color: var(--danger);
+}
+
 .security-note {
   display: flex;
   align-items: center;
@@ -941,13 +951,24 @@ body.skin.sending #pulse {
   text-decoration: none;
 }
 
+/* As a button it must escape the default button chrome and the mint hover. */
+button.stop-action {
+  background: transparent;
+  cursor: pointer;
+}
+
+button.stop-action:hover:not(:disabled) {
+  background: #ff756d14;
+}
+
 /* ---------- eye ---------- */
 
 body.eye {
   position: relative;
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
+  /* Camera above, readout below — the panel never covers the aim frame. */
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .camera-stage {
@@ -955,6 +976,8 @@ body.eye {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* The aim frame sizes against the *visible* stage, not the viewport. */
+  container-type: size;
   background:
     radial-gradient(ellipse at 50% 38%, #201a15, transparent 47%),
     #030405;
@@ -1001,15 +1024,23 @@ body.eye {
   justify-items: center;
   gap: 0.8rem;
   pointer-events: none;
+  transition: opacity 220ms ease;
 }
 
 body.eye:has(#begin[hidden]) .aim { display: grid; }
 body.eye:has(#download:not([hidden])) .aim { display: none; }
 
+/* Once the live quad has the symbol, the static guide yields to it. */
+.camera-stage.locked .aim { opacity: 0; }
+
 .aim-frame {
   position: relative;
-  width: min(86vw, 150vh);
-  aspect-ratio: 16 / 9;
+  /* Square, like the symbol it frames. Sized against the visible stage; the
+     viewport line is the fallback for browsers that predate container query
+     units. */
+  width: min(78vw, 64vh);
+  width: min(78cqw, 64cqh);
+  aspect-ratio: 1 / 1;
   border: 1px solid #ffffff1c;
 }
 
@@ -1036,13 +1067,37 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   backdrop-filter: blur(10px);
 }
 
-.readout {
+/* Live detection: the quad ZXing located, drawn where it actually is. */
+.lock {
   position: absolute;
-  z-index: 4;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  max-height: 64%;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 220ms ease;
+  pointer-events: none;
+}
+
+.lock.live { opacity: 1; }
+
+.lock polygon {
+  fill: #65f2c50d;
+  stroke: var(--bio);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px #65f2c566);
+  transition: stroke 150ms ease, fill 150ms ease;
+}
+
+/* Symbol seen, payload unusable — aim is fine, reading is not. */
+.lock.poor polygon {
+  fill: #e5b7670d;
+  stroke: var(--warn);
+  filter: drop-shadow(0 0 6px #e5b76755);
+}
+
+.readout {
   min-height: 0;
   padding: 1.1rem 1.05rem max(1rem, env(safe-area-inset-bottom));
   display: flex;
@@ -1050,7 +1105,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   gap: 0.75rem;
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: linear-gradient(to top, #080a0dfc 76%, #080a0de8 91%, transparent);
+  background: var(--panel-bg);
 }
 
 .receive-header h1 {
@@ -1273,11 +1328,18 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
     display: grid;
   }
 
+  /* In the panel column the dock is a settled block, not a floating pill:
+     status and Stop share the top line, the slider gets a full row, and the
+     readout gets its own line instead of fighting both for width. */
   .stream-dock {
     position: static;
     grid-column: 1;
     grid-row: 2;
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.55rem 0.8rem;
+    padding: 0.85rem 1.25rem;
     border-width: 1px 1px 0 0;
     border-color: var(--edge);
     border-radius: 0;
@@ -1287,15 +1349,26 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   }
 
   .stream-dock .size {
-    width: 100%;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.45rem 0.6rem;
+    white-space: normal;
   }
+
+  .stream-dock .size > span { white-space: nowrap; }
 
   .stream-dock input[type="range"] {
     width: auto;
-    flex: 1;
+    min-width: 0;
   }
 
-  .stop-action { margin-left: auto; }
+  .stream-dock output {
+    grid-column: 1 / -1;
+    line-height: 1.4;
+  }
+
+  .stop-action { justify-self: end; }
 
   body.eye {
     grid-template-columns: minmax(0, 1fr) var(--panel);
@@ -1307,20 +1380,13 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   }
 
   .readout {
-    position: static;
     grid-column: 2;
     grid-row: 1;
-    max-height: none;
     padding: 1.35rem 1.25rem max(1.35rem, env(safe-area-inset-bottom));
     border-left: 1px solid var(--edge);
-    background: var(--panel-bg);
   }
 
   .details { margin-top: auto; }
-
-  .aim-frame {
-    width: min(76%, 130vh);
-  }
 
   .camera-header {
     right: 1.25rem;
@@ -1339,6 +1405,14 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   .receive-header,
   .readout .panel-back {
     display: none;
+  }
+
+  /* Cap the panel so the camera always keeps the upper part of the screen;
+     anything past the cap scrolls inside the panel instead of covering it. */
+  .readout {
+    max-height: 62vh;
+    max-height: 62svh;
+    border-top: 1px solid var(--edge);
   }
 }
 

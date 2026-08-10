@@ -29,12 +29,19 @@ const stage = document.querySelector<HTMLDivElement>("#stage")!;
 const display = document.querySelector<HTMLCanvasElement>("#pulse")!;
 const status = document.querySelector<HTMLDivElement>("#status")!;
 const statusText = document.querySelector<HTMLSpanElement>("#status-text")!;
+const stopAction = document.querySelector<HTMLButtonElement>("#stop")!;
 const size = document.querySelector<HTMLInputElement>("#size")!;
 const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
 
 let skin: ReferenceSkin | null = null;
 let selectedFile: File | null = null;
 let prepareGen = 0;
+/**
+ * Which send the pacer loop belongs to. Stopping increments it, so the rAF
+ * chain dies on its next callback — a plain `sending()` check would race a
+ * stop-then-restart into two chains pacing one canvas.
+ */
+let sendGen = 0;
 const LOOKAHEAD = 3;
 let current: ImageData | null = null;
 let queue: ImageData[] = [];
@@ -249,9 +256,10 @@ function rewind(): void {
  * are skipped rather than burst onto a panel that never displayed them.
  */
 function loop(): void {
+  const gen = ++sendGen;
   const pacer = new PulsePacer(performance.now(), Number(rate.value));
   const step = (now: number) => {
-    if (!skin) return;
+    if (!skin || gen !== sendGen) return;
     requestAnimationFrame(step);
     if (pacer.tick(now, Number(rate.value))) advance();
   };
@@ -385,6 +393,29 @@ function refit(): void {
   resize();
   paint();
 }
+
+/**
+ * Stop the send and put the page back to its pre-send state, in place.
+ *
+ * Not a navigation — leaving the page lives on the brand link. The file stays
+ * selected and the stream stays prepared, so the next send is one tap away;
+ * the eye side loses nothing either way, since an interrupted fountain simply
+ * resumes converging when the pulses return.
+ */
+function stopSending(): void {
+  sendGen += 1;
+  window.clearTimeout(dismiss);
+  document.body.classList.remove("sending");
+  status.hidden = true;
+  display.hidden = true;
+  void awake.release();
+  document.body.style.removeProperty("--overlay-room");
+  start.textContent = "Start transmission";
+  start.disabled = !skin;
+  rewind();
+}
+
+stopAction.addEventListener("click", stopSending);
 
 /* ---------- controls: resident when wide, summoned when narrow ---------- */
 
