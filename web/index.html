@@ -3,16 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#080a0d" />
+    <meta name="theme-color" content="#060916" />
     <title>Cuttldrop &mdash; strobe data across the air gap</title>
+    <link rel="icon" type="image/png" href="./src/assets/cuttldrop-icon.png" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body class="landing-page">
+    <canvas id="chroma-field" aria-hidden="true"></canvas>
+
     <main class="landing-shell">
       <header class="landing-header">
         <a class="brand" href="./" aria-label="Cuttldrop home">
           <span class="brand-mark" aria-hidden="true"></span>
-          <span>Cuttldrop</span>
+          <span>cuttldrop</span>
         </a>
         <span class="privacy-badge"><i></i> Offline by design</span>
       </header>
@@ -27,10 +30,16 @@
           </p>
         </div>
 
-        <div class="optical-diagram" aria-hidden="true">
-          <div class="device skin-device"><span class="mini-grid"></span></div>
-          <div class="light-path"><i></i><i></i><i></i></div>
-          <div class="device eye-device"><span></span></div>
+        <div class="hero-visual" aria-hidden="true">
+          <img
+            class="hero-logo"
+            src="./src/assets/cuttldrop-logo.webp"
+            alt=""
+            width="900"
+            height="900"
+            decoding="async"
+            fetchpriority="high"
+          />
         </div>
       </section>
 
@@ -64,5 +73,7 @@
         <span>BLAKE3 verified</span>
       </footer>
     </main>
+
+    <script type="module" src="./src/chromatophore.ts"></script>
   </body>
 </html>

@@ -1,21 +1,24 @@
 :root {
-  --bg: #0b0908;
-  --panel-bg: #110f0d;
-  --surface: #181512;
-  --surface-2: #201b17;
-  --edge: #2d2822;
-  --edge-bright: #494037;
-  --ink: #f2ead9;
-  --muted: #a09687;
-  --faint: #6e665d;
-  --bio: #78ddc4;
-  --bio-strong: #45bea4;
-  --bio-ink: #08251e;
-  --violet: #9b86c8;
-  --coral: #e68a61;
-  --sand: #d7bd89;
-  --warn: #e5b767;
+  --bg: #060916;
+  --panel-bg: #0a0e20;
+  --surface: #10152c;
+  --surface-2: #161c3a;
+  --edge: #1f2647;
+  --edge-bright: #343e6e;
+  --ink: #eef1fd;
+  --muted: #9ba4cb;
+  --faint: #646d96;
+  --bio: #43dced;
+  --bio-strong: #1fb8d6;
+  --bio-ink: #04222e;
+  --violet: #8f7cff;
+  --coral: #ff9042;
+  --sand: #ffd24d;
+  --magenta: #f45fd3;
+  --azure: #3f8cff;
+  --warn: #f0bc55;
   --danger: #ff756d;
+  --chroma: linear-gradient(90deg, #3f8cff, #8f7cff 24%, #f45fd3 46%, #ff9042 66%, #ffd24d 82%, #43dced);
   --tap: 46px;
   --panel: clamp(22rem, 28vw, 27rem);
   --radius-sm: 10px;
@@ -70,6 +73,10 @@ summary:focus-visible {
   outline-offset: 3px;
 }
 
+::selection {
+  background: #8f7cff59;
+}
+
 h1,
 h2,
 p {
@@ -121,40 +128,20 @@ h1 {
 }
 
 .brand-mark {
-  position: relative;
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
-  filter: drop-shadow(0 0 10px #78ddc426);
+  border-radius: 9px;
+  background: url("./assets/cuttldrop-icon.png") center / cover no-repeat;
+  filter: drop-shadow(0 0 10px #43dced33);
 }
 
-.brand-mark::before {
-  content: "";
-  position: absolute;
-  inset: 2px 5px 7px;
-  border: 1px solid #f2ead94d;
-  border-radius: 62% 38% 48% 52% / 68% 55% 45% 32%;
-  background:
-    radial-gradient(circle at 72% 67%, #090706 0 1.5px, var(--bio) 2px 3px, transparent 3.5px),
-    radial-gradient(circle at 28% 27%, var(--sand) 0 1.5px, transparent 2px),
-    radial-gradient(circle at 62% 23%, var(--coral) 0 1.4px, transparent 2px),
-    radial-gradient(circle at 35% 59%, var(--violet) 0 1.5px, transparent 2px),
-    linear-gradient(145deg, #75583f, #30271f 58%, #171310);
-  transform: rotate(-7deg);
-}
-
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  right: 4px;
-  bottom: 2px;
-  width: 17px;
-  height: 10px;
-  border: solid var(--coral);
-  border-width: 0 0 1.5px;
-  border-radius: 0 0 65% 45%;
-  box-shadow: 1px 3px 0 -1px var(--bio), -2px 5px 0 -2px var(--sand);
-  transform: rotate(-12deg);
+/* The wordmark echoes the logo: white letters dissolving into chroma. */
+.brand > span:last-child {
+  background: linear-gradient(90deg, #eef1fd 0 44%, #b9a8ff 56%, #f45fd3 68%, #ff9042 80%, #ffd24d 88%, #43dced);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .privacy-badge,
@@ -193,9 +180,10 @@ h1 {
   position: relative;
   min-height: 100svh;
   background:
-    radial-gradient(ellipse at 78% 12%, #9b86c817, transparent 30rem),
-    radial-gradient(ellipse at 8% 88%, #e68a6112, transparent 28rem),
-    radial-gradient(circle at 48% 110%, #78ddc40c, transparent 34rem),
+    radial-gradient(ellipse at 80% 8%, #8f7cff1c, transparent 30rem),
+    radial-gradient(ellipse at 10% 90%, #f45fd312, transparent 30rem),
+    radial-gradient(circle at 50% 115%, #3f8cff17, transparent 36rem),
+    radial-gradient(circle at 4% 8%, #43dced0e, transparent 24rem),
     var(--bg);
 }
 
@@ -206,11 +194,30 @@ h1 {
   opacity: 0.22;
   pointer-events: none;
   background:
-    radial-gradient(circle, #d7bd8957 0 1px, transparent 1.7px) 0 0 / 47px 43px,
-    radial-gradient(circle, #e68a6145 0 1.3px, transparent 2px) 19px 12px / 61px 57px,
-    radial-gradient(circle, #78ddc436 0 0.8px, transparent 1.5px) 7px 26px / 53px 49px;
+    radial-gradient(circle, #ffd24d57 0 1px, transparent 1.7px) 0 0 / 47px 43px,
+    radial-gradient(circle, #ff904245 0 1.3px, transparent 2px) 19px 12px / 61px 57px,
+    radial-gradient(circle, #43dced3d 0 0.9px, transparent 1.5px) 7px 26px / 53px 49px,
+    radial-gradient(circle, #8f7cff45 0 1.2px, transparent 1.9px) 31px 39px / 67px 59px,
+    radial-gradient(circle, #f45fd33d 0 1px, transparent 1.6px) 43px 5px / 71px 63px;
   -webkit-mask-image: radial-gradient(ellipse at 70% 38%, #000, transparent 69%);
   mask-image: radial-gradient(ellipse at 70% 38%, #000, transparent 69%);
+}
+
+/* Chromatophore field: cursor-driven pixels living behind the content layer,
+   so every landing component — type, cards, badges — masks the effect. */
+#chroma-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.landing-shell {
+  position: relative;
+  z-index: 1;
 }
 
 .landing-shell {
@@ -252,8 +259,11 @@ h1 {
 }
 
 .hero h1 em {
-  color: var(--bio);
   font-style: normal;
+  background: var(--chroma);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .hero-lede {
@@ -262,110 +272,46 @@ h1 {
   font-size: clamp(1rem, 2vw, 1.2rem);
 }
 
-.optical-diagram {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1.15fr 0.72fr;
-  align-items: center;
-  min-height: 260px;
-}
-
-.optical-diagram::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 2% -7% 0 3%;
-  border: 1px solid #d7bd8915;
-  border-radius: 58% 42% 62% 38% / 46% 65% 35% 54%;
-  background:
-    radial-gradient(circle at 21% 35%, #e68a6128 0 2px, transparent 3px),
-    radial-gradient(circle at 67% 28%, #78ddc429 0 2px, transparent 3px),
-    radial-gradient(circle at 43% 72%, #9b86c828 0 2px, transparent 3px),
-    #d7bd8905;
-  background-size: 32px 35px, 41px 38px, 47px 43px, auto;
-  transform: rotate(-3deg);
-}
-
-.device {
+.hero-visual {
   position: relative;
   display: grid;
   place-items: center;
-  aspect-ratio: 16 / 10;
-  border: 1px solid var(--edge-bright);
-  border-radius: 18px;
-  background: #050607;
-  box-shadow: 0 26px 70px #0009;
 }
 
-.skin-device {
-  transform: perspective(600px) rotateY(12deg) rotateX(3deg);
-}
-
-.eye-device {
-  aspect-ratio: 9 / 16;
-  transform: perspective(600px) rotateY(-12deg) rotateX(2deg);
-}
-
-.eye-device::before {
-  content: "";
-  width: 46%;
-  aspect-ratio: 1;
-  border: 1px solid #65f2c566;
-  border-radius: 50%;
-  box-shadow: inset 0 0 24px #65f2c52b, 0 0 24px #65f2c51f;
-}
-
-.eye-device::after {
+.hero-visual::before {
   content: "";
   position: absolute;
-  top: 7%;
-  width: 18%;
-  height: 4px;
-  border-radius: 4px;
-  background: var(--edge-bright);
+  inset: 10%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 28%, #3f8cff30, transparent 60%),
+    radial-gradient(circle at 72% 40%, #f45fd326, transparent 55%),
+    radial-gradient(circle at 54% 78%, #43dced24, transparent 55%);
+  filter: blur(34px);
 }
 
-.mini-grid,
+.hero-logo {
+  position: relative;
+  width: min(100%, 30rem);
+  height: auto;
+  /* The artwork carries its own navy ground; screen-blending sinks it into
+     the page so the chroma floats free of any rectangle. */
+  mix-blend-mode: screen;
+  animation: logo-drift 8s ease-in-out infinite alternate;
+}
+
+@keyframes logo-drift {
+  from { transform: translateY(-8px) rotate(-1deg); }
+  to { transform: translateY(10px) rotate(1.2deg); }
+}
+
 .stage-grid {
   display: block;
   background:
-    linear-gradient(90deg, transparent 48%, #090b0d 48% 52%, transparent 52%),
-    linear-gradient(transparent 48%, #090b0d 48% 52%, transparent 52%),
-    conic-gradient(from 45deg, var(--bio), var(--violet), var(--coral), var(--bio));
+    linear-gradient(90deg, transparent 48%, #0a0d1c 48% 52%, transparent 52%),
+    linear-gradient(transparent 48%, #0a0d1c 48% 52%, transparent 52%),
+    conic-gradient(from 45deg, var(--bio), var(--violet), var(--magenta), var(--coral), var(--bio));
   background-size: 9px 9px;
-}
-
-.mini-grid {
-  width: 78%;
-  aspect-ratio: 16 / 9;
-  border: 5px solid #f4f1e9;
-  box-shadow: 0 0 50px #65f2c52b;
-}
-
-.light-path {
-  position: relative;
-  height: 2px;
-  background: linear-gradient(90deg, var(--bio), #8f7cff80, transparent);
-  box-shadow: 0 0 14px #65f2c566;
-}
-
-.light-path i {
-  position: absolute;
-  top: 50%;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--bio);
-  animation: travel 2s linear infinite;
-}
-
-.light-path i:nth-child(2) { animation-delay: -0.66s; }
-.light-path i:nth-child(3) { animation-delay: -1.33s; }
-
-@keyframes travel {
-  from { left: 0; transform: translate(-50%, -50%); opacity: 0; }
-  20%, 80% { opacity: 1; }
-  to { left: 100%; transform: translate(-50%, -50%); opacity: 0; }
 }
 
 .role-grid {
@@ -385,7 +331,7 @@ h1 {
   overflow: hidden;
   border: 1px solid var(--edge);
   border-radius: 26px 18px 30px 20px;
-  background: linear-gradient(145deg, #1c1814, #100e0c);
+  background: linear-gradient(145deg, #131834, #0a0d1d);
   color: inherit;
   text-decoration: none;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
@@ -395,8 +341,14 @@ h1 {
 .role-card:focus-visible {
   transform: translateY(-3px);
   border-color: var(--edge-bright);
-  background: linear-gradient(145deg, #241e19, #14110e);
+  background: linear-gradient(145deg, #1a2144, #0d1126);
 }
+
+.role-skin:hover,
+.role-skin:focus-visible { border-color: #43dced55; }
+
+.role-eye:hover,
+.role-eye:focus-visible { border-color: #8f7cff55; }
 
 .role-card::after {
   content: "";
@@ -406,7 +358,7 @@ h1 {
   width: 15rem;
   height: 15rem;
   border-radius: 50%;
-  background: var(--glow, #65f2c510);
+  background: var(--glow, #43dced10);
   filter: blur(8px);
   pointer-events: none;
 }
@@ -427,7 +379,7 @@ h1 {
   place-items: center;
   border: 1px solid var(--edge-bright);
   border-radius: 15px;
-  background: #0a0d11;
+  background: #0b1024;
 }
 
 .role-icon i {
@@ -439,7 +391,7 @@ h1 {
 .role-eye .role-icon i {
   border-radius: 50%;
   border-color: var(--violet);
-  box-shadow: inset 0 0 0 5px #0a0d11, inset 0 0 0 7px var(--violet);
+  box-shadow: inset 0 0 0 5px #0b1024, inset 0 0 0 7px var(--violet);
 }
 
 .role-copy {
@@ -496,8 +448,8 @@ body.eye {
 
 .tool-panel {
   background:
-    radial-gradient(circle at 94% 5%, #e68a610c 0 2px, transparent 3px) 0 0 / 29px 31px,
-    linear-gradient(180deg, #d7bd8905, transparent 9rem),
+    radial-gradient(circle at 94% 5%, #ff90420c 0 2px, transparent 3px) 0 0 / 29px 31px,
+    linear-gradient(180deg, #ffd24d05, transparent 9rem),
     var(--panel-bg);
 }
 
@@ -519,8 +471,8 @@ body.eye {
 .role-badge {
   padding: 0.35rem 0.62rem;
   color: var(--bio);
-  border-color: #65f2c538;
-  background: #65f2c50a;
+  border-color: #43dced38;
+  background: #43dced0a;
   text-transform: uppercase;
 }
 
@@ -598,7 +550,7 @@ body.eye {
 }
 
 .field .label {
-  color: #d8d9d5;
+  color: #d5daf0;
   font-size: 0.76rem;
   font-weight: 700;
 }
@@ -637,7 +589,7 @@ body.eye {
 .value-chip {
   padding: 0.15rem 0.45rem;
   border-radius: 6px;
-  background: #65f2c510;
+  background: #43dced10;
   color: var(--bio);
   font: 700 0.72rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -652,8 +604,8 @@ body.eye {
   border: 1px dashed var(--edge-bright);
   border-radius: var(--radius);
   background:
-    radial-gradient(circle at 92% 14%, #e68a6121 0 2px, transparent 3px) 0 0 / 29px 31px,
-    linear-gradient(135deg, #78ddc408, transparent 45%),
+    radial-gradient(circle at 92% 14%, #ff904221 0 2px, transparent 3px) 0 0 / 29px 31px,
+    linear-gradient(135deg, #43dced08, transparent 45%),
     var(--surface);
   cursor: pointer;
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
@@ -662,7 +614,7 @@ body.eye {
 .drop-zone:hover,
 .drop-zone.dragging {
   border-color: var(--bio);
-  background: #65f2c50c;
+  background: #43dced0c;
   transform: translateY(-1px);
 }
 
@@ -688,10 +640,10 @@ body.eye {
   flex: 0 0 38px;
   display: grid;
   place-items: center;
-  border: 1px solid #65f2c545;
+  border: 1px solid #43dced45;
   border-radius: 11px;
   color: var(--bio);
-  background: #65f2c50b;
+  background: #43dced0b;
   font-size: 1.2rem;
 }
 
@@ -719,7 +671,7 @@ button,
   padding: 0.72rem 1rem;
   border: 0;
   border-radius: var(--radius-sm);
-  background: var(--bio);
+  background: linear-gradient(135deg, #52e6f5, #38a8ff);
   color: var(--bio-ink);
   font-weight: 750;
   cursor: pointer;
@@ -730,7 +682,7 @@ button:hover:not(:disabled),
 .primary-action:hover,
 #download:hover {
   transform: translateY(-1px);
-  background: #82f7d2;
+  background: linear-gradient(135deg, #7deeff, #5cc0ff);
 }
 
 button:disabled {
@@ -812,7 +764,7 @@ body.skin {
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(ellipse at 50% 50%, #1a1713, #030302 68%),
+    radial-gradient(ellipse at 50% 50%, #141a33, #020308 68%),
     #000;
 }
 
@@ -822,9 +774,9 @@ body.skin {
   inset: 0;
   opacity: 0.12;
   background-image:
-    radial-gradient(circle, #e68a6140 0 1.4px, transparent 2px),
-    radial-gradient(circle, #78ddc42f 0 1px, transparent 1.7px),
-    radial-gradient(circle, #d7bd8933 0 0.8px, transparent 1.5px);
+    radial-gradient(circle, #ff904240 0 1.4px, transparent 2px),
+    radial-gradient(circle, #43dced2f 0 1px, transparent 1.7px),
+    radial-gradient(circle, #ffd24d33 0 0.8px, transparent 1.5px);
   background-position: 0 0, 17px 11px, 8px 25px;
   background-size: 41px 37px, 53px 47px, 59px 43px;
   mask-image: radial-gradient(circle, #000 20%, transparent 75%);
@@ -841,14 +793,14 @@ body.skin {
   text-align: center;
 }
 
-.stage-empty strong { color: #cfd2cf; font-size: 0.85rem; }
+.stage-empty strong { color: #ccd3ec; font-size: 0.85rem; }
 .stage-empty > span:last-child { font-size: 0.72rem; }
 
 .stage-grid {
   width: 78px;
   aspect-ratio: 16 / 9;
   margin-bottom: 0.4rem;
-  border: 3px solid #d8d6ce;
+  border: 3px solid #d6d8e8;
   opacity: 0.35;
   filter: saturate(0.6);
 }
@@ -900,7 +852,7 @@ body.skin.sending #pulse {
   gap: 0.5rem 0.8rem;
   border: 1px solid #ffffff18;
   border-radius: 16px;
-  background: #0b0e11eb;
+  background: #0a0e20eb;
   box-shadow: 0 12px 40px #0009;
   backdrop-filter: blur(16px);
   color: var(--muted);
@@ -979,8 +931,8 @@ body.eye {
   /* The aim frame sizes against the *visible* stage, not the viewport. */
   container-type: size;
   background:
-    radial-gradient(ellipse at 50% 38%, #201a15, transparent 47%),
-    #030405;
+    radial-gradient(ellipse at 50% 38%, #182042, transparent 47%),
+    #030408;
 }
 
 #camera {
@@ -1004,7 +956,7 @@ body.eye {
   padding: 0.35rem 0.5rem;
   border: 1px solid #ffffff17;
   border-radius: 11px;
-  background: #050709b8;
+  background: #050817b8;
   backdrop-filter: blur(12px);
 }
 
@@ -1012,7 +964,7 @@ body.eye {
   width: 25px;
   height: 25px;
   flex-basis: 25px;
-  background-size: auto;
+  border-radius: 7px;
 }
 
 .aim {
@@ -1050,7 +1002,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   height: 30px;
   border-color: var(--bio);
   border-style: solid;
-  filter: drop-shadow(0 0 5px #65f2c566);
+  filter: drop-shadow(0 0 5px #43dced66);
 }
 
 .aim-frame i:nth-child(1) { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
@@ -1061,8 +1013,8 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 .aim small {
   padding: 0.35rem 0.65rem;
   border-radius: 999px;
-  background: #050709b8;
-  color: #d7dad6;
+  background: #050817b8;
+  color: #d4d9ee;
   font-size: 0.68rem;
   backdrop-filter: blur(10px);
 }
@@ -1082,11 +1034,11 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 .lock.live { opacity: 1; }
 
 .lock polygon {
-  fill: #65f2c50d;
+  fill: #43dced0d;
   stroke: var(--bio);
   stroke-width: 2;
   stroke-linejoin: round;
-  filter: drop-shadow(0 0 6px #65f2c566);
+  filter: drop-shadow(0 0 6px #43dced66);
   transition: stroke 150ms ease, fill 150ms ease;
 }
 
@@ -1116,7 +1068,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 .live-state {
   padding: 0.35rem 0.55rem;
   color: var(--bio);
-  border-color: #65f2c530;
+  border-color: #43dced30;
 }
 
 .live-state.scanning i {
@@ -1135,7 +1087,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 
 .live-state.complete {
   color: var(--bio);
-  background: #65f2c509;
+  background: #43dced09;
 }
 
 @keyframes breathe {
@@ -1158,10 +1110,10 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 .instruction-icon {
   width: 34px;
   height: 34px;
-  border: 1px solid #65f2c54d;
+  border: 1px solid #43dced4d;
   border-radius: 50%;
   background: radial-gradient(circle, var(--bio) 0 3px, transparent 4px);
-  box-shadow: inset 0 0 0 8px #65f2c508;
+  box-shadow: inset 0 0 0 8px #43dced08;
 }
 
 .hint-large {
@@ -1183,11 +1135,11 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   gap: 0.55rem;
   border: 1px solid var(--edge);
   border-radius: var(--radius);
-  background: #0a0d11;
+  background: #0b1024;
 }
 
 .progress-heading {
-  color: #d9dbd7;
+  color: #d6dbf2;
   font-size: 0.72rem;
   font-weight: 700;
 }
@@ -1196,7 +1148,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   padding: 0.2rem 0.4rem;
   color: var(--bio);
   font: 650 0.56rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  border-color: #65f2c52d;
+  border-color: #43dced2d;
 }
 
 .bar {
@@ -1210,8 +1162,8 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--bio-strong), var(--bio));
-  box-shadow: 0 0 12px #65f2c566;
+  background: var(--chroma);
+  box-shadow: 0 0 12px #43dced66;
   transition: width 180ms ease;
 }
 
@@ -1281,7 +1233,7 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 
 .tile b {
   overflow: hidden;
-  color: #e5e7e2;
+  color: #e2e6f7;
   font: 650 0.86rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1431,9 +1383,8 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
     font-size: clamp(3rem, 17vw, 5.2rem);
   }
 
-  .optical-diagram {
-    width: min(100%, 430px);
-    min-height: 160px;
+  .hero-visual {
+    width: min(100%, 380px);
     justify-self: center;
   }
 
