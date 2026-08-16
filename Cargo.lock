@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "cuttl-codec"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "cuttl-wasm"
-version = "0.0.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cuttl-codec",
  "wasm-bindgen",
