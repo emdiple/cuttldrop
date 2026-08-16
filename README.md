@@ -18,6 +18,10 @@ physics here lands at nearly the same rate, and the RGB mode even strobes colour
 > **Experimental:** Cuttldrop works across real screens and cameras. Some experimental
 > modes still have device-specific bugs, so do not rely on them for important files yet.
 
+<p align="center">
+  <img src="assets/cuttldrop-demo.gif" alt="The Cuttldrop eye receiving an RGB QR transmission through a live camera" width="320">
+</p>
+
 ## Try it
 
 ```sh
