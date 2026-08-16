@@ -10,7 +10,7 @@ dist/
 crates/cuttl-wasm/pkg/
 web/pkg/
 # Built release assets are attached to GitHub Releases, not committed to source.
-cuttldrop-web-v*.zip
+/releases
 # Dev TLS, made by `npm run cert`. Local to one machine and it holds a private
 # key — regenerating it is one command.
 web/.cert/
