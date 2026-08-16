@@ -24,14 +24,14 @@ let finished = false;
 function status(
   outcome: Outcome,
   decoder: ReferenceEye,
-  quad: QuadPoint[] | null,
+  quads: QuadPoint[][],
   frameWidth: number,
   frameHeight: number,
 ): FromSink {
   return {
     kind: "status",
     outcome,
-    quad,
+    quads,
     frameWidth,
     frameHeight,
     symbols: decoder.symbols,
@@ -84,7 +84,7 @@ async function handle(message: ToSink): Promise<void> {
   // Only a frame with no readable symbol at all counts as a miss.
   if (best === null) eye.miss();
   const outcome = best ?? Outcome.Unlocatable;
-  scope.postMessage(status(outcome, eye, message.quad, message.frameWidth, message.frameHeight));
+  scope.postMessage(status(outcome, eye, message.quads, message.frameWidth, message.frameHeight));
 
   if (outcome === Outcome.Completed) {
     finished = true;

@@ -105,27 +105,45 @@ async function decodeFrame(
   rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
   height: number,
-): Promise<{ payloads: Uint8Array[]; quad: QuadPoint[] | null }> {
+): Promise<{ payloads: Uint8Array[]; quads: QuadPoint[][] }> {
   const images = transport.includes("rgb")
     ? Array.from({ length: RGB_CHANNELS }, (_, c) => () => channelImage(rgba, width, height, c))
     : [() => new ImageData(rgba, width, height)];
 
   const payloads: Uint8Array[] = [];
-  let quad: QuadPoint[] | null = null;
+  const quads: QuadPoint[][] = [];
   for (const image of images) {
     const results = await readBarcodes(image(), readOptions);
-    const located = results[0];
-    if (located && !quad) {
-      const { topLeft, topRight, bottomRight, bottomLeft } = located.position;
-      quad = [topLeft, topRight, bottomRight, bottomLeft].map((p) => ({ x: p.x, y: p.y }));
-    }
     // Everything readable in the image — one symbol normally, up to four on
     // the tiled rungs. Each payload crosses the CRC gate on its own.
     for (const result of results) {
+      const { topLeft, topRight, bottomRight, bottomLeft } = result.position;
+      const candidate = [topLeft, topRight, bottomRight, bottomLeft].map((p) => ({
+        x: p.x,
+        y: p.y,
+      }));
+      const centre = candidate.reduce(
+        (sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }),
+        { x: 0, y: 0 },
+      );
+      // RGB channels locate the same physical symbol. Deduplicate those
+      // while keeping every distinct QR in a tiled frame.
+      const duplicate = quads.some((quad) => {
+        const other = quad.reduce(
+          (sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }),
+          { x: 0, y: 0 },
+        );
+        const side = Math.max(
+          Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y),
+          Math.hypot(quad[3].x - quad[0].x, quad[3].y - quad[0].y),
+        );
+        return Math.hypot(centre.x - other.x, centre.y - other.y) < side * 0.2;
+      });
+      if (!duplicate) quads.push(candidate);
       if (result.isValid && result.bytes.length > 0) payloads.push(result.bytes);
     }
   }
-  return { payloads, quad };
+  return { payloads, quads };
 }
 
 async function handle(message: ToDecoder): Promise<void> {
@@ -195,23 +213,24 @@ async function handle(message: ToDecoder): Promise<void> {
   // A frame with no pixels cannot happen from the page as written — but a
   // silent return here would leak the page's pool slot forever, so answer
   // with an empty harvest instead.
-  const { payloads, quad } = rgba
+  const { payloads, quads } = rgba
     ? await decodeFrame(rgba, message.width, message.height)
-    : { payloads: [], quad: null };
+    : { payloads: [], quads: [] };
   // ZXing measured the quad in this buffer's pixels; answer in source pixels
   // so the page never cares whether the frame was a downscale or a crop.
-  const mapped =
-    quad?.map((p) => ({
+  const mapped = quads.map((quad) =>
+    quad.map((p) => ({
       x: message.originX + p.x * message.scale,
       y: message.originY + p.y * message.scale,
-    })) ?? null;
-  if (mapped) lastQuad = mapped;
+    })),
+  );
+  if (mapped[0]) lastQuad = mapped[0];
   // Payloads are a few KB each and ZXing owns their buffers' provenance —
   // cloned, not transferred; a detached heap is not worth saving 3 KB.
   scope.postMessage({
     kind: "decoded",
     payloads,
-    quad: mapped,
+    quads: mapped,
     frameWidth: message.sourceWidth,
     frameHeight: message.sourceHeight,
   });

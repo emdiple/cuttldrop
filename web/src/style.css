@@ -939,7 +939,8 @@ body.eye {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
+  /* Keep the whole sensor image visible instead of cropping it like a zoom. */
+  object-fit: contain;
   background: transparent;
 }
 
@@ -967,59 +968,7 @@ body.eye {
   border-radius: 7px;
 }
 
-.aim {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  display: none;
-  place-content: center;
-  justify-items: center;
-  gap: 0.8rem;
-  pointer-events: none;
-  transition: opacity 220ms ease;
-}
-
-body.eye:has(#begin[hidden]) .aim { display: grid; }
-body.eye:has(#download:not([hidden])) .aim { display: none; }
-
-/* Once the live quad has the symbol, the static guide yields to it. */
-.camera-stage.locked .aim { opacity: 0; }
-
-.aim-frame {
-  position: relative;
-  /* Square, like the symbol it frames. Sized against the visible stage; the
-     viewport line is the fallback for browsers that predate container query
-     units. */
-  width: min(78vw, 64vh);
-  width: min(78cqw, 64cqh);
-  aspect-ratio: 1 / 1;
-  border: 1px solid #ffffff1c;
-}
-
-.aim-frame i {
-  position: absolute;
-  width: 30px;
-  height: 30px;
-  border-color: var(--bio);
-  border-style: solid;
-  filter: drop-shadow(0 0 5px #43dced66);
-}
-
-.aim-frame i:nth-child(1) { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
-.aim-frame i:nth-child(2) { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
-.aim-frame i:nth-child(3) { right: -1px; bottom: -1px; border-width: 0 2px 2px 0; }
-.aim-frame i:nth-child(4) { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
-
-.aim small {
-  padding: 0.35rem 0.65rem;
-  border-radius: 999px;
-  background: #050817b8;
-  color: #d4d9ee;
-  font-size: 0.68rem;
-  backdrop-filter: blur(10px);
-}
-
-/* Live detection: the quad ZXing located, drawn where it actually is. */
+/* Live detections: only QR symbols ZXing actually located are outlined. */
 .lock {
   position: absolute;
   z-index: 2;
@@ -1034,11 +983,11 @@ body.eye:has(#download:not([hidden])) .aim { display: none; }
 .lock.live { opacity: 1; }
 
 .lock polygon {
-  fill: #43dced0d;
-  stroke: var(--bio);
+  fill: color-mix(in srgb, var(--lock-color, var(--bio)) 6%, transparent);
+  stroke: var(--lock-color, var(--bio));
   stroke-width: 2;
   stroke-linejoin: round;
-  filter: drop-shadow(0 0 6px #43dced66);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--lock-color, var(--bio)) 45%, transparent));
   transition: stroke 150ms ease, fill 150ms ease;
 }
 
