@@ -15,8 +15,8 @@ frames. The other — the **eye** — points its camera at that screen and rebui
 file, hash-verified. Cuttlefish strobe colour across their skin at roughly 10 Hz; the
 physics here lands at nearly the same rate, and the RGB mode even strobes colour.
 
-> **Alpha:** Cuttldrop works across real screens and cameras, but device-specific bugs
-> remain. Do not rely on it for important files yet.
+> **Experimental:** Cuttldrop works across real screens and cameras. Some experimental
+> modes still have device-specific bugs, so do not rely on them for important files yet.
 
 ## Try it
 
