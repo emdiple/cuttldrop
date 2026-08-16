@@ -20,12 +20,7 @@
         <span class="role-badge role-badge-over">Eye</span>
       </header>
 
-      <div class="aim" aria-hidden="true">
-        <span class="aim-frame"><i></i><i></i><i></i><i></i></span>
-        <small>Fit the entire code inside the frame</small>
-      </div>
-
-      <svg id="lock" class="lock" aria-hidden="true"><polygon points="" /></svg>
+      <svg id="lock" class="lock" aria-hidden="true"></svg>
     </main>
 
     <aside class="readout tool-panel">
@@ -36,11 +31,6 @@
         </div>
         <span class="live-state"><i></i>Ready</span>
       </header>
-
-      <section class="instruction-card">
-        <span class="instruction-icon" aria-hidden="true"></span>
-        <p id="hint" class="hint-large">Point this camera at the sending screen</p>
-      </section>
 
       <label id="capture-setting" class="field compact">
         <span class="field-line"><span class="label">Camera rate</span><span class="field-meta">requested mode</span></span>
@@ -66,6 +56,7 @@
         <button id="begin" class="primary-action"><span class="camera-dot"></span>Start camera</button>
         <button id="begin-screen" class="secondary" hidden>Read a window instead</button>
         <button id="stop-camera" class="secondary stop-receive" hidden>Stop the camera</button>
+        <button id="clear-app-data" class="secondary" type="button">Clear app cache</button>
       </div>
 
       <section class="progress-card">

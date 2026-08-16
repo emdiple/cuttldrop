@@ -42,24 +42,19 @@ const ROI_TTL_MS = 1200;
  * covers the quiet zone plus a hand-held frame's worth of drift. */
 const ROI_PAD = 0.35;
 
-/** Frames to look back over when deciding what to tell the human. */
-const HINT_WINDOW = 30;
-
 /** Seconds of history the frame-rate readouts average over. */
 const RATE_WINDOW = 2;
 
 const video = document.querySelector<HTMLVideoElement>("#camera")!;
-const stage = document.querySelector<HTMLElement>(".camera-stage")!;
 const lock = document.querySelector<SVGSVGElement>("#lock")!;
-const lockQuad = lock.querySelector("polygon")!;
 const begin = document.querySelector<HTMLButtonElement>("#begin")!;
 const beginScreen = document.querySelector<HTMLButtonElement>("#begin-screen")!;
 const stopCamera = document.querySelector<HTMLButtonElement>("#stop-camera")!;
+const clearAppData = document.querySelector<HTMLButtonElement>("#clear-app-data")!;
 const captureFps = document.querySelector<HTMLSelectElement>("#capture-fps")!;
 const captureSetting = document.querySelector<HTMLLabelElement>("#capture-setting")!;
 const transport = document.querySelector<HTMLSelectElement>("#transport")!;
 const liveState = document.querySelector<HTMLSpanElement>(".live-state")!;
-const hint = document.querySelector<HTMLParagraphElement>("#hint")!;
 const progress = document.querySelector<HTMLParagraphElement>("#progress")!;
 const counters = document.querySelector<HTMLParagraphElement>("#counters")!;
 const barFill = document.querySelector<HTMLDivElement>("#bar-fill")!;
@@ -119,9 +114,10 @@ const sink = new Worker(new URL("./eye-worker.ts", import.meta.url), {
 });
 const sinkPost = (message: ToSink) => sink.postMessage(message);
 
-const recent: Outcome[] = [];
 let last: Extract<FromSink, { kind: "status" }> | null = null;
 let done = false;
+/** The completed file is retained by the browser until this URL is revoked. */
+let downloadUrl: string | null = null;
 /** Where a symbol was last seen, in source pixels — steers the next crops. */
 let roiQuad: QuadPoint[] | null = null;
 let roiSeenAt = 0;
@@ -201,19 +197,6 @@ async function steady(track: MediaStreamTrack): Promise<void> {
   if (caps.manualExposure) await tryConstraint(track, { exposureMode: "manual" });
 }
 
-/** Turn recent outcomes into one instruction (§1e — the human is the back channel). */
-function advise(): string {
-  if (recent.length < 5) return "Point this camera at the sending screen";
-
-  const share = (outcome: Outcome) =>
-    recent.filter((o) => o === outcome).length / recent.length;
-
-  if (share(Outcome.Unlocatable) > 0.5) return "Fill the frame with the screen";
-  if (share(Outcome.Rejected) > 0.4) return "Hold still";
-  if (share(Outcome.Duplicate) > 0.8) return "Reading — nothing new arriving";
-  return "Reading";
-}
-
 /**
  * Fill the telemetry tiles.
  *
@@ -269,42 +252,49 @@ function render(): void {
   progress.textContent = `${label}${symbols} / ${needed || "—"} symbols`;
   barFill.style.width = needed > 0 ? `${Math.min(100, (symbols / needed) * 100)}%` : "0%";
   counters.textContent = `${rejected} rejected · ${unlocatable} not found`;
-  hint.textContent = advise();
 }
 
-/** Let the live quad fade and bring the static aim frame back. */
+/** Clear live QR outlines when no symbol is currently detected. */
 function lockDrop(): void {
   lock.classList.remove("live");
-  stage.classList.remove("locked");
+  lock.replaceChildren();
 }
 
 /**
  * Draw ZXing's corner quad over the live video.
  *
  * The corners arrive in captured-frame pixels; the video is displayed with
- * `object-fit: cover`, which scales the frame up to fill the stage and crops
- * the overflow symmetrically — so the mapping is one scale and one centring
+ * `object-fit: contain`, which keeps the entire frame visible and letterboxes
+ * the spare space — so the mapping is one scale and one centring
  * offset per axis. The quad updates at the decode rate, not the display rate;
  * the CSS fade covers the frames in between.
  */
 function trackSymbol(message: Extract<FromSink, { kind: "status" }>): void {
-  if (!message.quad || done) {
+  if (message.quads.length === 0 || done) {
     lockDrop();
     return;
   }
-  const { quad, frameWidth, frameHeight } = message;
+  const { quads, frameWidth, frameHeight } = message;
   const width = video.clientWidth;
   const height = video.clientHeight;
   if (!width || !height || !frameWidth || !frameHeight) return;
-  const scale = Math.max(width / frameWidth, height / frameHeight);
+  const scale = Math.min(width / frameWidth, height / frameHeight);
   const dx = (width - frameWidth * scale) / 2;
   const dy = (height - frameHeight * scale) / 2;
   lock.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  lockQuad.setAttribute(
-    "points",
-    quad
-      .map((p) => `${(p.x * scale + dx).toFixed(1)},${(p.y * scale + dy).toFixed(1)}`)
-      .join(" "),
+  const colours = ["#43dced", "#9aec72", "#c99cff", "#ff9f67"];
+  lock.replaceChildren(
+    ...quads.map((quad, index) => {
+      const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      polygon.setAttribute(
+        "points",
+        quad
+          .map((p) => `${(p.x * scale + dx).toFixed(1)},${(p.y * scale + dy).toFixed(1)}`)
+          .join(" "),
+      );
+      polygon.style.setProperty("--lock-color", colours[index % colours.length]);
+      return polygon;
+    }),
   );
   // Green while packets land; amber when the symbol is seen but its payload
   // is not usable — the visual line between an aiming problem and a decode
@@ -315,7 +305,6 @@ function trackSymbol(message: Extract<FromSink, { kind: "status" }>): void {
     message.outcome === Outcome.Duplicate;
   lock.classList.toggle("poor", !landing);
   lock.classList.add("live");
-  stage.classList.add("locked");
 }
 
 function finish(bytes: Uint8Array, name: string, mime: string): void {
@@ -332,11 +321,13 @@ function finish(bytes: Uint8Array, name: string, mime: string): void {
   const blob = new Blob([bytes as BlobPart], {
     type: mime || "application/octet-stream",
   });
-  download.href = URL.createObjectURL(blob);
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = URL.createObjectURL(blob);
+  download.href = downloadUrl;
   download.download = name;
   download.textContent = `Save ${name}`;
   download.hidden = false;
-  hint.textContent = `Complete — ${name}, ${bytes.length.toLocaleString()} B, BLAKE3 verified`;
+  progress.textContent = `Complete — ${name}, ${bytes.length.toLocaleString()} B, BLAKE3 verified`;
   barFill.style.width = "100%";
 }
 
@@ -616,7 +607,7 @@ function offerRetry(message: string): void {
   releaseCamera();
   lockDrop();
   receiverState("attention");
-  hint.textContent = message;
+  progress.textContent = message;
   captureSetting.hidden = false;
   begin.hidden = false;
   begin.disabled = false;
@@ -766,14 +757,13 @@ const hasScreenCapture =
   typeof navigator.mediaDevices?.getDisplayMedia === "function";
 beginScreen.hidden = !hasScreenCapture;
 
-function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>, opening: string) {
+function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>) {
   button.addEventListener("click", () => {
     begin.disabled = true;
     beginScreen.disabled = true;
     button.textContent = "Starting…";
-    hint.textContent = opening;
     void ready.then(() => start(source)).then(() => {
-      // Still visible means start() bailed and wrote its reason into the hint.
+      // Still visible means start() bailed and exposed a retry.
       if (!begin.hidden) {
         begin.disabled = false;
         begin.textContent = "Try again";
@@ -782,8 +772,8 @@ function wire(button: HTMLButtonElement, source: () => Promise<MediaStream>, ope
   });
 }
 
-wire(begin, openCamera, "Opening the camera…");
-wire(beginScreen, openScreen, "Pick the window showing the skin…");
+wire(begin, openCamera);
+wire(beginScreen, openScreen);
 
 /**
  * Stop the camera and put the page back to its opening state, in place.
@@ -803,7 +793,6 @@ function stopReceiving(): void {
   last = null;
   roiQuad = null;
   roiSeenAt = 0;
-  recent.length = 0;
   newFrames = 0;
   dupFrames = 0;
   firstSymbolAt = null;
@@ -812,10 +801,13 @@ function stopReceiving(): void {
   // which cannot have changed while the camera held the select disabled.
   sinkPost({ kind: "init" });
   receiverState("ready");
-  hint.textContent = "Point this camera at the sending screen";
   progress.textContent = "Waiting for the first pulse";
   counters.textContent = "";
   barFill.style.width = "0%";
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = null;
+  download.removeAttribute("href");
+  download.removeAttribute("download");
   download.hidden = true;
   stopCamera.hidden = true;
   captureSetting.hidden = false;
@@ -832,12 +824,70 @@ function stopReceiving(): void {
 
 stopCamera.addEventListener("click", stopReceiving);
 
+/**
+ * Remove data owned by this origin and release any completed file retained in
+ * memory. Browser security deliberately keeps the Downloads folder outside a
+ * page's reach, so a file the user already saved must be removed there.
+ */
+async function clearOriginData(): Promise<void> {
+  localStorage.clear();
+  sessionStorage.clear();
+
+  if ("caches" in window) {
+    const names = await window.caches.keys();
+    await Promise.all(names.map((name) => window.caches.delete(name)));
+  }
+
+  if (typeof indexedDB.databases === "function") {
+    const databases = await indexedDB.databases();
+    await Promise.all(
+      databases.map(
+        ({ name }) =>
+          new Promise<void>((resolve) => {
+            if (!name) {
+              resolve();
+              return;
+            }
+            const request = indexedDB.deleteDatabase(name);
+            request.onsuccess = () => resolve();
+            request.onerror = () => resolve();
+            request.onblocked = () => resolve();
+          }),
+      ),
+    );
+  }
+
+  if ("serviceWorker" in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+  }
+}
+
+clearAppData.addEventListener("click", () => {
+  const active = Boolean(video.srcObject);
+  const received = Boolean(downloadUrl);
+  const detail = active
+    ? " This will also stop the current transfer."
+    : received
+      ? " The received file will no longer be available from this page."
+      : "";
+  if (!window.confirm(`Clear Cuttldrop app cache?${detail}`)) return;
+
+  clearAppData.disabled = true;
+  void clearOriginData()
+    .catch(() => undefined)
+    .finally(() => {
+      stopReceiving();
+      progress.textContent = "App cache cleared · saved downloads must be removed from Downloads";
+      clearAppData.disabled = false;
+    });
+});
+
 transport.addEventListener("change", () => {
   if (video.srcObject) return;
   last = null;
   roiQuad = null;
   roiSeenAt = 0;
-  recent.length = 0;
   newFrames = 0;
   dupFrames = 0;
   firstSymbolAt = null;
@@ -861,7 +911,7 @@ for (const decoder of decoders) {
       case "error":
         // Recover the slot — a decoder that failed one frame takes the next.
         decoder.idle = true;
-        hint.textContent = message.message;
+        progress.textContent = message.message;
         break;
       case "decoded":
         decoder.idle = true;
@@ -871,7 +921,7 @@ for (const decoder of decoders) {
         sinkPost({
           kind: "ingest",
           payloads: message.payloads,
-          quad: message.quad,
+          quads: message.quads,
           frameWidth: message.frameWidth,
           frameHeight: message.frameHeight,
         });
@@ -887,7 +937,7 @@ sink.onmessage = (event: MessageEvent<FromSink>) => {
       markReady();
       break;
     case "error":
-      hint.textContent = message.message;
+      progress.textContent = message.message;
       break;
     case "status": {
       // A frame still in flight when the camera was stopped reports into a
@@ -897,8 +947,8 @@ sink.onmessage = (event: MessageEvent<FromSink>) => {
       const now = performance.now();
       decodeRate.mark(now);
       // Wherever the symbol was — even unreadable — is where to crop next.
-      if (message.quad) {
-        roiQuad = message.quad;
+      if (message.quads[0]) {
+        roiQuad = message.quads[0];
         roiSeenAt = now;
       }
       if (message.outcome === Outcome.Duplicate) dupFrames += 1;
@@ -906,8 +956,6 @@ sink.onmessage = (event: MessageEvent<FromSink>) => {
         newFrames += 1;
         firstSymbolAt ??= now;
       }
-      recent.push(message.outcome);
-      if (recent.length > HINT_WINDOW) recent.shift();
       trackSymbol(message);
       render();
       meter(now);

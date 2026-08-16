@@ -83,7 +83,7 @@ export type FromDecoder =
        * to distinguish from "not seen". Always in camera-source pixels,
        * whatever crop or downscale the frame arrived as.
        */
-      quad: QuadPoint[] | null;
+      quads: QuadPoint[][];
       /** Dimensions of the camera source the quad is measured in. */
       frameWidth: number;
       frameHeight: number;
@@ -96,7 +96,7 @@ export type ToSink =
       kind: "ingest";
       payloads: Uint8Array[];
       /** Passed through untouched so `status` can echo where the symbol was. */
-      quad: QuadPoint[] | null;
+      quads: QuadPoint[][];
       frameWidth: number;
       frameHeight: number;
     };
@@ -108,7 +108,7 @@ export type FromSink =
   | {
       kind: "status";
       outcome: Outcome;
-      quad: QuadPoint[] | null;
+      quads: QuadPoint[][];
       frameWidth: number;
       frameHeight: number;
       symbols: number;
