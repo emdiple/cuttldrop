@@ -133,15 +133,18 @@ cd web && npm test         # JS boundary + optical seam, no browser needed
 
 ## Prior art
 
-**txqr** — animated QR plus fountain coding; the closest relative.
-**decimen-optical-transfer** — the same thesis on the modern browser stack, with a
-real-device ~129 KB/s claim; its `qrcode`/ZXing pairing is the direct ancestor of
-Cuttldrop's. Cuttldrop differs above the symbol: RaptorQ rather than LT, a CRC gate
-ahead of the fountain, a manifest with mandatory BLAKE3.
-**JAB Code** (ISO/IEC 23634:2022) — the polychrome symbology line and the inspiration
-for the RGB mode; JAB redesigns the symbol around colour, Cuttldrop keeps standard-QR
-geometry and lets colour carry extra standard symbols.
-**Twibright Optar** — how dense a raster can get before the optics give up.
+- [**Decimen Optical Transfer**](https://github.com/bashalarmistalt/decimen-optical-transfer?tab=readme-ov-file)
+  — the closest browser-based relative: animated QR, fountain coding, and real-device
+  benchmark receipts. Its `qrcode`/ZXing pairing is the direct ancestor of Cuttldrop's.
+  Cuttldrop differs above the symbol: RaptorQ rather than LT, a CRC gate ahead of the
+  fountain, and a manifest with mandatory BLAKE3 verification.
+- [**txqr**](https://github.com/divan/txqr) — animated QR plus fountain coding.
+- [**JAB Code**](https://www.iso.org/standard/76478.html) (ISO/IEC 23634:2022) — the
+  polychrome symbology line and the inspiration for RGB mode. JAB redesigns the symbol
+  around colour; Cuttldrop keeps standard-QR geometry and lets colour carry additional
+  standard symbols.
+- [**Twibright Optar**](https://ronja.twibright.com/optar/) — a useful lesson in how
+  dense an optical raster can get before the physical channel gives up.
 
 ## License
 
