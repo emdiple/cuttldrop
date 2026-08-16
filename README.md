@@ -17,7 +17,7 @@ physics here lands at nearly the same rate, and the RGB mode even strobes colour
 
 ## Status
 
-**Works end to end in software. Not yet run against a real camera.**
+**Works across a real screen-to-camera air gap. Still alpha: known bugs remain.**
 
 | | |
 |---|---|
@@ -29,10 +29,11 @@ physics here lands at nearly the same rate, and the RGB mode even strobes colour
 | RGB calibration: five-patch strip, measured 3×3 crosstalk inverted per frame | done |
 | Tiled mode: 2×2 grid of independent symbols, alone or × RGB | done |
 | Optical seam test: every packet write → ZXing → ingest, all rungs, in Node | done |
-| **A real file across a real air gap** | **not done — needs two physical devices** |
+| **A real file across a real air gap** | **done — works across real devices; bugs remain** |
 
-That last row is the honest headline: everything upstream of the camera is verified,
-the camera itself is not.
+The transport now works over a real camera and display. It is still an alpha: the
+remaining bugs and device-specific limits need more physical testing before relying on
+it for important files.
 
 ## Try it
 
