@@ -15,25 +15,8 @@ frames. The other — the **eye** — points its camera at that screen and rebui
 file, hash-verified. Cuttlefish strobe colour across their skin at roughly 10 Hz; the
 physics here lands at nearly the same rate, and the RGB mode even strobes colour.
 
-## Status
-
-**Works across a real screen-to-camera air gap. Still alpha: known bugs remain.**
-
-| | |
-|---|---|
-| Transport: RaptorQ fountain, per-packet CRC gate, periodic manifest | done |
-| Mandatory BLAKE3 verify — files arrive named, typed, hash-checked | done |
-| Adaptive compression (raw DEFLATE only when it pays) | done |
-| QR ladder: fixed v27/v35/v40, L and hardened-M rungs, bundled ZXing reader | done |
-| RGB mode: three standard symbols multiplexed into R/G/B per frame | done |
-| RGB calibration: five-patch strip, measured 3×3 crosstalk inverted per frame | done |
-| Tiled mode: 2×2 grid of independent symbols, alone or × RGB | done |
-| Optical seam test: every packet write → ZXing → ingest, all rungs, in Node | done |
-| **A real file across a real air gap** | **done — works across real devices; bugs remain** |
-
-The transport now works over a real camera and display. It is still an alpha: the
-remaining bugs and device-specific limits need more physical testing before relying on
-it for important files.
+> **Alpha:** Cuttldrop works across real screens and cameras, but device-specific bugs
+> remain. Do not rely on it for important files yet.
 
 ## Try it
 
